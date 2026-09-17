@@ -5,15 +5,37 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "dev:server": "tsx watch server/index.ts",
     "build": "vite build",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:all": "npm run build && npm run build:server",
+    "typecheck": "tsc -p tsconfig.server.json --noEmit",
+    "test": "npm run test:unit",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:integration": "node scripts/run-integration-tests.mjs",
+    "qa:mobile": "node scripts/capture-mobile.mjs",
     "preview": "vite preview --host 0.0.0.0",
+    "server": "node server-dist/server/index.js",
     "bot": "node bot/server.js"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/cors": "^11.3.0",
+    "@fastify/helmet": "^13.1.1",
+    "@fastify/rate-limit": "^11.2.0",
     "dotenv": "^16.4.7",
-    "grammy": "^1.35.0"
+    "fastify": "^5.12.5",
+    "grammy": "^1.35.0",
+    "jose": "^6.2.12",
+    "pg": "^8.23.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
-    "vite": "^7.1.5"
+    "@types/node": "^22.20.3",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2",
+    "vite": "^7.1.5",
+    "vitest": "^5.0.1"
   }
 }

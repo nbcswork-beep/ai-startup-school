@@ -1,0 +1,67 @@
+import 'dotenv/config';
+import { z } from 'zod';
+
+const booleanFromEnv = z.preprocess(value => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return false;
+  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+}, z.boolean());
+
+const optionalString = z.preprocess(value => value === '' ? undefined : value, z.string().optional());
+
+const envSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  HOST: z.string().default('127.0.0.1'),
+  PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  APP_ORIGINS: z.string().default('http://localhost:5173,http://127.0.0.1:5173'),
+  DATA_BACKEND: z.enum(['postgres', 'memory']).default('postgres'),
+  DATABASE_URL: optionalString,
+  DATABASE_SSL: booleanFromEnv.default(true),
+  TELEGRAM_BOT_TOKEN: optionalString,
+  TELEGRAM_INIT_DATA_MAX_AGE_SECONDS: z.coerce.number().int().min(30).max(3600).default(300),
+  APP_JWT_ISSUER: z.string().default('ai-startup-school'),
+  APP_JWT_AUDIENCE: z.string().default('authenticated'),
+  APP_JWT_KEY_ID: z.string().default('aiss-development'),
+  APP_JWT_PRIVATE_KEY_BASE64: optionalString,
+  APP_JWT_PUBLIC_KEY_BASE64: optionalString,
+  ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(600),
+  REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(90).default(30),
+  SESSION_TOKEN_PEPPER: optionalString,
+  DEV_AUTH_ENABLED: booleanFromEnv.default(false),
+  DEV_EPHEMERAL_JWT: booleanFromEnv.default(false),
+  DEV_USER_ID: z.string().uuid().default('10000000-0000-4000-8000-000000000001'),
+  AI_PROVIDER: z.enum(['mock']).default('mock'),
+  WORKSPACE_URL: optionalString
+}).superRefine((env, context) => {
+  if (env.NODE_ENV === 'production') {
+    if (env.DEV_AUTH_ENABLED || env.DEV_EPHEMERAL_JWT || env.DATA_BACKEND === 'memory') {
+      context.addIssue({ code: 'custom', message: 'Development auth, ephemeral keys, and memory data are forbidden in production' });
+    }
+    for (const [key, value] of [
+      ['DATABASE_URL', env.DATABASE_URL],
+      ['TELEGRAM_BOT_TOKEN', env.TELEGRAM_BOT_TOKEN],
+      ['APP_JWT_PRIVATE_KEY_BASE64', env.APP_JWT_PRIVATE_KEY_BASE64],
+      ['APP_JWT_PUBLIC_KEY_BASE64', env.APP_JWT_PUBLIC_KEY_BASE64],
+      ['SESSION_TOKEN_PEPPER', env.SESSION_TOKEN_PEPPER]
+    ] as const) {
+      if (!value) context.addIssue({ code: 'custom', message: `${key} is required in production` });
+    }
+  }
+  if (env.DATA_BACKEND === 'postgres' && !env.DATABASE_URL) {
+    context.addIssue({ code: 'custom', message: 'DATABASE_URL is required when DATA_BACKEND=postgres' });
+  }
+  if (!env.DEV_EPHEMERAL_JWT && (!env.APP_JWT_PRIVATE_KEY_BASE64 || !env.APP_JWT_PUBLIC_KEY_BASE64)) {
+    context.addIssue({ code: 'custom', message: 'JWT keys are required unless DEV_EPHEMERAL_JWT=true' });
+  }
+  if (!env.SESSION_TOKEN_PEPPER && env.NODE_ENV !== 'test') {
+    context.addIssue({ code: 'custom', message: 'SESSION_TOKEN_PEPPER is required' });
+  }
+});
+
+export type AppEnv = z.infer<typeof envSchema> & { origins: string[] };
+
+export function loadEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
+  const parsed = envSchema.parse(input);
+  return { ...parsed, origins: parsed.APP_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean) };
+}

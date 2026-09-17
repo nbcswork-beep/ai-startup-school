@@ -41,7 +41,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -59,6 +60,131 @@ input:focus-visible {
   outline: 2px solid var(--cyan);
   outline-offset: 2px;
 }
+
+.system-state {
+  min-height: calc(100dvh - 180px);
+  padding: 22vh 24px 40px;
+  text-align: center;
+}
+
+.system-state .state-signal {
+  width: 46px;
+  height: 46px;
+  margin: 0 auto 18px;
+  border: 1px solid var(--cyan);
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 10px rgba(69, 234, 255, 0.06);
+  animation: engine-pulse 1.8s ease-in-out infinite;
+}
+
+.system-state > span,
+.lesson-console > span,
+.lesson-next span {
+  color: var(--cyan);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+}
+
+.system-state h1 {
+  margin: 10px 0;
+  font: 800 24px/1.2 Unbounded, sans-serif;
+}
+
+.system-state p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.lesson-back {
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  color: var(--cyan);
+  background: transparent;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.lesson-console,
+.lesson-task,
+.lesson-next,
+.project-empty,
+.project-editor {
+  border: 1px solid var(--line-strong);
+  background: rgba(8, 13, 55, 0.72);
+}
+
+.lesson-console {
+  margin-top: 24px;
+  padding: 22px;
+  border-left: 3px solid var(--cyan);
+}
+
+.lesson-console h2,
+.lesson-task h2,
+.project-empty h2 {
+  margin: 10px 0;
+  font: 800 18px/1.3 Unbounded, sans-serif;
+}
+
+.lesson-console p,
+.lesson-task p,
+.lesson-next p,
+.project-empty p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.lesson-section {
+  margin: 28px 0;
+}
+
+.lesson-section article {
+  display: grid;
+  grid-template-columns: 8px 1fr;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 15px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.lesson-section article i {
+  width: 6px;
+  height: 6px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--yellow);
+}
+
+.lesson-section article p { margin: 0; font-size: 13px; line-height: 1.55; }
+.lesson-task { padding: 22px; border-color: rgba(255, 232, 59, 0.42); }
+.lesson-next { display: grid; gap: 18px; margin-top: 18px; padding: 20px; }
+.lesson-next p { margin-bottom: 0; }
+
+.project-empty { margin-top: 24px; padding: 28px 22px; text-align: center; }
+.project-empty .creation-engine { margin: 0 auto; }
+.project-empty form,
+.project-editor { display: grid; gap: 14px; margin-top: 22px; text-align: left; }
+.project-editor { padding: 18px; }
+.project-editor[hidden] { display: none; }
+.project-empty label,
+.project-editor label { display: grid; gap: 7px; color: var(--cyan); font-size: 9px; font-weight: 800; letter-spacing: .12em; }
+.project-empty input,
+.project-empty textarea,
+.project-editor input,
+.project-editor textarea {
+  width: 100%; min-height: 44px; padding: 11px 12px; resize: vertical;
+  border: 1px solid var(--line-strong); border-radius: 2px; color: var(--text); background: rgba(3, 6, 31, .74);
+}
+.project-empty textarea,
+.project-editor textarea { min-height: 84px; }
+.workspace-dock button:disabled { opacity: .48; cursor: not-allowed; }
+.section-head #editProject { min-height: 44px; padding-inline: 14px; }
+.error-message { border-color: rgba(255, 78, 184, .4); }
 
 .app-shell {
   width: min(100%, 460px);

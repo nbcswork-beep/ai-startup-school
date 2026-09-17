@@ -1,3 +1,5 @@
+import { api } from './api.js';
+
 const tg = window.Telegram?.WebApp;
 
 if (tg) {
@@ -9,9 +11,11 @@ if (tg) {
   } catch {}
 }
 
-const user = tg?.initDataUnsafe?.user;
-const firstName = user?.first_name || 'Максим';
-const WORKSPACE_URL = 'https://ai-startup.school/workspace';
+let firstName = 'Творець';
+let data = null;
+let currentLesson = null;
+let aiMessages = [];
+let authError = '';
 
 const icons = {
   home: '<path d="M4 11.2 12 4l8 7.2v8.3a.5.5 0 0 1-.5.5h-5v-5.5h-5V20h-5a.5.5 0 0 1-.5-.5z"/>',
@@ -87,58 +91,67 @@ let active = 'home';
 let renderTimer;
 
 function home() {
+  const homeData = data.home;
+  const lesson = homeData.currentLesson;
+  const projectData = homeData.currentProject;
+  const progress = homeData.course.progressPercent;
   return `
     <section class="page home-page">
       <div class="eyebrow">ДОБРОГО ДНЯ, ${firstName.toUpperCase()} <span></span></div>
       <section class="home-hero">
         <div class="hero-copy">
-          <span class="coordinate">ТВІЙ ШЛЯХ · 03/08</span>
+          <span class="coordinate">ТВІЙ ШЛЯХ · ${String(homeData.course.completedLessons + 1).padStart(2, '0')}/${String(homeData.course.totalLessons).padStart(2, '0')}</span>
           <h1>Твоя ідея<br><em>стає проєктом.</em></h1>
           <p>Крок за кроком: від першої думки до продукту, який працює.</p>
           <button class="primary-btn" data-tab="learn">Продовжити навчання ${arrowIcon()}</button>
         </div>
         <div class="hero-engine-wrap">${portalMarkup('large')}</div>
-        <div class="hero-progress" aria-label="Прогрес курсу 42 відсотки"><span>КУРС</span><strong>42%</strong><i><b style="width:42%"></b></i></div>
+        <div class="hero-progress" aria-label="Прогрес курсу ${progress} відсотків"><span>КУРС</span><strong>${progress}%</strong><i><b style="width:${progress}%"></b></i></div>
       </section>
 
-      <section class="next-step" data-tab="learn">
-        <div class="step-index"><small>УРОК</small><strong>03</strong></div>
-        <div class="step-copy"><span>НАСТУПНИЙ КРОК</span><h2>AI може помилятися</h2><p>Навчись перевіряти відповіді, а не довіряти впевненому тону.</p></div>
-        <button class="round-arrow" data-tab="learn" aria-label="Відкрити урок">${arrowIcon()}</button>
+      <section class="next-step" ${lesson ? `data-lesson="${lesson.id}"` : 'data-tab="learn"'}>
+        <div class="step-index"><small>УРОК</small><strong>${lesson?.number ?? '—'}</strong></div>
+        <div class="step-copy"><span>НАСТУПНИЙ КРОК</span><h2>${escapeHtml(lesson?.title ?? 'Маршрут завершено')}</h2><p>${escapeHtml(lesson?.summary ?? 'Переглянь свої досягнення та обери наступну ціль.')}</p></div>
+        <button class="round-arrow" aria-label="Відкрити урок">${arrowIcon()}</button>
       </section>
 
       <div class="signal-strip" aria-label="Твоя статистика">
-        <div><span class="signal-mark bolt">ϟ</span><strong>4</strong><small>дні поспіль</small></div>
-        <div><span class="signal-mark">02</span><strong>2</strong><small>проєкти</small></div>
-        <div><span class="signal-mark">XP</span><strong>640</strong><small>досвід</small></div>
+        <div><span class="signal-mark bolt">ϟ</span><strong>${homeData.viewer.streak}</strong><small>дні поспіль</small></div>
+        <div><span class="signal-mark">${String(homeData.projectCount).padStart(2, '0')}</span><strong>${homeData.projectCount}</strong><small>проєкти</small></div>
+        <div><span class="signal-mark">XP</span><strong>${homeData.viewer.xp}</strong><small>досвід</small></div>
       </div>
 
       <div class="section-head"><div><span class="section-kicker">STARTUP LAB</span><h2>Ти зараз будуєш</h2></div><button class="text-link" data-tab="project">До проєкту ${arrowIcon()}</button></div>
       <section class="project-preview" data-tab="project">
-        <div class="preview-rail"><i class="done"></i><i class="done"></i><i class="done"></i><i></i><i></i></div>
-        <div class="preview-copy"><span>MVP · ЕТАП 3 З 5</span><h3>Smart Study Planner</h3><p>Зібрати перший прототип</p></div>
-        <div class="preview-progress"><strong>62%</strong><span>створено</span></div>
+        <div class="preview-rail">${Array.from({ length: projectData?.stage.total ?? 5 }, (_, index) => `<i class="${index < (projectData?.stage.position ?? 0) ? 'done' : ''}"></i>`).join('')}</div>
+        <div class="preview-copy"><span>MVP · ЕТАП ${projectData?.stage.position ?? 0} З ${projectData?.stage.total ?? 5}</span><h3>${escapeHtml(projectData?.title ?? 'Створи перший проєкт')}</h3><p>${escapeHtml(projectData?.tasks.find(task => task.status === 'in_progress')?.title ?? 'Сформулюй свою ідею')}</p></div>
+        <div class="preview-progress"><strong>${projectData?.completionPercent ?? 0}%</strong><span>створено</span></div>
       </section>
     </section>`;
 }
 
 function learn() {
+  const learning = data.learning;
+  const module = learning.modules[0];
+  const lessonRows = module?.lessons ?? [];
   return `
     <section class="page learn-page">
       <div class="page-title"><span class="section-kicker">ТВІЙ МАРШРУТ</span><span class="zone-code">ZONE 02 · ROUTE</span><h1>Навчання</h1><p>Кожен урок рухає твій проєкт уперед.</p></div>
       <section class="module-overview">
         <div class="module-number">01</div>
-        <div><span>ПОТОЧНИЙ МОДУЛЬ</span><h2>AI Foundations</h2><p>Думай разом з AI, став правильні питання й перевіряй результат.</p></div>
-        <div class="module-progress"><strong>42%</strong><span><i style="height:42%"></i></span></div>
+        <div><span>ПОТОЧНИЙ МОДУЛЬ</span><h2>${escapeHtml(module?.title ?? learning.course.title)}</h2><p>${escapeHtml(module?.description ?? learning.course.description)}</p></div>
+        <div class="module-progress"><strong>${learning.course.progressPercent}%</strong><span><i style="height:${learning.course.progressPercent}%"></i></span></div>
       </section>
-      <div class="journey-label"><span>ТВОЯ ТРАЄКТОРІЯ</span><b>3 / 8 уроків</b></div>
+      <div class="journey-label"><span>ТВОЯ ТРАЄКТОРІЯ</span><b>${learning.course.completedLessons} / ${learning.course.totalLessons} уроків</b></div>
       <div class="lesson-journey">
-        ${lessons.map(lesson => `
-          <button class="lesson-node ${lesson.status}" ${lesson.status === 'locked' ? 'aria-disabled="true"' : ''}>
-            <span class="lesson-marker">${stateIcon(lesson.status)}</span>
-            <span class="lesson-copy"><small>${lesson.n} · ${lesson.status === 'current' ? 'ЗАРАЗ' : lesson.meta.toUpperCase()}</small><strong>${lesson.title}</strong>${lesson.status === 'current' ? '<em>Продовжити урок · +120 XP</em>' : ''}</span>
-            <span class="lesson-action">${lesson.status === 'current' ? arrowIcon() : lesson.status === 'done' ? '+XP' : ''}</span>
-          </button>`).join('')}
+        ${lessonRows.map(lesson => {
+          const visualState = lesson.state === 'completed' ? 'done' : lesson.state === 'current' || lesson.state === 'available' ? 'current' : 'locked';
+          return `
+          <button class="lesson-node ${visualState}" ${visualState === 'locked' ? 'aria-disabled="true"' : `data-lesson="${lesson.id}"`}>
+            <span class="lesson-marker">${stateIcon(visualState)}</span>
+            <span class="lesson-copy"><small>${lesson.number} · ${visualState === 'current' ? 'ЗАРАЗ' : visualState === 'done' ? 'ПРОЙДЕНО' : 'ЗАБЛОКОВАНО'}</small><strong>${escapeHtml(lesson.title)}</strong>${visualState === 'current' ? `<em>Продовжити урок · +${lesson.xpReward} XP</em>` : ''}</span>
+            <span class="lesson-action">${visualState === 'current' ? arrowIcon() : visualState === 'done' ? '+XP' : ''}</span>
+          </button>`}).join('')}
       </div>
       <section class="mentor-dock">
         ${portalMarkup('mini')}
@@ -149,40 +162,47 @@ function learn() {
 }
 
 function project() {
-  const tasks = [
-    ['01', 'Сформулювати проблему', 'Готово', 'done', '+80 XP'],
-    ['02', 'Описати користувача', 'Готово', 'done', '+100 XP'],
-    ['03', 'Зібрати перший прототип', 'Твій крок · +160 XP', 'current', ''],
-    ['04', 'Показати 3 людям', 'Далі', 'locked', '']
-  ];
+  const projectData = data.projects.find(item => item.status === 'active') ?? data.projects[0];
+  if (!projectData) return projectEmpty();
+  const tasks = projectData.tasks;
   return `
     <section class="page project-page">
       <div class="page-title"><span class="section-kicker">STARTUP LAB</span><span class="zone-code">ZONE 03 · LAB</span><h1>Мій проєкт</h1><p>Тут ідея перетворюється на продукт.</p></div>
       <section class="project-engine">
-        <div class="lab-readout"><span>BUILD CHANNEL</span><strong>ПРОТОТИП</strong><div><i class="done"></i><i class="done"></i><i class="active"></i><i></i><i></i></div></div>
-        <div class="project-engine-art">${portalMarkup('medium lab-engine', '03', 'BUILD')}<span class="stage-index">03</span></div>
-        <div class="project-engine-copy"><span>MVP · В РОБОТІ</span><h2>Smart Study<br>Planner</h2><p>AI-помічник для навчання без хаосу.</p></div>
-        <div class="project-meter"><div><span>ГОТОВНІСТЬ</span><strong>62%</strong></div><i><b style="width:62%"></b></i></div>
+        <div class="lab-readout"><span>BUILD CHANNEL</span><strong>${escapeHtml(projectData.stage.title.toUpperCase())}</strong><div>${Array.from({length:projectData.stage.total},(_,index)=>`<i class="${index+1<projectData.stage.position?'done':index+1===projectData.stage.position?'active':''}"></i>`).join('')}</div></div>
+        <div class="project-engine-art">${portalMarkup('medium lab-engine', String(projectData.stage.position).padStart(2, '0'), 'BUILD')}<span class="stage-index">${String(projectData.stage.position).padStart(2, '0')}</span></div>
+        <div class="project-engine-copy"><span>MVP · ${projectData.status === 'completed' ? 'ГОТОВО' : 'В РОБОТІ'}</span><h2>${escapeHtml(projectData.title)}</h2><p>${escapeHtml(projectData.summary)}</p></div>
+        <div class="project-meter"><div><span>ГОТОВНІСТЬ</span><strong>${projectData.completionPercent}%</strong></div><i><b style="width:${projectData.completionPercent}%"></b></i></div>
       </section>
-      <div class="stage-tags"><span>AI</span><i></i><span>WEB</span><i></i><span>EDUCATION</span></div>
-      <div class="section-head"><div><span class="section-kicker">СПРИНТ 01</span><h2>Збираємо основу</h2></div><span class="tiny-badge">3 / 5</span></div>
+      <div class="stage-tags">${projectData.tags.map((tag,index)=>`${index?'<i></i>':''}<span>${escapeHtml(tag)}</span>`).join('')}</div>
+      <div class="section-head"><div><span class="section-kicker">СПРИНТ 01</span><h2>Збираємо основу</h2></div><button class="tiny-badge" id="editProject">РЕДАГУВАТИ</button></div>
       <div class="build-path">
-        ${tasks.map(([number, title, meta, status, reward]) => `
-          <article class="build-step ${status}">
-            <span class="build-marker">${status === 'done' ? stateIcon('done') : number}</span>
-            <div><strong>${title}</strong><small>${meta}</small></div>
-            <span class="build-reward">${reward || (status === 'current' ? arrowIcon() : stateIcon('locked'))}</span>
-          </article>`).join('')}
+        ${tasks.map(task => {
+          const status = task.status === 'completed' ? 'done' : task.status === 'in_progress' || task.status === 'available' ? 'current' : 'locked';
+          return `
+          <article class="build-step ${status}" ${status === 'current' ? `data-task="${task.id}" data-project="${projectData.id}"` : ''}>
+            <span class="build-marker">${status === 'done' ? stateIcon('done') : task.number}</span>
+            <div><strong>${escapeHtml(task.title)}</strong><small>${status === 'done' ? 'Готово' : status === 'current' ? `Твій крок · +${task.xpReward} XP` : 'Далі'}</small></div>
+            <span class="build-reward">${status === 'done' ? `+${task.xpReward} XP` : status === 'current' ? arrowIcon() : stateIcon('locked')}</span>
+          </article>`}).join('')}
       </div>
       <section class="workspace-dock">
         <div class="workspace-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 8-4 4 4 4M15 8l4 4-4 4M14 5l-4 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
         <div><span>CODE WORKSPACE</span><h3>Продовжити збірку</h3><p>Повна web-версія з кодом і preview.</p></div>
-        <button class="primary-btn compact" id="openCode">Відкрити ${externalIcon()}</button>
+        <button class="primary-btn compact" id="openCode" ${projectData.workspaceUrl ? '' : 'disabled'}>Відкрити ${externalIcon()}</button>
       </section>
+      <form class="project-editor" id="projectEditor" hidden><label>Назва<input name="title" value="${escapeHtml(projectData.title)}" maxlength="120" required></label><label>Короткий опис<textarea name="summary" maxlength="1000">${escapeHtml(projectData.summary)}</textarea></label><button class="primary-btn compact">Зберегти</button></form>
     </section>`;
 }
 
+function projectEmpty() {
+  return `<section class="page project-page"><div class="page-title"><span class="section-kicker">STARTUP LAB</span><span class="zone-code">ZONE 03 · LAB</span><h1>Мій проєкт</h1><p>Тут ідея перетворюється на продукт.</p></div><section class="project-empty">${portalMarkup('medium lab-engine','01','START')}<h2>Запусти перший проєкт</h2><p>Опиши одну проблему та ідею рішення. Маршрут з’явиться автоматично.</p><form id="createProject"><label>Назва<input name="title" maxlength="120" required></label><label>Короткий опис<textarea name="summary" maxlength="1000"></textarea></label><button class="primary-btn">Створити проєкт ${arrowIcon()}</button></form></section></section>`;
+}
+
 function ai() {
+  const conversation = data.conversations[0];
+  const projectData = data.projects.find(item => item.status === 'active');
+  const lessonData = data.home.currentLesson;
   return `
     <section class="page ai-page">
       <header class="ai-header">
@@ -196,10 +216,10 @@ function ai() {
         <button data-prompt="Підкажи, що робити далі з проєктом"><span>03</span>Наступний крок</button>
       </div>
       <div class="chat" id="chat" aria-live="polite">
-        <div class="message ai-msg"><div class="msg-avatar">${svgIcon('ai')}</div><p>Привіт, ${firstName}! Бачу, ти збираєш <b>Smart Study Planner</b>. З чого почнемо?</p></div>
-        <div class="ai-context" aria-label="Контекст AI ментора синхронізовано"><span>КОНТЕКСТ ПІДКЛЮЧЕНО</span><div><b>УРОК 03</b><i></i><em></em><i></i><b>MVP 62%</b></div><small>Ментор бачить твій поточний маршрут</small></div>
+        ${aiMessages.map(message => `<div class="message ${message.role === 'assistant' ? 'ai-msg' : 'user-msg'}">${message.role === 'assistant' ? `<div class="msg-avatar">${svgIcon('ai')}</div>` : ''}<p>${escapeHtml(message.content)}</p></div>`).join('')}
+        <div class="ai-context" aria-label="Контекст AI ментора синхронізовано"><span>КОНТЕКСТ ПІДКЛЮЧЕНО</span><div><b>УРОК ${lessonData?.number ?? '—'}</b><i></i><em></em><i></i><b>MVP ${projectData?.completionPercent ?? 0}%</b></div><small>Ментор бачить твій поточний маршрут</small></div>
       </div>
-      <form class="composer" id="composer">
+      <form class="composer" id="composer" data-conversation="${conversation?.id ?? ''}">
         <button type="button" class="attach" aria-label="Додати файл">+</button>
         <input id="aiInput" autocomplete="off" aria-label="Повідомлення AI ментору" placeholder="Запитай про урок або проєкт…">
         <button class="send" aria-label="Надіслати">${arrowIcon()}</button>
@@ -209,32 +229,42 @@ function ai() {
 }
 
 function profile() {
-  const achievements = [
-    ['spark', 'First Spark', 'Перша ідея', '01'],
-    ['build', 'Builder', 'Перший MVP', '02'],
-    ['explore', 'AI Explorer', '50 запитів', '03'],
-    ['locked', 'Demo Day', 'Ще попереду', '04']
-  ];
+  const profileData = data.profile;
+  const viewer = profileData.viewer;
+  const achievements = profileData.achievements;
   return `
     <section class="page profile-page">
       <div class="profile-head">
         <div class="profile-orbit"><div class="big-avatar">${firstName[0]?.toUpperCase() || 'M'}</div><i></i><b></b></div>
-        <span class="profile-level">CREATOR · LEVEL 4</span><h1>${firstName}</h1><p>Будуєш ідеї, які працюють.</p>
+        <span class="profile-level">${escapeHtml(viewer.level.title.toUpperCase())} · LEVEL ${viewer.level.number}</span><h1>${escapeHtml(firstName)}</h1><p>Будуєш ідеї, які працюють.</p>
       </div>
       <section class="level-track">
-        <div><span>НАСТУПНИЙ РІВЕНЬ</span><strong>Builder → Creator</strong></div><b>640 <small>/ 900 XP</small></b>
-        <i><em style="width:71%"></em></i>
+        <div><span>НАСТУПНИЙ РІВЕНЬ</span><strong>${escapeHtml(viewer.level.title)}${viewer.level.nextTitle ? ` → ${escapeHtml(viewer.level.nextTitle)}` : ''}</strong></div><b>${viewer.xp} <small>${viewer.level.nextMinXp ? `/ ${viewer.level.nextMinXp} XP` : 'XP'}</small></b>
+        <i><em style="width:${profileData.nextLevelProgressPercent}%"></em></i>
       </section>
-      <div class="profile-stats"><div><strong>12</strong><small>уроків</small></div><div><strong>2</strong><small>проєкти</small></div><div><strong>4</strong><small>дні серії</small></div></div>
-      <div class="section-head"><div><span class="section-kicker">АРТЕФАКТИ</span><h2>Твоя колекція</h2></div><span class="tiny-badge">3 / 8</span></div>
+      <div class="profile-stats"><div><strong>${profileData.lessonCount}</strong><small>уроків</small></div><div><strong>${profileData.projectCount}</strong><small>проєкти</small></div><div><strong>${viewer.streak}</strong><small>дні серії</small></div></div>
+      <div class="section-head"><div><span class="section-kicker">АРТЕФАКТИ</span><h2>Твоя колекція</h2></div><span class="tiny-badge">${achievements.filter(item => item.earned).length} / ${achievements.length}</span></div>
       <div class="artifacts">
-        ${achievements.map(([type, title, meta, number]) => `<article class="artifact ${type}"><span class="artifact-number">A-${number}</span><div class="artifact-glyph"><i></i>${artifactIcon(type)}</div><span class="artifact-state">${type === 'locked' ? 'НЕ ВІДКРИТО' : 'ЗНАЙДЕНО'}</span><strong>${title}</strong><small>${meta}</small></article>`).join('')}
+        ${achievements.map((achievement, index) => { const type = achievement.earned ? achievement.artifactStyleKey : 'locked'; return `<article class="artifact ${type}"><span class="artifact-number">A-${String(index + 1).padStart(2, '0')}</span><div class="artifact-glyph"><i></i>${artifactIcon(type)}</div><span class="artifact-state">${achievement.earned ? 'ЗНАЙДЕНО' : 'НЕ ВІДКРИТО'}</span><strong>${escapeHtml(achievement.title)}</strong><small>${escapeHtml(achievement.description)}</small></article>`; }).join('')}
       </div>
       <div class="profile-links">
         <button><span class="link-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 8h18c0-1-3-1-3-8M10 21h4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span><strong>Сповіщення</strong><small>Уроки та дедлайни</small></span>${arrowIcon()}</button>
-        <button><span class="link-icon">1:1</span><span><strong>Мій ментор</strong><small>Наступна зустріч</small></span>${arrowIcon()}</button>
+        <button><span class="link-icon">1:1</span><span><strong>${escapeHtml(profileData.mentor?.displayName ?? 'Мій ментор')}</strong><small>${escapeHtml(profileData.mentor?.title ?? 'Наступна зустріч')}</small></span>${arrowIcon()}</button>
       </div>
     </section>`;
+}
+
+function lessonPage() {
+  if (!currentLesson) return `<section class="page lesson-page"><div class="page-title"><h1>Урок не знайдено</h1></div><button class="primary-btn" data-tab="learn">До маршруту</button></section>`;
+  const lesson = currentLesson;
+  return `<section class="page lesson-page">
+    <button class="lesson-back" data-tab="learn">← Маршрут</button>
+    <div class="page-title"><span class="section-kicker">УРОК ${lesson.number} · ${escapeHtml(lesson.moduleTitle)}</span><span class="zone-code">${lesson.estimatedMinutes} ХВ · +${lesson.xpReward} XP</span><h1>${escapeHtml(lesson.title)}</h1><p>${escapeHtml(lesson.summary)}</p></div>
+    <section class="lesson-console"><span>КЛЮЧОВА ІДЕЯ</span><h2>${escapeHtml(lesson.content.conceptName)}</h2><p>${escapeHtml(lesson.content.explanation)}</p></section>
+    <section class="lesson-section"><span class="section-kicker">ПРИКЛАДИ</span>${lesson.content.examples.map(example => `<article><i></i><p>${escapeHtml(example)}</p></article>`).join('')}</section>
+    <section class="lesson-task"><span class="section-kicker">ТВІЙ ХІД</span><h2>${escapeHtml(lesson.content.task.prompt)}</h2><p>${escapeHtml(lesson.content.task.hint)}</p></section>
+    <section class="lesson-next"><div><span>ДАЛІ</span><p>${escapeHtml(lesson.content.nextStep)}</p></div>${lesson.state === 'completed' ? `<button class="primary-btn" data-tab="learn">Повернутися</button>` : `<button class="primary-btn" id="completeLesson" data-lesson="${lesson.id}">Завершити · +${lesson.xpReward} XP ${arrowIcon()}</button>`}</section>
+  </section>`;
 }
 
 function arrowIcon() {
@@ -255,7 +285,7 @@ function artifactIcon(type) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${artifactPaths[type]}</svg>`;
 }
 
-const templates = { home, learn, project, ai, profile };
+const templates = { home, learn, project, ai, profile, lesson: lessonPage };
 
 function escapeHtml(str) {
   const amp = String.fromCharCode(38);
@@ -266,6 +296,31 @@ function escapeHtml(str) {
     '"': `${amp}quot;`,
     "'": `${amp}#039;`
   }[character]));
+}
+
+function loadingView(label = 'Завантажуємо твій маршрут') {
+  view.innerHTML = `<section class="system-state"><div class="state-signal"></div><span>SYNC</span><h1>${escapeHtml(label)}</h1><p>Ще мить — з’єднуємо прогрес, проєкт і AI ментора.</p></section>`;
+}
+
+function errorView(message) {
+  view.innerHTML = `<section class="system-state error-state"><div class="state-signal"></div><span>CONNECTION</span><h1>Не вдалося увійти</h1><p>${escapeHtml(message)}</p><button class="primary-btn" id="retryBoot">Спробувати ще раз</button></section>`;
+  document.querySelector('#retryBoot')?.addEventListener('click', initialize);
+}
+
+async function refreshData() {
+  data = await api.bootstrap();
+  firstName = data.home.viewer.firstName;
+  document.querySelector('.avatar').textContent = firstName[0]?.toUpperCase() || 'A';
+}
+
+async function openLesson(id, updateHistory = true) {
+  loadingView('Відкриваємо урок');
+  try {
+    currentLesson = await api.lesson(id);
+    render('lesson', updateHistory);
+  } catch (error) {
+    errorView(error.message);
+  }
 }
 
 function haptic(type = 'impact') {
@@ -289,7 +344,8 @@ function render(tab, updateHistory = true) {
     view.classList.remove('leaving');
     wirePage();
 
-    if (updateHistory && location.hash !== `#${active}`) history.pushState({ tab: active }, '', `#${active}`);
+    const targetHash = active === 'lesson' && currentLesson ? `#lesson=${currentLesson.id}` : `#${active}`;
+    if (updateHistory && location.hash !== targetHash) history.pushState({ tab: active }, '', targetHash);
     haptic('selection');
   }, 70);
 }
@@ -302,21 +358,37 @@ function wirePage() {
     };
   });
 
+  view.querySelectorAll('[data-lesson]').forEach(element => {
+    if (element.id === 'completeLesson') return;
+    element.onclick = event => { event.stopPropagation(); openLesson(element.dataset.lesson); };
+  });
+
+  document.querySelector('#completeLesson')?.addEventListener('click', async event => {
+    const button = event.currentTarget; button.disabled = true; button.textContent = 'Зберігаємо…';
+    try { await api.completeLesson(button.dataset.lesson, crypto.randomUUID()); await refreshData(); currentLesson = await api.lesson(button.dataset.lesson); render('lesson', false); }
+    catch (error) { button.disabled = false; button.textContent = error.message; }
+  });
+
   const form = document.querySelector('#composer');
   if (form) {
     const input = document.querySelector('#aiInput');
     const chat = document.querySelector('#chat');
-    const submit = text => {
+    const submit = async text => {
       if (!text?.trim()) return;
       chat.querySelector('.ai-context')?.remove();
       chat.insertAdjacentHTML('beforeend', `<div class="message user-msg"><p>${escapeHtml(text.trim())}</p></div>`);
       input.value = '';
       chat.scrollTop = chat.scrollHeight;
-      setTimeout(() => {
+      input.disabled = true;
+      try {
+        const result = await api.sendMessage(form.dataset.conversation, text.trim(), crypto.randomUUID());
+        aiMessages.push(result.userMessage, result.assistantMessage);
         if (!document.body.contains(chat)) return;
-        chat.insertAdjacentHTML('beforeend', `<div class="message ai-msg"><div class="msg-avatar">${svgIcon('ai')}</div><p>Добре. Почнімо з головного: <b>який результат ти хочеш отримати?</b></p></div>`);
+        chat.insertAdjacentHTML('beforeend', `<div class="message ai-msg"><div class="msg-avatar">${svgIcon('ai')}</div><p>${escapeHtml(result.assistantMessage.content)}</p></div>`);
         chat.scrollTop = chat.scrollHeight;
-      }, 450);
+      } catch (error) {
+        chat.insertAdjacentHTML('beforeend', `<div class="message ai-msg error-message"><p>${escapeHtml(error.message)}</p></div>`);
+      } finally { input.disabled = false; input.focus(); }
     };
     form.onsubmit = event => {
       event.preventDefault();
@@ -327,9 +399,30 @@ function wirePage() {
     });
   }
 
+  const createForm = document.querySelector('#createProject');
+  createForm?.addEventListener('submit', async event => {
+    event.preventDefault(); const values = new FormData(createForm); const button = createForm.querySelector('button'); button.disabled = true;
+    try { await api.createProject({ title: values.get('title'), summary: values.get('summary') }); await refreshData(); render('project', false); }
+    catch (error) { button.disabled = false; button.textContent = error.message; }
+  });
+  document.querySelector('#editProject')?.addEventListener('click', () => { document.querySelector('#projectEditor').hidden = false; });
+  const editor = document.querySelector('#projectEditor');
+  editor?.addEventListener('submit', async event => {
+    event.preventDefault(); const values = new FormData(editor); const projectData = data.projects.find(item => item.status === 'active') ?? data.projects[0];
+    try { await api.updateProject(projectData.id, { title: values.get('title'), summary: values.get('summary') }); await refreshData(); render('project', false); }
+    catch (error) { editor.querySelector('button').textContent = error.message; }
+  });
+  view.querySelectorAll('[data-task]').forEach(element => element.onclick = async () => {
+    element.style.pointerEvents = 'none';
+    try { await api.completeTask(element.dataset.project, element.dataset.task, crypto.randomUUID()); await refreshData(); render('project', false); }
+    catch (error) { element.style.pointerEvents = ''; element.querySelector('small').textContent = error.message; }
+  });
+
   document.querySelector('#openCode')?.addEventListener('click', () => {
-    if (tg?.openLink) tg.openLink(WORKSPACE_URL);
-    else window.open(WORKSPACE_URL, '_blank', 'noopener,noreferrer');
+    const url = (data.projects.find(item => item.status === 'active') ?? data.projects[0])?.workspaceUrl;
+    if (!url) return;
+    if (tg?.openLink) tg.openLink(url);
+    else window.open(url, '_blank', 'noopener,noreferrer');
   });
 }
 
@@ -338,12 +431,30 @@ document.addEventListener('click', event => {
   if (target && !target.closest('#view')) render(target.dataset.tab);
 });
 
-function renderFromLocation() {
+async function renderFromLocation() {
+  if (!data) return;
   const requested = location.hash.replace('#', '');
+  if (requested.startsWith('lesson=')) { await openLesson(requested.slice(7), false); return; }
   const next = templates[requested] ? requested : 'home';
-  if (next !== active || !view.children.length) render(next, false);
+  if (next !== active || !view.querySelector('.page')) render(next, false);
 }
 
 window.addEventListener('popstate', renderFromLocation);
 window.addEventListener('hashchange', renderFromLocation);
-renderFromLocation();
+
+async function initialize() {
+  authError = '';
+  loadingView();
+  try {
+    await api.authenticate();
+    await refreshData();
+    if (!data.conversations.length) data.conversations.push(await api.createConversation('Мій маршрут'));
+    aiMessages = await api.messages(data.conversations[0].id);
+    await renderFromLocation();
+  } catch (error) {
+    authError = error.message;
+    errorView(authError);
+  }
+}
+
+initialize();
