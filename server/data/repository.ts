@@ -4,12 +4,23 @@ import type {
   AiConversationDto,
   AiMessageDto,
   AuthUser,
+  ClassSessionDto,
+  EffortLevel,
   HomeDto,
+  HomeworkSubmissionDto,
+  HomeworkSummaryDto,
   LearningDto,
   LessonDto,
   NewSession,
   ProfileDto,
+  PortfolioDto,
   ProjectDto,
+  ScheduleDto,
+  MentorBookingDto,
+  MentorSlotDto,
+  ParentReportDto,
+  TeacherGroupDto,
+  TeacherStudentDto,
   RotationResult,
   TelegramIdentityInput,
   UserId
@@ -26,6 +37,9 @@ export interface AppRepository {
   revokeSession(refreshTokenHash: string, now: Date): Promise<boolean>;
 
   getHome(userId: UserId): Promise<HomeDto>;
+  getSchedule(userId: UserId): Promise<ScheduleDto>;
+  listHomework(userId: UserId): Promise<HomeworkSummaryDto[]>;
+  submitHomework(userId: UserId, homeworkId: string, input: { contentText: string; contentUrl?: string; studentComment?: string }): Promise<HomeworkSubmissionDto>;
   getLearning(userId: UserId): Promise<LearningDto>;
   getLesson(userId: UserId, lessonId: string): Promise<LessonDto | null>;
   completeLesson(userId: UserId, lessonId: string, idempotencyKey: string): Promise<{ awardedXp: number; home: HomeDto }>;
@@ -37,6 +51,20 @@ export interface AppRepository {
 
   getProfile(userId: UserId): Promise<ProfileDto>;
   listAchievements(userId: UserId): Promise<AchievementDto[]>;
+  getPortfolio(userId: UserId): Promise<PortfolioDto>;
+  addProjectToPortfolio(userId: UserId, projectId: string, input: { reflection?: string; learned?: string }): Promise<PortfolioDto>;
+  listMentorSlots(userId: UserId): Promise<MentorSlotDto[]>;
+  bookMentorSlot(userId: UserId, availabilityId: string): Promise<MentorBookingDto>;
+
+  listTeacherGroups(userId: UserId): Promise<TeacherGroupDto[]>;
+  listGroupStudents(userId: UserId, groupId: string): Promise<TeacherStudentDto[]>;
+  createClassSession(userId: UserId, input: { groupId: string; courseId: string; moduleId?: string; lessonId?: string; title: string; description?: string; startsAt: string; endsAt: string; meetingUrl?: string; meetingProvider?: string }): Promise<ClassSessionDto>;
+  rescheduleClass(userId: UserId, sessionId: string, input: { startsAt: string; endsAt: string; reason?: string }): Promise<void>;
+  confirmAttendance(userId: UserId, sessionId: string, studentId: string, status: 'present' | 'late' | 'absent' | 'excused', note?: string): Promise<void>;
+  createHomework(userId: UserId, input: { groupId: string; courseId: string; moduleId?: string; lessonId?: string; classSessionId?: string; title: string; instructions: string; publishAt?: string; dueAt?: string; xpReward: number; status: 'draft' | 'published' }): Promise<HomeworkSummaryDto>;
+  reviewHomework(userId: UserId, submissionId: string, input: { score: number; effort: EffortLevel; status: 'reviewed' | 'needs_revision' | 'completed'; feedback: string }): Promise<void>;
+  listLinkedStudents(userId: UserId): Promise<TeacherStudentDto[]>;
+  listParentReports(userId: UserId, studentId: string): Promise<ParentReportDto[]>;
 
   listConversations(userId: UserId): Promise<AiConversationDto[]>;
   createConversation(userId: UserId, title?: string): Promise<AiConversationDto>;

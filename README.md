@@ -1,13 +1,15 @@
 # AI Startup School — Telegram Mini App
 
-Mobile-first Student App for AI Startup School. The approved Mini App interface is backed by a Fastify API, PostgreSQL/Supabase schema, server-validated Telegram authentication, progress, projects, XP, achievements, and a provider-neutral AI mentor boundary.
+Mobile-first Student App and education platform foundation for AI Startup School. The approved Mini App is backed by Fastify, PostgreSQL/Supabase RLS, server-validated Telegram authentication, live classes, attendance, homework, projects, private portfolios, mentor booking, guardian reporting, XP, achievements, and a provider-neutral AI boundary.
 
 ## Screens
 - Home
 - Learning
 - Project
-- AI mentor
+- Portfolio
 - Profile
+
+AI mentor infrastructure remains available for future contextual features but is not primary Student App navigation. V2 domain and security documentation starts at [docs/product-v2.md](docs/product-v2.md).
 
 ## Local run
 ```bash

@@ -66,4 +66,75 @@ insert into public.student_achievements(user_id,achievement_id) values
 ('10000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000002'),
 ('10000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000003') on conflict do nothing;
 
+update public.courses set title='Основи роботи з AI' where id='20000000-0000-4000-8000-000000000001';
+update public.modules set title='Основи роботи з AI' where id='21000000-0000-4000-8000-000000000001';
+update public.lessons l set title=v.title from (values
+(1,'Знайомство з AI'),(2,'Як працювати з AI'),(3,'Як перевіряти відповіді AI'),(4,'Від проблеми до ідеї'),(5,'Плануємо свій проєкт'),
+(6,'Створюємо першу версію'),(7,'Працюємо з кодом через AI'),(8,'Основи дизайну продукту')) as v(position,title)
+where l.module_id='21000000-0000-4000-8000-000000000001' and l.position=v.position;
+insert into public.lessons(id,module_id,position,slug,title,summary,content,estimated_minutes,xp_reward,prerequisite_lesson_id,status) values
+('22000000-0000-4000-8000-000000000009','21000000-0000-4000-8000-000000000001',9,'test-and-improve','Тестуємо та покращуємо','Перевір продукт із користувачем і визнач наступну зміну.','{"explanation":"Тестування показує, де реальна поведінка відрізняється від наших припущень.","examples":["Спостерігай за діями та не підказуй правильний шлях."],"task":{"prompt":"Проведи короткий тест і запиши один сигнал для покращення.","hint":"Фіксуй те, що побачив."},"conceptName":"Цикл перевірки","nextStep":"Підготуємо презентацію проєкту."}',18,180,'22000000-0000-4000-8000-000000000008','published'),
+('22000000-0000-4000-8000-000000000010','21000000-0000-4000-8000-000000000001',10,'present-project','Презентуємо свій проєкт','Поясни проблему, рішення, перевірку і наступний крок.','{"explanation":"Сильна презентація показує шлях від проблеми до створеного результату.","examples":["Почни з людини та її ситуації."],"task":{"prompt":"Склади пітч із чотирьох речень.","hint":"Хто → проблема → рішення → доказ."},"conceptName":"Product story","nextStep":"Додай проєкт до портфоліо."}',20,200,'22000000-0000-4000-8000-000000000009','published') on conflict do nothing;
+
+update public.project_stages set code='idea',title='Ідея' where position=1;
+update public.project_stages set code='plan',title='План' where position=2;
+update public.project_stages set code='design',title='Дизайн' where position=4;
+update public.project_stages set code='test',title='Тест' where position=5;
+insert into public.project_stages(id,code,title,position,default_completion_percent) values ('31000000-0000-4000-8000-000000000006','launch','Запуск',6,100) on conflict do nothing;
+
+insert into public.users(id,kind) values
+('12000000-0000-4000-8000-000000000001','teacher'),
+('13000000-0000-4000-8000-000000000001','guardian') on conflict(id) do update set kind=excluded.kind;
+insert into public.teacher_profiles(user_id,display_name,title,timezone) values
+('12000000-0000-4000-8000-000000000001','Анна Коваль','Викладачка та product mentor','Europe/Kyiv') on conflict do nothing;
+insert into public.guardian_profiles(user_id,display_name,locale,timezone) values
+('13000000-0000-4000-8000-000000000001','Олена','uk','Europe/Kyiv') on conflict do nothing;
+update public.mentors set user_id='12000000-0000-4000-8000-000000000001',display_name='Анна Коваль',title='Product mentor',timezone='Europe/Kyiv' where id='60000000-0000-4000-8000-000000000001';
+
+insert into public.groups(id,course_id,name,timezone,starts_on,ends_on,status,schedule_context) values
+('70000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000001','Creators · Осінь 2026','Europe/Kyiv',current_date-14,current_date+70,'active','{"weekly":"Вівторок і субота · 17:00","durationMinutes":90}') on conflict do nothing;
+insert into public.group_teachers(group_id,teacher_id,role) values
+('70000000-0000-4000-8000-000000000001','12000000-0000-4000-8000-000000000001','lead_teacher') on conflict do nothing;
+insert into public.group_memberships(id,group_id,student_id,status) values
+('70000000-0000-4000-8000-000000000011','70000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','active') on conflict do nothing;
+
+insert into public.class_sessions(id,group_id,course_id,module_id,lesson_id,teacher_id,title,description,scheduled_start,scheduled_end,meeting_url,meeting_provider,status,created_by) values
+('71000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000001','21000000-0000-4000-8000-000000000001','22000000-0000-4000-8000-000000000003','12000000-0000-4000-8000-000000000001','Як перевіряти відповіді AI','Живе заняття: джерела, факти та перевірка припущень.',date_trunc('day',now()+interval '1 day')+interval '17 hours',date_trunc('day',now()+interval '1 day')+interval '18 hours 30 minutes','https://meet.google.com/abc-defg-hij','Google Meet','scheduled','12000000-0000-4000-8000-000000000001'),
+('71000000-0000-4000-8000-000000000002','70000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000001','21000000-0000-4000-8000-000000000001','22000000-0000-4000-8000-000000000004','12000000-0000-4000-8000-000000000001','Від проблеми до ідеї','Знаходимо проблему, яку варто вирішувати.',date_trunc('day',now()+interval '4 days')+interval '17 hours',date_trunc('day',now()+interval '4 days')+interval '18 hours 30 minutes','https://meet.google.com/abc-defg-hij','Google Meet','rescheduled','12000000-0000-4000-8000-000000000001'),
+('71000000-0000-4000-8000-000000000003','70000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000001','21000000-0000-4000-8000-000000000001','22000000-0000-4000-8000-000000000002','12000000-0000-4000-8000-000000000001','Як працювати з AI','Контекст, мета та формат сильного запиту.',date_trunc('day',now()-interval '3 days')+interval '17 hours',date_trunc('day',now()-interval '3 days')+interval '18 hours 30 minutes','https://meet.google.com/abc-defg-hij','Google Meet','completed','12000000-0000-4000-8000-000000000001') on conflict do nothing;
+insert into public.class_materials(id,class_session_id,kind,title,external_url,position,created_by) values
+('72000000-0000-4000-8000-000000000001','71000000-0000-4000-8000-000000000001','presentation','Презентація заняття','https://example.com/materials/ai-verification',1,'12000000-0000-4000-8000-000000000001') on conflict do nothing;
+insert into public.attendance(id,class_session_id,student_id,status,confirmed_by,confirmed_at,note) values
+('72000000-0000-4000-8000-000000000011','71000000-0000-4000-8000-000000000003','10000000-0000-4000-8000-000000000001','present','12000000-0000-4000-8000-000000000001',now()-interval '3 days','Активно працював у практичній частині.') on conflict do nothing;
+
+insert into public.homework(id,course_id,module_id,lesson_id,class_session_id,group_id,title,instructions,publish_at,due_at,xp_reward,status,created_by) values
+('73000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000001','21000000-0000-4000-8000-000000000001','22000000-0000-4000-8000-000000000003','71000000-0000-4000-8000-000000000003','70000000-0000-4000-8000-000000000001','Перевір відповідь AI','Обери відповідь AI, знайди два джерела та поясни висновок.',now()-interval '5 days',now()-interval '2 days',80,'published','12000000-0000-4000-8000-000000000001'),
+('73000000-0000-4000-8000-000000000002','20000000-0000-4000-8000-000000000001','21000000-0000-4000-8000-000000000001','22000000-0000-4000-8000-000000000004','71000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','План твого проєкту','Опиши проблему, користувача, рішення та одну перевірку.',now()-interval '2 days',now()+interval '2 days',120,'published','12000000-0000-4000-8000-000000000001'),
+('73000000-0000-4000-8000-000000000003','20000000-0000-4000-8000-000000000001','21000000-0000-4000-8000-000000000001','22000000-0000-4000-8000-000000000006',null,'70000000-0000-4000-8000-000000000001','Підготуй перший прототип','Збери один головний сценарій та додай посилання або скриншот.',now(),now()+interval '6 days',160,'published','12000000-0000-4000-8000-000000000001') on conflict do nothing;
+insert into public.homework_submissions(id,homework_id,student_id,attempt_number,submitted_at,student_comment,content_text,content_url,status) values
+('74000000-0000-4000-8000-000000000001','73000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001',1,now()-interval '3 days','Перевірив джерела та додав пояснення.','Чекліст перевірки відповіді AI',null,'completed'),
+('74000000-0000-4000-8000-000000000002','73000000-0000-4000-8000-000000000002','10000000-0000-4000-8000-000000000001',1,now()-interval '1 day','Це перша версія плану.','План Smart Study Planner','https://example.com/smart-study-plan','needs_revision') on conflict do nothing;
+insert into public.homework_reviews(id,submission_id,reviewer_id,score,effort,status,feedback,reviewed_at) values
+('75000000-0000-4000-8000-000000000001','74000000-0000-4000-8000-000000000001','12000000-0000-4000-8000-000000000001',9,'high_effort','completed','Сильна перевірка джерел. Продовжуй пояснювати, чому джерело надійне.',now()-interval '2 days'),
+('75000000-0000-4000-8000-000000000002','74000000-0000-4000-8000-000000000002','12000000-0000-4000-8000-000000000001',6,'high_effort','needs_revision','Зусилля видно. Додай одну конкретну перевірку для головного припущення.',now()) on conflict do nothing;
+
+insert into public.skills(id,code,title) values
+('80000000-0000-4000-8000-000000000001','ai','AI'),('80000000-0000-4000-8000-000000000002','prompting','Prompting'),('80000000-0000-4000-8000-000000000003','critical-thinking','Критичне мислення'),('80000000-0000-4000-8000-000000000004','html','HTML'),('80000000-0000-4000-8000-000000000005','css','CSS'),('80000000-0000-4000-8000-000000000006','javascript','JavaScript'),('80000000-0000-4000-8000-000000000007','design','Дизайн'),('80000000-0000-4000-8000-000000000008','ux','UX'),('80000000-0000-4000-8000-000000000009','product-thinking','Продуктове мислення'),('80000000-0000-4000-8000-000000000010','presentation','Презентація') on conflict do nothing;
+insert into public.student_skills(student_id,skill_id,level,evidence_count) values
+('10000000-0000-4000-8000-000000000001','80000000-0000-4000-8000-000000000001',3,4),('10000000-0000-4000-8000-000000000001','80000000-0000-4000-8000-000000000003',2,3),('10000000-0000-4000-8000-000000000001','80000000-0000-4000-8000-000000000009',2,2),('10000000-0000-4000-8000-000000000001','80000000-0000-4000-8000-000000000010',1,1) on conflict do nothing;
+update public.projects set problem='Учні губляться між уроками, дедлайнами та власними планами.',target_user='Учні 11–15 років',solution='Один зрозумілий AI-планувальник навчання.',project_type='ai_assistant',technologies=array['HTML','CSS','JavaScript'],demo_url=null where id='30000000-0000-4000-8000-000000000001';
+insert into public.portfolios(id,student_id,title) values ('81000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','Моє портфоліо') on conflict do nothing;
+insert into public.portfolio_projects(id,portfolio_id,project_id,short_description,reflection,learned,technologies,position) values
+('82000000-0000-4000-8000-000000000001','81000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000001','AI-помічник, що допомагає планувати навчання без хаосу.','Я навчився починати з проблеми, а не з функцій.','Перевіряти припущення, будувати прототип і слухати користувача.',array['HTML','CSS','JavaScript'],1) on conflict do nothing;
+insert into public.portfolio_project_skills(portfolio_project_id,skill_id) values
+('82000000-0000-4000-8000-000000000001','80000000-0000-4000-8000-000000000001'),('82000000-0000-4000-8000-000000000001','80000000-0000-4000-8000-000000000008'),('82000000-0000-4000-8000-000000000001','80000000-0000-4000-8000-000000000009') on conflict do nothing;
+
+insert into public.mentor_availability(id,mentor_id,starts_at,ends_at,timezone,status,created_by) values
+('91000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001',date_trunc('day',now()+interval '2 days')+interval '18 hours',date_trunc('day',now()+interval '2 days')+interval '18 hours 30 minutes','Europe/Kyiv','open','12000000-0000-4000-8000-000000000001'),
+('91000000-0000-4000-8000-000000000002','60000000-0000-4000-8000-000000000001',date_trunc('day',now()+interval '5 days')+interval '16 hours',date_trunc('day',now()+interval '5 days')+interval '16 hours 30 minutes','Europe/Kyiv','open','12000000-0000-4000-8000-000000000001') on conflict do nothing;
+insert into public.guardian_student_links(id,guardian_id,student_id,status,invited_by,activated_at) values
+('92000000-0000-4000-8000-000000000001','13000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','active','12000000-0000-4000-8000-000000000001',now()) on conflict do nothing;
+insert into public.parent_reports(id,student_id,period_start,period_end,payload,teacher_comment,status,created_by) values
+('93000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001',current_date-7,current_date-1,'{"classesScheduled":2,"classesAttended":2,"attendance":{"present":2,"late":0,"absent":0,"excused":0},"homeworkAssigned":2,"homeworkSubmitted":2,"homeworkReviewed":2,"scores":[9,6],"effort":{"high":2},"project":"Smart Study Planner","projectProgress":62,"xpEarned":120,"level":"Creator","newAchievements":[],"portfolioMilestone":"Smart Study Planner додано до приватного портфоліо"}','Максим уважно працював із джерелами й наполегливо допрацьовує план проєкту.','draft','12000000-0000-4000-8000-000000000001') on conflict do nothing;
+
 commit;

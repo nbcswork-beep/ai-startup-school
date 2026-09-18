@@ -8,14 +8,25 @@ import type {
   AiConversationDto,
   AiMessageDto,
   AuthUser,
+  ClassSessionDto,
+  EffortLevel,
   HomeDto,
+  HomeworkSubmissionDto,
+  HomeworkSummaryDto,
   LearningDto,
   LessonDto,
   LessonSummaryDto,
   NewSession,
   ProfileDto,
+  PortfolioDto,
   ProjectDto,
   ProjectTaskDto,
+  ScheduleDto,
+  MentorBookingDto,
+  MentorSlotDto,
+  ParentReportDto,
+  TeacherGroupDto,
+  TeacherStudentDto,
   RotationResult,
   TelegramIdentityInput
 } from '../types/domain.js';
@@ -23,6 +34,13 @@ import type {
 type LessonState = { progressPercent: number; completedAt: string | null };
 type InternalProject = Omit<ProjectDto, 'completionPercent' | 'stage'> & { stagePosition: number; stageCode: string; stageTitle: string };
 type InternalConversation = AiConversationDto & { summary: string; messages: AiMessageDto[]; clientMessageIds: Set<string> };
+
+function relativeIso(days: number, hour: number, durationMinutes = 0): string {
+  const date = new Date();
+  date.setHours(hour, durationMinutes, 0, 0);
+  date.setDate(date.getDate() + days);
+  return date.toISOString();
+}
 
 const LEVELS = [
   { number: 1, title: 'Explorer', minXp: 0 },
@@ -33,11 +51,12 @@ const LEVELS = [
 ];
 
 const STAGES = [
-  { id: '31000000-0000-4000-8000-000000000001', code: 'problem', title: 'Проблема', position: 1 },
-  { id: '31000000-0000-4000-8000-000000000002', code: 'concept', title: 'Концепт', position: 2 },
+  { id: '31000000-0000-4000-8000-000000000001', code: 'idea', title: 'Ідея', position: 1 },
+  { id: '31000000-0000-4000-8000-000000000002', code: 'plan', title: 'План', position: 2 },
   { id: DEV_IDS.stage, code: 'prototype', title: 'Прототип', position: 3 },
-  { id: '31000000-0000-4000-8000-000000000004', code: 'test', title: 'Тест', position: 4 },
-  { id: '31000000-0000-4000-8000-000000000005', code: 'pitch', title: 'Пітч', position: 5 }
+  { id: '31000000-0000-4000-8000-000000000004', code: 'design', title: 'Дизайн', position: 4 },
+  { id: '31000000-0000-4000-8000-000000000005', code: 'test', title: 'Тест', position: 5 },
+  { id: '31000000-0000-4000-8000-000000000006', code: 'launch', title: 'Запуск', position: 6 }
 ];
 
 function nowIso(): string {
@@ -45,7 +64,13 @@ function nowIso(): string {
 }
 
 export class MemoryRepository implements AppRepository {
-  private users = new Map<string, AuthUser>([[DEV_IDS.user, { id: DEV_IDS.user, displayName: 'Максим', status: 'active' }]]);
+  private users = new Map<string, AuthUser>([
+    [DEV_IDS.user, { id: DEV_IDS.user, displayName: 'Максим', status: 'active' }],
+    ['12000000-0000-4000-8000-000000000001', { id: '12000000-0000-4000-8000-000000000001', displayName: 'Анна Коваль', status: 'active' }],
+    ['13000000-0000-4000-8000-000000000001', { id: '13000000-0000-4000-8000-000000000001', displayName: 'Олена', status: 'active' }],
+    ['10000000-0000-4000-8000-000000000002', { id: '10000000-0000-4000-8000-000000000002', displayName: 'Ірина', status: 'active' }]
+  ]);
+  private roles = new Map<string, 'student'|'guardian'|'teacher'|'admin'>([[DEV_IDS.user,'student'],['12000000-0000-4000-8000-000000000001','teacher'],['13000000-0000-4000-8000-000000000001','guardian'],['10000000-0000-4000-8000-000000000002','student']]);
   private identities = new Map<string, string>();
   private sessions = new Map<string, NewSession & { revokedAt: Date | null; replacedBy: string | null }>();
   private xp = new Map<string, number>([[DEV_IDS.user, 640]]);
@@ -61,6 +86,11 @@ export class MemoryRepository implements AppRepository {
   private achievements = new Map<string, Set<string>>([[DEV_IDS.user, new Set(['first-spark', 'builder', 'ai-explorer'])]]);
   private xpKeys = new Set(['seed:xp']);
   private conversations = new Map<string, InternalConversation[]>();
+  private homeworkSubmissions = new Map<string, HomeworkSubmissionDto[]>();
+  private submissionHomeworkIds = new Map<string,string>();
+  private portfolioProjects = new Map<string, PortfolioDto['projects']>();
+  private mentorBookings = new Map<string, MentorBookingDto[]>();
+  private classSessionOverrides = new Map<string, { startsAt: string; endsAt: string; status: 'rescheduled' }>();
 
   constructor(workspaceUrl?: string) {
     const tasks: ProjectTaskDto[] = [
@@ -101,6 +131,16 @@ export class MemoryRepository implements AppRepository {
         createdAt: created
       }]
     }]);
+    this.homeworkSubmissions.set(DEV_IDS.user, [
+      { id: '74000000-0000-4000-8000-000000000001', attemptNumber: 1, submittedAt: relativeIso(-3, 18), studentComment: 'Перевірив джерела та додав пояснення.', contentText: 'Чекліст перевірки відповіді AI', contentUrl: null, status: 'completed', review: { score: 9, effort: 'high_effort', status: 'completed', feedback: 'Сильна перевірка джерел. Продовжуй пояснювати, чому джерело надійне.', reviewedAt: relativeIso(-2, 15) } },
+      { id: '74000000-0000-4000-8000-000000000002', attemptNumber: 1, submittedAt: relativeIso(-1, 19), studentComment: 'Це перша версія плану.', contentText: 'План Smart Study Planner', contentUrl: 'https://example.com/smart-study-plan', status: 'needs_revision', review: { score: 6, effort: 'high_effort', status: 'needs_revision', feedback: 'Зусилля видно. Додай одну конкретну перевірку для головного припущення.', reviewedAt: relativeIso(0, 10) } }
+    ]);
+    this.submissionHomeworkIds.set('74000000-0000-4000-8000-000000000001','73000000-0000-4000-8000-000000000001');
+    this.submissionHomeworkIds.set('74000000-0000-4000-8000-000000000002','73000000-0000-4000-8000-000000000002');
+    this.portfolioProjects.set(DEV_IDS.user, [{
+      id: '82000000-0000-4000-8000-000000000001', projectId: DEV_IDS.project, title: 'Smart Study Planner', shortDescription: 'AI-помічник, що допомагає планувати навчання без хаосу.', reflection: 'Я навчився починати з проблеми, а не з функцій.', learned: 'Перевіряти припущення, будувати прототип і слухати користувача.', skills: ['AI', 'Product thinking', 'UX'], technologies: ['HTML', 'CSS', 'JavaScript'], demoUrl: null, coverPath: null, screenshots: [], completionDate: null
+    }]);
+    this.mentorBookings.set(DEV_IDS.user, []);
   }
 
   async ping(): Promise<void> {}
@@ -111,6 +151,7 @@ export class MemoryRepository implements AppRepository {
     if (existingId) return this.requireUser(existingId);
     const user: AuthUser = { id: randomUUID(), displayName: identity.firstName.slice(0, 60) || 'Учень', status: 'active' };
     this.users.set(user.id, user);
+    this.roles.set(user.id, 'student');
     this.identities.set(key, user.id);
     this.xp.set(user.id, 0);
     this.streak.set(user.id, 0);
@@ -118,6 +159,9 @@ export class MemoryRepository implements AppRepository {
     this.projects.set(user.id, []);
     this.achievements.set(user.id, new Set());
     this.conversations.set(user.id, []);
+    this.homeworkSubmissions.set(user.id, []);
+    this.portfolioProjects.set(user.id, []);
+    this.mentorBookings.set(user.id, []);
     return structuredClone(user);
   }
 
@@ -163,13 +207,53 @@ export class MemoryRepository implements AppRepository {
     const learning = await this.getLearning(userId);
     const projects = await this.listProjects(userId);
     const currentLesson = learning.modules.flatMap(module => module.lessons).find(lesson => lesson.state === 'current' || lesson.state === 'available') ?? null;
+    const schedule = await this.getSchedule(userId);
+    const homework = await this.listHomework(userId);
     return {
       viewer: this.viewer(userId),
       course: learning.course,
       currentLesson,
       projectCount: projects.length,
-      currentProject: projects.find(project => project.status === 'active') ?? null
+      currentProject: projects.find(project => project.status === 'active') ?? null,
+      nextClass: schedule.nextClass,
+      homeworkDue: homework.find(item => item.state !== 'completed') ?? null
     };
+  }
+
+  async getSchedule(userId: string): Promise<ScheduleDto> {
+    this.requireRole(userId,'student');
+    const session = (id: string, title: string, days: number, status: ScheduleDto['upcoming'][number]['status']) => {
+      const override=this.classSessionOverrides.get(id); const startsAt=override?.startsAt??relativeIso(days,17); const endsAt=override?.endsAt??relativeIso(days,18,30);
+      return { id, title, description: 'Живе групове заняття з практикою та роботою над проєктом.', startsAt, endsAt, durationMinutes: Math.round((Date.parse(endsAt)-Date.parse(startsAt))/60000), status:override?.status??status,
+        meetingProvider: 'Google Meet', meetingUrl: status === 'cancelled' ? null : 'https://meet.google.com/abc-defg-hij', courseTitle: 'Основи роботи з AI', moduleTitle: 'Основи роботи з AI', lessonTitle: title, teacherName: 'Анна Коваль', materials: [] };
+    };
+    const upcoming = [session('71000000-0000-4000-8000-000000000001', 'Як перевіряти відповіді AI', 1, 'scheduled'), session('71000000-0000-4000-8000-000000000002', 'Від проблеми до ідеї', 4, 'rescheduled')].sort((a,b)=>Date.parse(a.startsAt)-Date.parse(b.startsAt));
+    const past = [session('71000000-0000-4000-8000-000000000003', 'Як працювати з AI', -3, 'completed')];
+    return { timezone: 'Europe/Kyiv', nextClass: upcoming[0] ?? null, today: upcoming.filter(item => new Date(item.startsAt).toDateString() === new Date().toDateString()), thisWeek: upcoming, upcoming, past };
+  }
+
+  async listHomework(userId: string): Promise<HomeworkSummaryDto[]> {
+    this.requireRole(userId,'student');
+    const submissions = this.homeworkSubmissions.get(userId) ?? [];
+    const latestFor=(homeworkId:string)=>submissions.filter(item=>this.submissionHomeworkIds.get(item.id)===homeworkId).sort((a,b)=>b.attemptNumber-a.attemptNumber)[0]??null;
+    const reviewed = latestFor('73000000-0000-4000-8000-000000000001');
+    const revision = latestFor('73000000-0000-4000-8000-000000000002');
+    return [
+      { id: '73000000-0000-4000-8000-000000000001', title: 'Перевір відповідь AI', instructions: 'Обери відповідь AI, знайди два джерела та поясни висновок.', publishedAt: relativeIso(-5, 18), dueAt: relativeIso(-2, 20), xpReward: 80, classTitle: 'Як перевіряти відповіді AI', state: reviewed?.status ?? 'not_started', latestSubmission: reviewed },
+      { id: '73000000-0000-4000-8000-000000000002', title: 'План твого проєкту', instructions: 'Опиши проблему, користувача, рішення та одну перевірку.', publishedAt: relativeIso(-2, 18), dueAt: relativeIso(2, 20), xpReward: 120, classTitle: 'Від проблеми до ідеї', state: revision?.status ?? 'not_started', latestSubmission: revision },
+      { id: '73000000-0000-4000-8000-000000000003', title: 'Підготуй перший прототип', instructions: 'Збери один головний сценарій та додай посилання або скриншот.', publishedAt: relativeIso(0, 12), dueAt: relativeIso(6, 20), xpReward: 160, classTitle: 'Створюємо першу версію', state: 'not_started', latestSubmission: null }
+    ];
+  }
+
+  async submitHomework(userId: string, homeworkId: string, input: { contentText: string; contentUrl?: string; studentComment?: string }): Promise<HomeworkSubmissionDto> {
+    const homework = await this.listHomework(userId);
+    if (!homework.some(item => item.id === homeworkId)) throw new AppError('HOMEWORK_NOT_FOUND', 404, 'Домашнє завдання не знайдено');
+    const attempts = this.homeworkSubmissions.get(userId) ?? [];
+    const submission: HomeworkSubmissionDto = { id: randomUUID(), attemptNumber: attempts.filter(item => this.submissionHomeworkIds.get(item.id)===homeworkId).length + 1, submittedAt: nowIso(), studentComment: input.studentComment ?? '', contentText: input.contentText, contentUrl: input.contentUrl ?? null, status: 'submitted', review: null };
+    attempts.push(submission);
+    this.submissionHomeworkIds.set(submission.id,homeworkId);
+    this.homeworkSubmissions.set(userId, attempts);
+    return structuredClone(submission);
   }
 
   async getLearning(userId: string): Promise<LearningDto> {
@@ -198,7 +282,7 @@ export class MemoryRepository implements AppRepository {
     return {
       course: {
         id: DEV_IDS.course,
-        title: 'AI Foundations',
+        title: 'Основи роботи з AI',
         description: 'Думай разом з AI, став правильні питання й перевіряй результат.',
         progressPercent: Math.round(totalProgress / lessons.length),
         completedLessons: lessons.filter(lesson => lesson.state === 'completed').length,
@@ -207,7 +291,7 @@ export class MemoryRepository implements AppRepository {
       modules: [{
         id: DEV_IDS.module,
         number: '01',
-        title: 'AI Foundations',
+        title: 'Основи роботи з AI',
         description: 'Від першого запиту до перевіреного MVP.',
         lessons
       }]
@@ -224,7 +308,7 @@ export class MemoryRepository implements AppRepository {
     if (!source) return null;
     return {
       ...summary,
-      moduleTitle: 'AI Foundations',
+      moduleTitle: 'Основи роботи з AI',
       content: JSON.parse(JSON.stringify(source.content)) as LessonDto['content'],
       nextLessonId: SEEDED_LESSONS[sourceIndex + 1]?.id ?? null
     };
@@ -257,7 +341,7 @@ export class MemoryRepository implements AppRepository {
     this.requireUser(userId);
     const project: InternalProject = {
       id: randomUUID(), title: input.title, summary: input.summary, status: 'active',
-      stagePosition: 1, stageCode: 'problem', stageTitle: 'Проблема', tags: ['AI'], workspaceUrl: null,
+      stagePosition: 1, stageCode: 'idea', stageTitle: 'Ідея', tags: ['AI'], workspaceUrl: null,
       tasks: [
         { id: randomUUID(), number: '01', title: 'Сформулювати проблему', description: 'Опиши проблему конкретної людини.', status: 'in_progress', xpReward: 80, weight: 35 },
         { id: randomUUID(), number: '02', title: 'Описати користувача', description: 'Хто потребує рішення?', status: 'locked', xpReward: 100, weight: 25 },
@@ -340,6 +424,74 @@ export class MemoryRepository implements AppRepository {
     }));
   }
 
+  async getPortfolio(userId: string): Promise<PortfolioDto> {
+    this.requireRole(userId,'student');
+    return {
+      id: `portfolio:${userId}`,
+      title: 'Моє портфоліо',
+      visibility: 'private',
+      projects: structuredClone(this.portfolioProjects.get(userId) ?? []),
+      skills: [
+        { code: 'ai', title: 'AI', level: 3 },
+        { code: 'critical-thinking', title: 'Критичне мислення', level: 2 },
+        { code: 'product-thinking', title: 'Продуктове мислення', level: 2 },
+        { code: 'presentation', title: 'Презентація', level: 1 }
+      ]
+    };
+  }
+
+  async addProjectToPortfolio(userId: string, projectId: string, input: { reflection?: string; learned?: string }): Promise<PortfolioDto> {
+    const project = this.findProject(userId, projectId);
+    if (!project) throw new AppError('PROJECT_NOT_FOUND', 404, 'Проєкт не знайдено');
+    const projects = this.portfolioProjects.get(userId) ?? [];
+    if (!projects.some(item => item.projectId === projectId)) projects.push({
+      id: randomUUID(), projectId, title: project.title, shortDescription: project.summary, reflection: input.reflection ?? '', learned: input.learned ?? '', skills: ['AI', 'Product thinking'], technologies: project.tags, demoUrl: project.workspaceUrl, coverPath: null, screenshots: [], completionDate: project.status === 'completed' ? new Date().toISOString().slice(0, 10) : null
+    });
+    this.portfolioProjects.set(userId, projects);
+    return this.getPortfolio(userId);
+  }
+
+  async listMentorSlots(userId: string): Promise<MentorSlotDto[]> {
+    this.requireRole(userId,'student');
+    const booked = new Set((this.mentorBookings.get(userId) ?? []).filter(item => ['reserved', 'confirmed'].includes(item.status)).map(item => item.startsAt));
+    return [2, 5].map((days, index) => {
+      const startsAt = relativeIso(days, index ? 16 : 18);
+      return { id: `91000000-0000-4000-8000-00000000000${index + 1}`, mentorId: '60000000-0000-4000-8000-000000000001', mentorName: 'Анна Коваль', mentorTitle: 'Product mentor', startsAt, endsAt: relativeIso(days, index ? 16 : 18, 30), timezone: 'Europe/Kyiv', available: !booked.has(startsAt) };
+    });
+  }
+
+  async bookMentorSlot(userId: string, availabilityId: string): Promise<MentorBookingDto> {
+    const slot = (await this.listMentorSlots(userId)).find(item => item.id === availabilityId);
+    if (!slot || !slot.available) throw new AppError('MENTOR_SLOT_UNAVAILABLE', 409, 'Цей час уже недоступний');
+    const booking: MentorBookingDto = { id: randomUUID(), mentorId: slot.mentorId, mentorName: slot.mentorName, startsAt: slot.startsAt, endsAt: slot.endsAt, status: 'reserved', meetingUrl: null };
+    const bookings = this.mentorBookings.get(userId) ?? [];
+    bookings.push(booking);
+    this.mentorBookings.set(userId, bookings);
+    return structuredClone(booking);
+  }
+
+  async listTeacherGroups(userId: string): Promise<TeacherGroupDto[]> {
+    this.requireRole(userId, 'teacher');
+    return [{ id:'70000000-0000-4000-8000-000000000001',name:'Creators · Осінь 2026',courseTitle:'Основи роботи з AI',timezone:'Europe/Kyiv',studentCount:2,nextClassAt:relativeIso(1,17) }];
+  }
+
+  async listGroupStudents(userId: string, groupId: string): Promise<TeacherStudentDto[]> {
+    this.requireRole(userId,'teacher');
+    if(groupId!=='70000000-0000-4000-8000-000000000001') throw new AppError('GROUP_FORBIDDEN',403,'Група недоступна');
+    return [{id:DEV_IDS.user,firstName:'Максим',progressPercent:20,projectTitle:'Smart Study Planner'},{id:'10000000-0000-4000-8000-000000000002',firstName:'Ірина',progressPercent:10,projectTitle:null}];
+  }
+
+  async createClassSession(userId:string,input:{groupId:string;courseId:string;moduleId?:string;lessonId?:string;title:string;description?:string;startsAt:string;endsAt:string;meetingUrl?:string;meetingProvider?:string}):Promise<ClassSessionDto>{
+    this.requireRole(userId,'teacher'); if(input.groupId!=='70000000-0000-4000-8000-000000000001')throw new AppError('GROUP_FORBIDDEN',403,'Група недоступна');
+    return{id:randomUUID(),title:input.title,description:input.description??'',startsAt:input.startsAt,endsAt:input.endsAt,durationMinutes:Math.round((Date.parse(input.endsAt)-Date.parse(input.startsAt))/60000),status:'scheduled',meetingProvider:input.meetingProvider??null,meetingUrl:input.meetingUrl??null,courseTitle:'Основи роботи з AI',moduleTitle:'Основи роботи з AI',lessonTitle:null,teacherName:'Анна Коваль',materials:[]};
+  }
+  async rescheduleClass(userId:string,sessionId:string,input:{startsAt:string;endsAt:string;reason?:string}):Promise<void>{this.requireRole(userId,'teacher');if(!['71000000-0000-4000-8000-000000000001','71000000-0000-4000-8000-000000000002'].includes(sessionId))throw new AppError('CLASS_FORBIDDEN',403,'Заняття недоступне');if(Date.parse(input.endsAt)<=Date.parse(input.startsAt))throw new AppError('INVALID_TIME',400,'Некоректний час заняття');this.classSessionOverrides.set(sessionId,{startsAt:input.startsAt,endsAt:input.endsAt,status:'rescheduled'});}
+  async confirmAttendance(userId:string,sessionId:string,studentId:string,status:'present'|'late'|'absent'|'excused',note?:string):Promise<void>{this.requireRole(userId,'teacher');if(!sessionId.startsWith('71000000-')||![DEV_IDS.user,'10000000-0000-4000-8000-000000000002'].includes(studentId))throw new AppError('ATTENDANCE_FORBIDDEN',403,'Учень або заняття недоступні');void status;void note;}
+  async createHomework(userId:string,input:{groupId:string;courseId:string;moduleId?:string;lessonId?:string;classSessionId?:string;title:string;instructions:string;publishAt?:string;dueAt?:string;xpReward:number;status:'draft'|'published'}):Promise<HomeworkSummaryDto>{this.requireRole(userId,'teacher');if(input.groupId!=='70000000-0000-4000-8000-000000000001')throw new AppError('GROUP_FORBIDDEN',403,'Група недоступна');return{id:randomUUID(),title:input.title,instructions:input.instructions,publishedAt:input.publishAt??nowIso(),dueAt:input.dueAt??null,xpReward:input.xpReward,classTitle:null,state:'not_started',latestSubmission:null};}
+  async reviewHomework(userId:string,submissionId:string,input:{score:number;effort:EffortLevel;status:'reviewed'|'needs_revision'|'completed';feedback:string}):Promise<void>{this.requireRole(userId,'teacher');if(input.score<0||input.score>10||!Number.isInteger(input.score))throw new AppError('INVALID_SCORE',400,'Оцінка має бути цілим числом від 0 до 10');const submission=[...this.homeworkSubmissions.values()].flat().find(item=>item.id===submissionId);if(!submission)throw new AppError('SUBMISSION_FORBIDDEN',403,'Робота недоступна');submission.status=input.status==='needs_revision'?'needs_revision':input.status==='completed'?'completed':submission.status;submission.review={score:input.score,effort:input.effort,status:input.status,feedback:input.feedback,reviewedAt:nowIso()};}
+  async listLinkedStudents(userId:string):Promise<TeacherStudentDto[]>{this.requireRole(userId,'guardian');return[{id:DEV_IDS.user,firstName:'Максим',progressPercent:20,projectTitle:'Smart Study Planner'}];}
+  async listParentReports(userId:string,studentId:string):Promise<ParentReportDto[]>{this.requireRole(userId,'guardian');if(studentId!==DEV_IDS.user)throw new AppError('STUDENT_FORBIDDEN',403,'Учень недоступний');return[{id:'93000000-0000-4000-8000-000000000001',studentId,studentFirstName:'Максим',periodStart:new Date(Date.now()-7*86400000).toISOString().slice(0,10),periodEnd:new Date(Date.now()-86400000).toISOString().slice(0,10),payload:{classesScheduled:2,classesAttended:2,homeworkSubmitted:2,project:'Smart Study Planner',projectProgress:62,effort:{high:2}},teacherComment:'Максим уважно працював із джерелами й наполегливо допрацьовує план проєкту.',status:'approved'}];}
+
   async listConversations(userId: string): Promise<AiConversationDto[]> {
     this.requireUser(userId);
     return (this.conversations.get(userId) ?? []).map(({ summary: _summary, messages: _messages, clientMessageIds: _ids, ...conversation }) => structuredClone(conversation));
@@ -420,6 +572,8 @@ export class MemoryRepository implements AppRepository {
     if (!user) throw new AppError('USER_NOT_FOUND', 404, 'Користувача не знайдено');
     return user;
   }
+
+  private requireRole(userId:string,role:'student'|'guardian'|'teacher'|'admin'):void{this.requireUser(userId);if(this.roles.get(userId)!==role&&this.roles.get(userId)!=='admin')throw new AppError('ROLE_FORBIDDEN',403,'Недостатньо прав');}
 
   private viewer(userId: string) {
     const user = this.requireUser(userId);

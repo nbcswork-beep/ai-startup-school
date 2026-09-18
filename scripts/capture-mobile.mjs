@@ -28,7 +28,17 @@ socket.addEventListener('message',event=>{const message=JSON.parse(event.data);i
 function command(method,params={}) { const id=nextId++; socket.send(JSON.stringify({id,method,params})); return new Promise((resolvePromise,reject)=>pending.set(id,{resolve:resolvePromise,reject})); }
 
 await command('Page.enable');
-const targets=[['home','home'],['learn','learn'],['project','project'],['ai','ai'],['profile','profile'],['lesson','lesson=22000000-0000-4000-8000-000000000003']];
+const targets=[
+  ['home','home','.home-page'],
+  ['learn','learn','.learn-page'],
+  ['schedule','learn','.week-route'],
+  ['project','project','.project-page'],
+  ['portfolio','portfolio','.portfolio-page'],
+  ['profile','profile','.profile-page'],
+  ['homework','homework=73000000-0000-4000-8000-000000000002','.homework-page'],
+  ['lesson','lesson=22000000-0000-4000-8000-000000000003','.lesson-page'],
+  ['error','lesson=99999999-0000-4000-8000-000000000999','.error-state']
+];
 const report=[];
 try {
   await command('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true,screenWidth:390,screenHeight:844});
@@ -36,17 +46,21 @@ try {
   for (let wait=0;wait<60;wait+=1) { const ready=await command('Runtime.evaluate',{returnByValue:true,expression:`Boolean(document.querySelector('.home-page'))`}); if(ready.result.value)break; await sleep(150); }
   for (const width of [390,360]) {
     await command('Emulation.setDeviceMetricsOverride',{width,height:844,deviceScaleFactor:1,mobile:true,screenWidth:width,screenHeight:844});
-    for (const [name,hash] of targets) {
+    for (const [name,hash,expected] of targets) {
       await command('Runtime.evaluate',{expression:`location.hash=${JSON.stringify(`#${hash}`)}`});
-      const expected = name === 'lesson' ? '.lesson-page' : `.${name}-page`;
       for (let wait=0;wait<40;wait+=1) { const ready=await command('Runtime.evaluate',{returnByValue:true,expression:`Boolean(document.querySelector('${expected}'))`}); if(ready.result.value)break; await sleep(150); }
       await sleep(700);
-      const metrics=await command('Runtime.evaluate',{returnByValue:true,expression:`({clientWidth:document.documentElement.clientWidth,scrollWidth:document.documentElement.scrollWidth,bodyWidth:document.body.scrollWidth,smallTargets:[...document.querySelectorAll('button')].filter(b=>b.getClientRects().length).map(b=>({label:(b.innerText||b.ariaLabel||'').trim().slice(0,30),w:Math.round(b.getBoundingClientRect().width),h:Math.round(b.getBoundingClientRect().height)})).filter(x=>x.w<44||x.h<44)})`});
+      const metrics=await command('Runtime.evaluate',{returnByValue:true,expression:`({clientWidth:document.documentElement.clientWidth,scrollWidth:document.documentElement.scrollWidth,bodyWidth:document.body.scrollWidth,smallTargets:[...document.querySelectorAll('button,a[href]')].filter(b=>b.getClientRects().length).map(b=>({label:(b.innerText||b.ariaLabel||'').trim().slice(0,30),w:Math.round(b.getBoundingClientRect().width),h:Math.round(b.getBoundingClientRect().height)})).filter(x=>x.w<44||x.h<44)})`});
       const shot=await command('Page.captureScreenshot',{format:'png',fromSurface:true,captureBeyondViewport:false});
       writeFileSync(join(outputDir,`phase2-cdp-${width}-${name}.png`),Buffer.from(shot.data,'base64'));
       report.push({width,name,...metrics.result.value});
     }
   }
+  await command('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
+  await command('Runtime.evaluate',{expression:`location.hash='#home'`});
+  await sleep(400);
+  const reduced=await command('Runtime.evaluate',{returnByValue:true,expression:`({activeAnimations:document.getAnimations().filter(animation=>animation.playState==='running').length,reducedMotion:matchMedia('(prefers-reduced-motion: reduce)').matches})`});
+  report.push({width:360,name:'reduced-motion',...reduced.result.value});
   console.log(JSON.stringify(report,null,2));
 } finally {
   socket.close();

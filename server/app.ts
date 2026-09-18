@@ -10,6 +10,8 @@ import { registerErrorHandler } from './errors/error-handler.js';
 import { createAuthenticate } from './middleware/authenticate.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerStudentRoutes } from './routes/student.js';
+import { registerTeacherRoutes } from './routes/teacher.js';
+import { registerGuardianRoutes } from './routes/guardian.js';
 import type { AiProvider } from './services/ai-provider.js';
 import { AiMentorService } from './services/ai-mentor-service.js';
 import { AuthService } from './services/auth-service.js';
@@ -30,6 +32,9 @@ export async function buildApp(deps: { env: AppEnv; repository: AppRepository; j
   app.get('/api/health', async () => { await deps.repository.ping(); return { status: 'ok' }; });
   const auth = new AuthService(deps.repository, deps.jwt, deps.env);
   registerAuthRoutes(app, auth, deps.env);
-  registerStudentRoutes(app, deps.repository, new AiMentorService(deps.repository, deps.aiProvider), createAuthenticate(deps.jwt));
+  const authenticate=createAuthenticate(deps.jwt);
+  registerStudentRoutes(app, deps.repository, new AiMentorService(deps.repository, deps.aiProvider), authenticate);
+  registerTeacherRoutes(app,deps.repository,authenticate);
+  registerGuardianRoutes(app,deps.repository,authenticate);
   return app;
 }

@@ -2,9 +2,10 @@ import { Pool, type PoolClient, type QueryResultRow } from 'pg';
 import { randomUUID } from 'node:crypto';
 import type { AppRepository } from './repository.js';
 import type {
-  AchievementDto, AiContextDto, AiConversationDto, AiMessageDto, AuthUser, HomeDto, LearningDto,
-  LessonDto, LessonSummaryDto, NewSession, ProfileDto, ProjectDto, ProjectTaskDto, RotationResult,
-  TelegramIdentityInput
+  AchievementDto, AiContextDto, AiConversationDto, AiMessageDto, AuthUser, ClassSessionDto, EffortLevel, HomeDto,
+  HomeworkSubmissionDto, HomeworkSummaryDto, LearningDto, LessonDto, LessonSummaryDto, MentorBookingDto,
+  MentorSlotDto, NewSession, ParentReportDto, PortfolioDto, ProfileDto, ProjectDto, ProjectTaskDto, RotationResult,
+  ScheduleDto, TeacherGroupDto, TeacherStudentDto, TelegramIdentityInput
 } from '../types/domain.js';
 import { AppError } from '../errors/app-error.js';
 
@@ -90,9 +91,53 @@ export class PostgresRepository implements AppRepository {
   }
 
   async getHome(userId: string): Promise<HomeDto> {
-    const [learning, projects, viewer] = await Promise.all([this.getLearning(userId), this.listProjects(userId), this.getViewer(userId)]);
+    const [learning, projects, viewer, schedule, homework] = await Promise.all([this.getLearning(userId), this.listProjects(userId), this.getViewer(userId), this.getSchedule(userId), this.listHomework(userId)]);
     const currentLesson = learning.modules.flatMap(m => m.lessons).find(l => l.state === 'current' || l.state === 'available') ?? null;
-    return { viewer, course: learning.course, currentLesson, projectCount: projects.length, currentProject: projects.find(p => p.status === 'active') ?? null };
+    return { viewer, course: learning.course, currentLesson, projectCount: projects.length, currentProject: projects.find(p => p.status === 'active') ?? null, nextClass: schedule.nextClass, homeworkDue: homework.find(item => item.state !== 'completed') ?? null };
+  }
+
+  async getSchedule(userId: string): Promise<ScheduleDto> {
+    return this.withUser(userId, async db => {
+      const result = await db.query(`select cs.*,c.title course_title,m.title module_title,l.title lesson_title,tp.display_name teacher_name
+        from public.class_sessions cs
+        join public.group_memberships gm on gm.group_id=cs.group_id and gm.student_id=$1 and gm.status='active'
+        join public.courses c on c.id=cs.course_id left join public.modules m on m.id=cs.module_id
+        left join public.lessons l on l.id=cs.lesson_id join public.teacher_profiles tp on tp.user_id=cs.teacher_id
+        order by cs.scheduled_start`, [userId]);
+      const ids = result.rows.map(row => row.id);
+      const materials = ids.length ? await db.query(`select * from public.class_materials where class_session_id=any($1::uuid[]) order by position`, [ids]) : { rows: [] };
+      const sessions = result.rows.map(row => this.classSession(row, materials.rows.filter(item => item.class_session_id === row.id)));
+      const now = new Date();
+      const endOfWeek = new Date(now); endOfWeek.setDate(now.getDate() + 7);
+      const upcoming = sessions.filter(item => new Date(item.endsAt) >= now && item.status !== 'cancelled');
+      const dateKey = (date: Date) => date.toISOString().slice(0, 10);
+      return { timezone: 'Europe/Kyiv', nextClass: upcoming[0] ?? null, today: upcoming.filter(item => dateKey(new Date(item.startsAt)) === dateKey(now)), thisWeek: upcoming.filter(item => new Date(item.startsAt) <= endOfWeek), upcoming, past: sessions.filter(item => new Date(item.endsAt) < now || item.status === 'completed').reverse() };
+    });
+  }
+
+  async listHomework(userId: string): Promise<HomeworkSummaryDto[]> {
+    return this.withUser(userId, async db => {
+      const result = await db.query(`select h.*,cs.title class_title,s.id submission_id,s.attempt_number,s.submitted_at,s.student_comment,s.content_text,s.content_url,s.status submission_status,
+        r.score,r.effort,r.status review_status,r.feedback,r.reviewed_at
+        from public.homework h join public.group_memberships gm on gm.group_id=h.group_id and gm.student_id=$1 and gm.status='active'
+        left join public.class_sessions cs on cs.id=h.class_session_id
+        left join lateral(select * from public.homework_submissions hs where hs.homework_id=h.id and hs.student_id=$1 order by attempt_number desc limit 1)s on true
+        left join public.homework_reviews r on r.submission_id=s.id
+        where h.status='published' and h.publish_at<=now() order by coalesce(h.due_at,'infinity')`, [userId]);
+      return result.rows.map(row => this.homework(row));
+    });
+  }
+
+  async submitHomework(userId: string, homeworkId: string, input: { contentText: string; contentUrl?: string; studentComment?: string }): Promise<HomeworkSubmissionDto> {
+    return this.withUser(userId, async db => {
+      await db.query(`select id from public.homework where id=$1 for update`, [homeworkId]);
+      const result = await db.query(`insert into public.homework_submissions(homework_id,student_id,attempt_number,submitted_at,student_comment,content_text,content_url,status)
+        select h.id,$2,coalesce((select max(attempt_number)+1 from public.homework_submissions where homework_id=h.id and student_id=$2),1),now(),$3,$4,$5,'submitted'
+        from public.homework h join public.group_memberships gm on gm.group_id=h.group_id and gm.student_id=$2 and gm.status='active'
+        where h.id=$1 and h.status='published' returning *`, [homeworkId,userId,input.studentComment ?? '',input.contentText,input.contentUrl ?? null]);
+      if (!result.rows[0]) throw new AppError('HOMEWORK_NOT_FOUND', 404, 'Домашнє завдання не знайдено');
+      return this.submission(result.rows[0], null);
+    }, true);
   }
 
   async getLearning(userId: string): Promise<LearningDto> {
@@ -187,6 +232,56 @@ export class PostgresRepository implements AppRepository {
     return this.withUser(userId, async db => (await db.query(`select a.*,sa.awarded_at from public.achievements a left join public.student_achievements sa on sa.achievement_id=a.id and sa.user_id=$1 where a.is_published order by a.created_at`, [userId])).rows.map(r=>({ id:r.id,code:r.code,title:r.title,description:r.description,artifactStyleKey:r.artifact_style_key,earned:!!r.awarded_at,awardedAt:r.awarded_at?.toISOString?.() ?? r.awarded_at ?? null })));
   }
 
+  async getPortfolio(userId: string): Promise<PortfolioDto> {
+    return this.withUser(userId, async db => {
+      let portfolio = (await db.query(`select * from public.portfolios where student_id=$1`, [userId])).rows[0];
+      if (!portfolio) portfolio = (await db.query(`insert into public.portfolios(student_id,title) values($1,'Моє портфоліо') returning *`, [userId])).rows[0];
+      const projects = await db.query(`select pp.*,p.title project_title,p.summary,coalesce(array_agg(distinct s.title) filter(where s.id is not null),'{}') skills
+        from public.portfolio_projects pp join public.projects p on p.id=pp.project_id
+        left join public.portfolio_project_skills pps on pps.portfolio_project_id=pp.id left join public.skills s on s.id=pps.skill_id
+        where pp.portfolio_id=$1 group by pp.id,p.title,p.summary order by pp.position,pp.created_at`, [portfolio.id]);
+      const media = projects.rows.length ? await db.query(`select portfolio_project_id,object_path from public.portfolio_project_media where portfolio_project_id=any($1::uuid[]) order by position`, [projects.rows.map(row => row.id)]) : { rows: [] };
+      const skills = await db.query(`select s.code,s.title,ss.level from public.student_skills ss join public.skills s on s.id=ss.skill_id where ss.student_id=$1 order by ss.level desc,s.title`, [userId]);
+      return { id: portfolio.id, title: portfolio.title, visibility: portfolio.visibility, projects: projects.rows.map(row => ({ id:row.id,projectId:row.project_id,title:row.title_override || row.project_title,shortDescription:row.short_description || row.summary,reflection:row.reflection,learned:row.learned,skills:row.skills,technologies:row.technologies ?? [],demoUrl:row.demo_url,coverPath:row.cover_path,screenshots:media.rows.filter(item=>item.portfolio_project_id===row.id).map(item=>item.object_path),completionDate:row.completion_date?.toISOString?.().slice(0,10) ?? row.completion_date ?? null })), skills: skills.rows.map(row => ({ code:row.code,title:row.title,level:row.level })) };
+    }, true);
+  }
+
+  async addProjectToPortfolio(userId: string, projectId: string, input: { reflection?: string; learned?: string }): Promise<PortfolioDto> {
+    await this.withUser(userId, async db => {
+      const portfolio = await db.query(`insert into public.portfolios(student_id,title) values($1,'Моє портфоліо') on conflict(student_id) do update set updated_at=now() returning id`, [userId]);
+      const inserted = await db.query(`insert into public.portfolio_projects(portfolio_id,project_id,short_description,reflection,learned,technologies,demo_url,completion_date,position)
+        select $1,p.id,p.summary,$3,$4,p.technologies,p.demo_url,p.completed_at::date,coalesce((select max(position)+1 from public.portfolio_projects where portfolio_id=$1),1)
+        from public.projects p where p.id=$2 and p.user_id=$5 on conflict(portfolio_id,project_id) do update set reflection=excluded.reflection,learned=excluded.learned,updated_at=now() returning id`, [portfolio.rows[0].id,projectId,input.reflection ?? '',input.learned ?? '',userId]);
+      if (!inserted.rows[0]) throw new AppError('PROJECT_NOT_FOUND',404,'Проєкт не знайдено');
+    }, true);
+    return this.getPortfolio(userId);
+  }
+
+  async listMentorSlots(userId: string): Promise<MentorSlotDto[]> {
+    return this.withUser(userId, async db => (await db.query(`select ma.id,ma.mentor_id,m.display_name,m.title,ma.starts_at,ma.ends_at,ma.timezone,
+      not exists(select 1 from public.mentor_bookings mb where mb.mentor_id=ma.mentor_id and mb.status in('reserved','confirmed','rescheduled') and tstzrange(mb.starts_at,mb.ends_at,'[)') && tstzrange(ma.starts_at,ma.ends_at,'[)')) available
+      from public.mentor_availability ma join public.mentors m on m.id=ma.mentor_id where ma.starts_at>now() and ma.status='open' order by ma.starts_at limit 30`)).rows.map(row => ({ id:row.id,mentorId:row.mentor_id,mentorName:row.display_name,mentorTitle:row.title,startsAt:row.starts_at.toISOString?.()??row.starts_at,endsAt:row.ends_at.toISOString?.()??row.ends_at,timezone:row.timezone,available:row.available })));
+  }
+
+  async bookMentorSlot(userId: string, availabilityId: string): Promise<MentorBookingDto> {
+    return this.withUser(userId, async db => {
+      const booked = await db.query(`select public.book_mentor_slot($1) id`, [availabilityId]);
+      const result = await db.query(`select mb.*,m.display_name from public.mentor_bookings mb join public.mentors m on m.id=mb.mentor_id where mb.id=$1`, [booked.rows[0].id]);
+      if (!result.rows[0]) throw new AppError('MENTOR_SLOT_UNAVAILABLE',409,'Цей час уже недоступний');
+      const row=result.rows[0]; return { id:row.id,mentorId:row.mentor_id,mentorName:row.display_name,startsAt:row.starts_at.toISOString?.()??row.starts_at,endsAt:row.ends_at.toISOString?.()??row.ends_at,status:row.status,meetingUrl:row.meeting_url };
+    }, true);
+  }
+
+  async listTeacherGroups(userId:string):Promise<TeacherGroupDto[]>{return this.withUser(userId,async db=>(await db.query(`select g.id,g.name,c.title course_title,g.timezone,count(distinct gm.student_id)::int student_count,min(cs.scheduled_start) filter(where cs.scheduled_start>now() and cs.status not in('cancelled','completed')) next_class_at from public.groups g join public.group_teachers gt on gt.group_id=g.id and gt.teacher_id=$1 and gt.ends_at is null join public.courses c on c.id=g.course_id left join public.group_memberships gm on gm.group_id=g.id and gm.status='active' left join public.class_sessions cs on cs.group_id=g.id group by g.id,c.title order by g.starts_on desc`,[userId])).rows.map(row=>({id:row.id,name:row.name,courseTitle:row.course_title,timezone:row.timezone,studentCount:row.student_count,nextClassAt:row.next_class_at?.toISOString?.()??row.next_class_at??null})));}
+  async listGroupStudents(userId:string,groupId:string):Promise<TeacherStudentDto[]>{return this.withUser(userId,async db=>(await db.query(`select u.id,sp.display_name,coalesce(round(avg(lp.progress_percent)),0)::int progress_percent,(select title from public.projects p where p.user_id=u.id and p.status='active' order by updated_at desc limit 1) project_title from public.group_memberships gm join public.users u on u.id=gm.student_id join public.student_profiles sp on sp.user_id=u.id left join public.enrollments e on e.user_id=u.id left join public.lesson_progress lp on lp.enrollment_id=e.id where gm.group_id=$1 and gm.status='active' and app_private.teacher_has_group($1) group by u.id,sp.display_name order by sp.display_name`,[groupId])).rows.map(row=>({id:row.id,firstName:row.display_name,progressPercent:row.progress_percent,projectTitle:row.project_title})));}
+  async createClassSession(userId:string,input:{groupId:string;courseId:string;moduleId?:string;lessonId?:string;title:string;description?:string;startsAt:string;endsAt:string;meetingUrl?:string;meetingProvider?:string}):Promise<ClassSessionDto>{return this.withUser(userId,async db=>{const created=await db.query(`insert into public.class_sessions(group_id,course_id,module_id,lesson_id,teacher_id,title,description,scheduled_start,scheduled_end,meeting_url,meeting_provider,created_by) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$5) returning id`,[input.groupId,input.courseId,input.moduleId??null,input.lessonId??null,userId,input.title,input.description??'',input.startsAt,input.endsAt,input.meetingUrl??null,input.meetingProvider??null]);const row=await db.query(`select cs.*,c.title course_title,m.title module_title,l.title lesson_title,tp.display_name teacher_name from public.class_sessions cs join public.courses c on c.id=cs.course_id left join public.modules m on m.id=cs.module_id left join public.lessons l on l.id=cs.lesson_id join public.teacher_profiles tp on tp.user_id=cs.teacher_id where cs.id=$1`,[created.rows[0].id]);return this.classSession(row.rows[0],[]);},true);}
+  async rescheduleClass(userId:string,sessionId:string,input:{startsAt:string;endsAt:string;reason?:string}):Promise<void>{await this.withUser(userId,db=>db.query(`select public.reschedule_class($1,$2,$3,$4)`,[sessionId,input.startsAt,input.endsAt,input.reason??'']),true);}
+  async confirmAttendance(userId:string,sessionId:string,studentId:string,status:'present'|'late'|'absent'|'excused',note?:string):Promise<void>{await this.withUser(userId,db=>db.query(`select public.confirm_attendance($1,$2,$3,$4)`,[sessionId,studentId,status,note??'']),true);}
+  async createHomework(userId:string,input:{groupId:string;courseId:string;moduleId?:string;lessonId?:string;classSessionId?:string;title:string;instructions:string;publishAt?:string;dueAt?:string;xpReward:number;status:'draft'|'published'}):Promise<HomeworkSummaryDto>{return this.withUser(userId,async db=>{const row=(await db.query(`insert into public.homework(group_id,course_id,module_id,lesson_id,class_session_id,title,instructions,publish_at,due_at,xp_reward,status,created_by) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *`,[input.groupId,input.courseId,input.moduleId??null,input.lessonId??null,input.classSessionId??null,input.title,input.instructions,input.publishAt??null,input.dueAt??null,input.xpReward,input.status,userId])).rows[0];return{id:row.id,title:row.title,instructions:row.instructions,publishedAt:row.publish_at?.toISOString?.()??row.publish_at??'',dueAt:row.due_at?.toISOString?.()??row.due_at??null,xpReward:row.xp_reward,classTitle:null,state:'not_started',latestSubmission:null};},true);}
+  async reviewHomework(userId:string,submissionId:string,input:{score:number;effort:EffortLevel;status:'reviewed'|'needs_revision'|'completed';feedback:string}):Promise<void>{await this.withUser(userId,db=>db.query(`select public.review_homework_submission($1,$2,$3,$4,$5)`,[submissionId,input.score,input.effort,input.status,input.feedback]),true);}
+  async listLinkedStudents(userId:string):Promise<TeacherStudentDto[]>{return this.withUser(userId,async db=>(await db.query(`select u.id,sp.display_name,coalesce(round(avg(lp.progress_percent)),0)::int progress_percent,(select title from public.projects p where p.user_id=u.id and p.status='active' order by updated_at desc limit 1) project_title from public.guardian_student_links gsl join public.users u on u.id=gsl.student_id join public.student_profiles sp on sp.user_id=u.id left join public.enrollments e on e.user_id=u.id left join public.lesson_progress lp on lp.enrollment_id=e.id where gsl.guardian_id=$1 and gsl.status='active' group by u.id,sp.display_name order by sp.display_name`,[userId])).rows.map(row=>({id:row.id,firstName:row.display_name,progressPercent:row.progress_percent,projectTitle:row.project_title})));}
+  async listParentReports(userId:string,studentId:string):Promise<ParentReportDto[]>{return this.withUser(userId,async db=>(await db.query(`select pr.*,sp.display_name from public.parent_reports pr join public.student_profiles sp on sp.user_id=pr.student_id where pr.student_id=$1 and pr.status in('approved','sent') and app_private.guardian_has_student(pr.student_id) order by period_end desc`,[studentId])).rows.map(row=>({id:row.id,studentId:row.student_id,studentFirstName:row.display_name,periodStart:row.period_start.toISOString?.().slice(0,10)??row.period_start,periodEnd:row.period_end.toISOString?.().slice(0,10)??row.period_end,payload:row.payload,teacherComment:row.teacher_comment,status:row.status})));}
+
   async listConversations(userId: string): Promise<AiConversationDto[]> { return this.withUser(userId, async db => (await db.query(`select * from public.ai_conversations where user_id=$1 order by updated_at desc`,[userId])).rows.map(this.conversation)); }
   async createConversation(userId: string, title='Нова розмова'): Promise<AiConversationDto> {
     const result = await this.withUser(userId, db => db.query(`insert into public.ai_conversations(user_id,course_id,lesson_id,project_id,title) select $1,e.course_id,e.current_lesson_id,p.id,$2 from public.enrollments e left join public.projects p on p.user_id=e.user_id and p.status='active' where e.user_id=$1 and e.status='active' limit 1 returning *`,[userId,title]), true);
@@ -222,4 +317,7 @@ export class PostgresRepository implements AppRepository {
   private project(p:any,tasks:any[]):ProjectDto{return{id:p.id,title:p.title,summary:p.summary,status:p.status,completionPercent:p.completion_percent,tags:p.tags??[],workspaceUrl:p.workspace_url??this.workspaceUrl??null,stage:{id:p.stage_id,code:p.stage_code,title:p.stage_title,position:p.stage_position,total:Number(p.stage_total)},tasks:tasks.map((t):ProjectTaskDto=>({id:t.id,number:String(t.position).padStart(2,'0'),title:t.title,description:t.description,status:t.status,xpReward:t.xp_reward,weight:t.weight}))};}
   private conversation=(r:any):AiConversationDto=>({id:r.id,title:r.title,courseId:r.course_id,lessonId:r.lesson_id,projectId:r.project_id,createdAt:r.created_at.toISOString?.()??r.created_at,updatedAt:r.updated_at.toISOString?.()??r.updated_at});
   private message=(r:any):AiMessageDto=>({id:r.id,role:r.role,content:r.content,createdAt:r.created_at.toISOString?.()??r.created_at});
+  private classSession(row:any,materials:any[]):ScheduleDto['upcoming'][number]{return{id:row.id,title:row.title,description:row.description,startsAt:row.scheduled_start.toISOString?.()??row.scheduled_start,endsAt:row.scheduled_end.toISOString?.()??row.scheduled_end,durationMinutes:Math.round((new Date(row.scheduled_end).getTime()-new Date(row.scheduled_start).getTime())/60000),status:row.status,meetingProvider:row.meeting_provider,meetingUrl:row.meeting_url,courseTitle:row.course_title,moduleTitle:row.module_title,lessonTitle:row.lesson_title,teacherName:row.teacher_name,materials:materials.map(item=>({id:item.id,kind:item.kind,title:item.title,url:item.external_url}))};}
+  private submission(row:any,review:any):HomeworkSubmissionDto{return{id:row.id,attemptNumber:row.attempt_number,submittedAt:row.submitted_at?.toISOString?.()??row.submitted_at??null,studentComment:row.student_comment,contentText:row.content_text,contentUrl:row.content_url,status:row.status,review:review?{score:review.score,effort:review.effort,status:review.status,feedback:review.feedback,reviewedAt:review.reviewed_at?.toISOString?.()??review.reviewed_at}:null};}
+  private homework(row:any):HomeworkSummaryDto{const submission=row.submission_id?this.submission({id:row.submission_id,attempt_number:row.attempt_number,submitted_at:row.submitted_at,student_comment:row.student_comment,content_text:row.content_text,content_url:row.content_url,status:row.submission_status},row.score===null?null:{score:row.score,effort:row.effort,status:row.review_status,feedback:row.feedback,reviewed_at:row.reviewed_at}):null;return{id:row.id,title:row.title,instructions:row.instructions,publishedAt:row.publish_at.toISOString?.()??row.publish_at,dueAt:row.due_at?.toISOString?.()??row.due_at??null,xpReward:row.xp_reward,classTitle:row.class_title,state:submission?.status??'not_started',latestSubmission:submission};}
 }

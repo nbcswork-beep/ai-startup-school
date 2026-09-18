@@ -18,7 +18,7 @@ describe('HTTP API', () => {
     const {accessToken}=login.json();
     const response=await app.inject({method:'GET',url:'/api/v1/bootstrap',headers:{authorization:`Bearer ${accessToken}`}});
     expect(response.statusCode).toBe(200);
-    expect(response.json().learning.course.totalLessons).toBe(8);
+    expect(response.json().learning.course.totalLessons).toBe(10);
     expect(response.json().projects[0].completionPercent).toBe(62);
     const invalid=await app.inject({method:'POST',url:'/api/v1/projects',headers:{authorization:`Bearer ${accessToken}`,'content-type':'application/json'},payload:{title:''}});
     expect(invalid.statusCode).toBe(400);

@@ -14,6 +14,7 @@ if (tg) {
 let firstName = 'Творець';
 let data = null;
 let currentLesson = null;
+let currentHomework = null;
 let aiMessages = [];
 let authError = '';
 
@@ -21,6 +22,7 @@ const icons = {
   home: '<path d="M4 11.2 12 4l8 7.2v8.3a.5.5 0 0 1-.5.5h-5v-5.5h-5V20h-5a.5.5 0 0 1-.5-.5z"/>',
   learn: '<path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H20v15H7.5A2.5 2.5 0 0 0 5 20.5z"/><path d="M5 5.5v15A2.5 2.5 0 0 0 7.5 23H20" fill="none" stroke="currentColor" stroke-width="1.8"/>',
   project: '<path d="M5 19V8l7-4 7 4v11l-7 4z"/><path d="m8.5 13 2.2 2.2 4.8-5" fill="none" stroke="currentColor" stroke-width="2"/>',
+  portfolio: '<path d="M5 7.5h14v12H5z"/><path d="M9 7.5V5h6v2.5M5 12h14M10 12v2h4v-2" fill="none" stroke="currentColor" stroke-width="1.8"/>',
   ai: '<path d="M12 2.7 14.1 8l5.2 2.1-5.2 2.1L12 17.5l-2.1-5.3-5.2-2.1L9.9 8z"/><path d="m18.7 16 .8 2.1 2.1.8-2.1.9-.8 2.1-.9-2.1-2.1-.9 2.1-.8z"/>',
   profile: '<path d="M12 12.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9M4.5 22a7.5 7.5 0 0 1 15 0z"/>'
 };
@@ -29,16 +31,8 @@ const nav = [
   ['home', 'Головна'],
   ['learn', 'Навчання'],
   ['project', 'Проєкт'],
-  ['ai', 'AI'],
+  ['portfolio', 'Портфоліо'],
   ['profile', 'Профіль']
-];
-
-const lessons = [
-  { n: '01', title: 'AI — не магія', meta: 'Пройдено', status: 'done' },
-  { n: '02', title: 'Як говорити з AI', meta: 'Пройдено', status: 'done' },
-  { n: '03', title: 'AI може помилятися', meta: 'Сьогодні · 17 хв', status: 'current' },
-  { n: '04', title: 'Проблема → ідея', meta: 'Відкриється завтра', status: 'locked' },
-  { n: '05', title: 'Перший MVP', meta: 'Наступний тиждень', status: 'locked' }
 ];
 
 const svgIcon = (name, className = '') => `<svg class="${className}" viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>`;
@@ -51,6 +45,25 @@ function stateIcon(status) {
     return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5 16.5 12 8 18.5z"/></svg>';
   }
   return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="10" width="12" height="10" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.7 10V7.5a3.3 3.3 0 0 1 6.6 0V10" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
+}
+
+function safeHttpsUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' ? url.href : null;
+  } catch { return null; }
+}
+
+function formatClassTime(value, timezone = 'Europe/Kyiv') {
+  return new Intl.DateTimeFormat('uk-UA', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: timezone }).format(new Date(value));
+}
+
+function effortLabel(value) {
+  return ({ needs_attention: 'Потрібно більше уваги', good_effort: 'Старався', high_effort: 'Дуже старався' })[value] ?? '';
+}
+
+function homeworkStateLabel(value) {
+  return ({ not_started: 'НОВЕ', in_progress: 'В РОБОТІ', submitted: 'НАДІСЛАНО', needs_revision: 'ПОТРІБНЕ ДОПРАЦЮВАННЯ', completed: 'ГОТОВО' })[value] ?? value;
 }
 
 function portalMarkup(size = 'large', label = 'AI', sublabel = 'CORE') {
@@ -95,6 +108,8 @@ function home() {
   const lesson = homeData.currentLesson;
   const projectData = homeData.currentProject;
   const progress = homeData.course.progressPercent;
+  const nextClass = homeData.nextClass ?? data.schedule?.nextClass;
+  const joinUrl = safeHttpsUrl(nextClass?.meetingUrl);
   return `
     <section class="page home-page">
       <div class="eyebrow">ДОБРОГО ДНЯ, ${firstName.toUpperCase()} <span></span></div>
@@ -109,11 +124,19 @@ function home() {
         <div class="hero-progress" aria-label="Прогрес курсу ${progress} відсотків"><span>КУРС</span><strong>${progress}%</strong><i><b style="width:${progress}%"></b></i></div>
       </section>
 
+      ${nextClass ? `<section class="next-class-zone">
+        <div class="class-signal"><span>LIVE</span><i></i></div>
+        <div class="class-copy"><span>НАСТУПНЕ ЖИВЕ ЗАНЯТТЯ</span><h2>${escapeHtml(nextClass.title)}</h2><p>${escapeHtml(formatClassTime(nextClass.startsAt, data.schedule.timezone))} · ${nextClass.durationMinutes} хв · ${escapeHtml(nextClass.teacherName)}</p></div>
+        ${joinUrl ? `<button class="class-join" data-external="${escapeHtml(joinUrl)}">Приєднатися до заняття ${externalIcon()}</button>` : '<span class="class-link-pending">Посилання з’явиться перед заняттям</span>'}
+      </section>` : ''}
+
       <section class="next-step" ${lesson ? `data-lesson="${lesson.id}"` : 'data-tab="learn"'}>
         <div class="step-index"><small>УРОК</small><strong>${lesson?.number ?? '—'}</strong></div>
         <div class="step-copy"><span>НАСТУПНИЙ КРОК</span><h2>${escapeHtml(lesson?.title ?? 'Маршрут завершено')}</h2><p>${escapeHtml(lesson?.summary ?? 'Переглянь свої досягнення та обери наступну ціль.')}</p></div>
         <button class="round-arrow" aria-label="Відкрити урок">${arrowIcon()}</button>
       </section>
+
+      ${homeData.homeworkDue ? `<button class="homework-pulse" data-homework="${homeData.homeworkDue.id}"><span>HOMEWORK · ${homeworkStateLabel(homeData.homeworkDue.state)}</span><strong>${escapeHtml(homeData.homeworkDue.title)}</strong><small>${homeData.homeworkDue.dueAt ? `До ${escapeHtml(formatClassTime(homeData.homeworkDue.dueAt, data.schedule.timezone))}` : 'Без дедлайну'}</small>${arrowIcon()}</button>` : ''}
 
       <div class="signal-strip" aria-label="Твоя статистика">
         <div><span class="signal-mark bolt">ϟ</span><strong>${homeData.viewer.streak}</strong><small>дні поспіль</small></div>
@@ -134,9 +157,15 @@ function learn() {
   const learning = data.learning;
   const module = learning.modules[0];
   const lessonRows = module?.lessons ?? [];
+  const weekClasses = data.schedule?.thisWeek ?? [];
+  const homework = data.homework ?? [];
   return `
     <section class="page learn-page">
-      <div class="page-title"><span class="section-kicker">ТВІЙ МАРШРУТ</span><span class="zone-code">ZONE 02 · ROUTE</span><h1>Навчання</h1><p>Кожен урок рухає твій проєкт уперед.</p></div>
+      <div class="page-title"><span class="section-kicker">ТВІЙ МАРШРУТ</span><span class="zone-code">ZONE 02 · ROUTE</span><h1>Навчання</h1><p>Живі заняття, практика й робота над власним проєктом.</p></div>
+      <section class="week-route">
+        <div class="section-head compact-head"><div><span class="section-kicker">ЦЬОГО ТИЖНЯ</span><h2>Живі заняття</h2></div><span class="tiny-badge">${weekClasses.length} LIVE</span></div>
+        ${weekClasses.length ? weekClasses.map(item => `<article class="schedule-row"><span class="schedule-date">${escapeHtml(new Intl.DateTimeFormat('uk-UA',{weekday:'short',day:'2-digit',timeZone:data.schedule.timezone}).format(new Date(item.startsAt)).toUpperCase())}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(formatClassTime(item.startsAt,data.schedule.timezone))} · ${item.durationMinutes} хв</small></div><i class="${item.status}"></i></article>`).join('') : '<p class="empty-inline">На цей тиждень занять немає.</p>'}
+      </section>
       <section class="module-overview">
         <div class="module-number">01</div>
         <div><span>ПОТОЧНИЙ МОДУЛЬ</span><h2>${escapeHtml(module?.title ?? learning.course.title)}</h2><p>${escapeHtml(module?.description ?? learning.course.description)}</p></div>
@@ -153,10 +182,14 @@ function learn() {
             <span class="lesson-action">${visualState === 'current' ? arrowIcon() : visualState === 'done' ? '+XP' : ''}</span>
           </button>`}).join('')}
       </div>
+      <section class="homework-route">
+        <div class="section-head compact-head"><div><span class="section-kicker">ПІСЛЯ ЗАНЯТТЯ</span><h2>Домашня практика</h2></div><span class="tiny-badge">${homework.filter(item=>item.state!=='completed').length} АКТИВНІ</span></div>
+        ${homework.map(item => `<button class="homework-row ${item.state}" data-homework="${item.id}"><span class="homework-status">${homeworkStateLabel(item.state)}</span><strong>${escapeHtml(item.title)}</strong><small>${item.latestSubmission?.review ? `${item.latestSubmission.review.score}/10 · ${effortLabel(item.latestSubmission.review.effort)}` : item.dueAt ? `До ${formatClassTime(item.dueAt,data.schedule.timezone)}` : 'Без дедлайну'}</small>${arrowIcon()}</button>`).join('')}
+      </section>
       <section class="mentor-dock">
         ${portalMarkup('mini')}
-        <div><span>AI МЕНТОР</span><strong>Застряг на маршруті?</strong><p>Розберемо складне питання разом.</p></div>
-        <button data-tab="ai" aria-label="Запитати AI ментора">${arrowIcon()}</button>
+        <div><span>ДОПОМОГА МЕНТОРА</span><strong>Потрібна підтримка?</strong><p>Забронюй коротку зустріч 1:1.</p></div>
+        <button data-tab="profile" aria-label="Відкрити допомогу ментора">${arrowIcon()}</button>
       </section>
     </section>`;
 }
@@ -197,6 +230,44 @@ function project() {
 
 function projectEmpty() {
   return `<section class="page project-page"><div class="page-title"><span class="section-kicker">STARTUP LAB</span><span class="zone-code">ZONE 03 · LAB</span><h1>Мій проєкт</h1><p>Тут ідея перетворюється на продукт.</p></div><section class="project-empty">${portalMarkup('medium lab-engine','01','START')}<h2>Запусти перший проєкт</h2><p>Опиши одну проблему та ідею рішення. Маршрут з’явиться автоматично.</p><form id="createProject"><label>Назва<input name="title" maxlength="120" required></label><label>Короткий опис<textarea name="summary" maxlength="1000"></textarea></label><button class="primary-btn">Створити проєкт ${arrowIcon()}</button></form></section></section>`;
+}
+
+function portfolio() {
+  const portfolioData = data.portfolio;
+  const projects = portfolioData?.projects ?? [];
+  const activeProject = data.projects.find(item => item.status === 'active') ?? data.projects[0];
+  const alreadyAdded = projects.some(item => item.projectId === activeProject?.id);
+  return `
+    <section class="page portfolio-page">
+      <div class="page-title"><span class="section-kicker">CREATOR ARCHIVE</span><span class="zone-code">PRIVATE · ЗА ЗАМОВЧУВАННЯМ</span><h1>Портфоліо</h1><p>Не список уроків. Те, що ти справді створив і чого навчився.</p></div>
+      <section class="portfolio-beacon">
+        <div class="portfolio-orbit"><span>${projects.length}</span><small>PROJECTS</small><i></i><b></b></div>
+        <div><span>ПРИВАТНА КОЛЕКЦІЯ</span><h2>${escapeHtml(portfolioData?.title ?? 'Моє портфоліо')}</h2><p>Тільки ти, твій викладач і авторизована школа бачать цю сторінку.</p></div>
+      </section>
+      <div class="section-head"><div><span class="section-kicker">СТВОРЕНО ТОБОЮ</span><h2>Проєкти</h2></div><span class="tiny-badge">${projects.length}</span></div>
+      <div class="portfolio-list">
+        ${projects.length ? projects.map(item => `<article class="portfolio-project"><div class="portfolio-project-signal"><span>BUILD</span><strong>${escapeHtml(item.title.slice(0,2).toUpperCase())}</strong><i></i></div><div><span>${item.completionDate ? 'ЗАВЕРШЕНО' : 'В РОБОТІ'}</span><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.shortDescription)}</p><blockquote>${escapeHtml(item.reflection || 'Рефлексія з’явиться після наступного кроку.')}</blockquote><div class="skill-chips">${[...item.skills,...item.technologies].slice(0,5).map(skill=>`<small>${escapeHtml(skill)}</small>`).join('')}</div></div></article>`).join('') : '<section class="portfolio-empty"><h2>Твій перший проєкт уже близько</h2><p>Додай його свідомо, коли буде що показати й про що розповісти.</p></section>'}
+      </div>
+      ${activeProject && !alreadyAdded ? `<button class="primary-btn portfolio-add" data-add-portfolio="${activeProject.id}">Додати ${escapeHtml(activeProject.title)} ${arrowIcon()}</button>` : ''}
+      <div class="section-head"><div><span class="section-kicker">НАВИЧКИ</span><h2>Що вже вмієш</h2></div></div>
+      <div class="skill-field">${(portfolioData?.skills ?? []).map(item=>`<article><span>LV ${item.level}</span><strong>${escapeHtml(item.title)}</strong><i><b style="width:${item.level*20}%"></b></i></article>`).join('')}</div>
+    </section>`;
+}
+
+function homeworkPage() {
+  const homework = currentHomework ?? data.homework?.[0];
+  if (!homework) return `<section class="page homework-page"><button class="lesson-back" data-tab="learn">← Навчання</button><div class="page-title"><h1>Домашніх завдань поки немає</h1></div></section>`;
+  const submission = homework.latestSubmission;
+  const review = submission?.review;
+  const canSubmit = !submission || submission.status === 'needs_revision' || submission.status === 'in_progress';
+  return `<section class="page homework-page">
+    <button class="lesson-back" data-tab="learn">← Навчання</button>
+    <div class="page-title"><span class="section-kicker">HOMEWORK · ${homeworkStateLabel(homework.state)}</span><span class="zone-code">+${homework.xpReward} XP ЗА ЗАВЕРШЕННЯ</span><h1>${escapeHtml(homework.title)}</h1><p>${escapeHtml(homework.instructions)}</p></div>
+    <section class="homework-brief"><div><span>ДЕДЛАЙН</span><strong>${homework.dueAt ? escapeHtml(formatClassTime(homework.dueAt,data.schedule.timezone)) : 'Без дедлайну'}</strong></div><div><span>ПОВ’ЯЗАНЕ ЗАНЯТТЯ</span><strong>${escapeHtml(homework.classTitle ?? 'Самостійна практика')}</strong></div></section>
+    ${review ? `<section class="teacher-feedback ${review.status}"><div class="feedback-score"><strong>${review.score}</strong><small>/10</small></div><div><span>ВІДГУК ВИКЛАДАЧА</span><h2>${escapeHtml(effortLabel(review.effort))}</h2><p>${escapeHtml(review.feedback)}</p></div></section>` : ''}
+    ${submission ? `<section class="attempt-history"><span>СПРОБА ${submission.attemptNumber}</span><strong>${homeworkStateLabel(submission.status)}</strong><p>${escapeHtml(submission.studentComment || submission.contentText)}</p></section>` : ''}
+    ${canSubmit ? `<form class="homework-submit" id="homeworkSubmit" data-homework-id="${homework.id}"><span class="section-kicker">${submission?.status==='needs_revision'?'ДОПРАЦЮЙ І НАДІШЛИ ЩЕ РАЗ':'ТВОЯ РОБОТА'}</span><label>Результат<textarea name="contentText" maxlength="20000" required placeholder="Опиши, що зробив…"></textarea></label><label>Посилання HTTPS — за потреби<input name="contentUrl" type="url" inputmode="url" placeholder="https://…"></label><label>Коментар викладачу<textarea name="studentComment" maxlength="2000" placeholder="Що було складно або цікаво?"></textarea></label><button class="primary-btn">Надіслати роботу ${arrowIcon()}</button></form>` : '<p class="submission-confirmation">Роботу надіслано. Історія спроб збережена.</p>'}
+  </section>`;
 }
 
 function ai() {
@@ -249,8 +320,9 @@ function profile() {
       </div>
       <div class="profile-links">
         <button><span class="link-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 8h18c0-1-3-1-3-8M10 21h4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span><strong>Сповіщення</strong><small>Уроки та дедлайни</small></span>${arrowIcon()}</button>
-        <button><span class="link-icon">1:1</span><span><strong>${escapeHtml(profileData.mentor?.displayName ?? 'Мій ментор')}</strong><small>${escapeHtml(profileData.mentor?.title ?? 'Наступна зустріч')}</small></span>${arrowIcon()}</button>
+        <button id="openMentorBooking"><span class="link-icon">1:1</span><span><strong>Допомога ментора</strong><small>${escapeHtml(profileData.mentor?.displayName ?? 'Обери зручний час')}</small></span>${arrowIcon()}</button>
       </div>
+      <section class="mentor-booking" id="mentorBooking" hidden><div class="section-head compact-head"><div><span class="section-kicker">MENTOR 1:1</span><h2>Забронювати зустріч</h2></div></div><div class="mentor-slots"><p class="empty-inline">Завантажуємо доступний час…</p></div></section>
     </section>`;
 }
 
@@ -285,7 +357,7 @@ function artifactIcon(type) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${artifactPaths[type]}</svg>`;
 }
 
-const templates = { home, learn, project, ai, profile, lesson: lessonPage };
+const templates = { home, learn, project, portfolio, profile, lesson: lessonPage, homework: homeworkPage, ai };
 
 function escapeHtml(str) {
   const amp = String.fromCharCode(38);
@@ -323,6 +395,18 @@ async function openLesson(id, updateHistory = true) {
   }
 }
 
+function openHomework(id, updateHistory = true) {
+  currentHomework = data.homework?.find(item => item.id === id) ?? null;
+  render('homework', updateHistory);
+}
+
+function openExternal(url) {
+  const safeUrl = safeHttpsUrl(url);
+  if (!safeUrl) return;
+  if (tg?.openLink) tg.openLink(safeUrl);
+  else window.open(safeUrl, '_blank', 'noopener,noreferrer');
+}
+
 function haptic(type = 'impact') {
   try {
     if (!tg?.HapticFeedback) return;
@@ -344,7 +428,7 @@ function render(tab, updateHistory = true) {
     view.classList.remove('leaving');
     wirePage();
 
-    const targetHash = active === 'lesson' && currentLesson ? `#lesson=${currentLesson.id}` : `#${active}`;
+    const targetHash = active === 'lesson' && currentLesson ? `#lesson=${currentLesson.id}` : active === 'homework' && currentHomework ? `#homework=${currentHomework.id}` : `#${active}`;
     if (updateHistory && location.hash !== targetHash) history.pushState({ tab: active }, '', targetHash);
     haptic('selection');
   }, 70);
@@ -361,6 +445,12 @@ function wirePage() {
   view.querySelectorAll('[data-lesson]').forEach(element => {
     if (element.id === 'completeLesson') return;
     element.onclick = event => { event.stopPropagation(); openLesson(element.dataset.lesson); };
+  });
+  view.querySelectorAll('[data-homework]').forEach(element => {
+    element.onclick = event => { event.stopPropagation(); openHomework(element.dataset.homework); };
+  });
+  view.querySelectorAll('[data-external]').forEach(element => {
+    element.onclick = event => { event.stopPropagation(); openExternal(element.dataset.external); };
   });
 
   document.querySelector('#completeLesson')?.addEventListener('click', async event => {
@@ -421,8 +511,39 @@ function wirePage() {
   document.querySelector('#openCode')?.addEventListener('click', () => {
     const url = (data.projects.find(item => item.status === 'active') ?? data.projects[0])?.workspaceUrl;
     if (!url) return;
-    if (tg?.openLink) tg.openLink(url);
-    else window.open(url, '_blank', 'noopener,noreferrer');
+    openExternal(url);
+  });
+
+  document.querySelector('[data-add-portfolio]')?.addEventListener('click', async event => {
+    const button = event.currentTarget; button.disabled = true; button.textContent = 'Додаємо до колекції…';
+    try { data.portfolio = await api.addToPortfolio(button.dataset.addPortfolio); render('portfolio', false); }
+    catch (error) { button.disabled = false; button.textContent = error.message; }
+  });
+
+  const homeworkForm = document.querySelector('#homeworkSubmit');
+  homeworkForm?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const values = new FormData(homeworkForm);
+    const contentUrl = String(values.get('contentUrl') ?? '').trim();
+    const button = homeworkForm.querySelector('button'); button.disabled = true; button.textContent = 'Надсилаємо…';
+    try {
+      await api.submitHomework(homeworkForm.dataset.homeworkId, { contentText: String(values.get('contentText') ?? ''), ...(contentUrl ? { contentUrl } : {}), studentComment: String(values.get('studentComment') ?? '') });
+      data.homework = await api.homework(); currentHomework = data.homework.find(item=>item.id===homeworkForm.dataset.homeworkId); data.home.homeworkDue = data.homework.find(item=>item.state!=='completed') ?? null; render('homework', false);
+    } catch (error) { button.disabled = false; button.textContent = error.message; }
+  });
+
+  document.querySelector('#openMentorBooking')?.addEventListener('click', async () => {
+    const panel = document.querySelector('#mentorBooking'); panel.hidden = false;
+    const list = panel.querySelector('.mentor-slots');
+    try {
+      const slots = await api.mentorSlots();
+      list.innerHTML = slots.length ? slots.map(slot=>`<button class="mentor-slot" data-mentor-slot="${slot.id}" ${slot.available?'':'disabled'}><span>${escapeHtml(formatClassTime(slot.startsAt,slot.timezone))}</span><strong>${escapeHtml(slot.mentorName)}</strong><small>${escapeHtml(slot.mentorTitle)}</small></button>`).join('') : '<p class="empty-inline">Нові вікна з’являться незабаром.</p>';
+      list.querySelectorAll('[data-mentor-slot]').forEach(slotButton => slotButton.onclick = async () => {
+        slotButton.disabled = true; slotButton.textContent = 'Бронюємо…';
+        try { await api.bookMentor(slotButton.dataset.mentorSlot); slotButton.textContent = 'Зустріч зарезервовано'; slotButton.classList.add('booked'); }
+        catch (error) { slotButton.disabled = false; slotButton.textContent = error.message; }
+      });
+    } catch (error) { list.innerHTML = `<p class="empty-inline">${escapeHtml(error.message)}</p>`; }
   });
 }
 
@@ -435,6 +556,7 @@ async function renderFromLocation() {
   if (!data) return;
   const requested = location.hash.replace('#', '');
   if (requested.startsWith('lesson=')) { await openLesson(requested.slice(7), false); return; }
+  if (requested.startsWith('homework=')) { openHomework(requested.slice(9), false); return; }
   const next = templates[requested] ? requested : 'home';
   if (next !== active || !view.querySelector('.page')) render(next, false);
 }
