@@ -1,0 +1,12 @@
+{
+  "name": "ai-startup-school-marketing",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node ../node_modules/vite/bin/vite.js --config vite.config.js",
+    "build": "node ../node_modules/vite/bin/vite.js build --config vite.config.js",
+    "preview": "node ../node_modules/vite/bin/vite.js preview --config vite.config.js",
+    "qa": "node qa-capture.mjs"
+  }
+}
