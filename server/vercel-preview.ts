@@ -27,6 +27,28 @@ function requireVercelSecret(input: NodeJS.ProcessEnv, name: string, environment
   return value;
 }
 
+function vercelDeploymentUrl(value: string | undefined): string | undefined {
+  const trimmed=value?.trim();
+  if (!trimmed) return undefined;
+  try {
+    const url=new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`);
+    return url.protocol === 'https:' && !url.username && !url.password ? url.origin : undefined;
+  } catch { return undefined; }
+}
+
+function miniAppUrl(input:NodeJS.ProcessEnv,environment:VercelEnvironment):string {
+  const explicit=input.MINI_APP_URL?.trim();
+  if (explicit) return explicit;
+  const derived=[
+    ...(environment === 'production' ? [input.VERCEL_PROJECT_PRODUCTION_URL] : []),
+    input.VERCEL_URL,
+    input.VERCEL_BRANCH_URL
+  ].map(vercelDeploymentUrl).find((value):value is string=>Boolean(value));
+  if (derived) return derived;
+  const label=environment === 'unknown' ? 'deployment' : `${environment} deployment`;
+  throw new Error(`Vercel ${label} requires MINI_APP_URL or a valid Vercel deployment URL`);
+}
+
 function vercelOrigins(input: NodeJS.ProcessEnv, environment: VercelEnvironment): string {
   const explicit = input.APP_ORIGINS?.split(',').map(value => value.trim()).filter(Boolean) ?? [];
   const vercel = [
@@ -48,6 +70,10 @@ export function loadVercelEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
   const sessionPepper = requireVercelSecret(input, 'SESSION_TOKEN_PEPPER', environment);
   const telegramBotToken = requireVercelSecret(input, 'TELEGRAM_BOT_TOKEN', environment);
   const webAccounts = requireVercelSecret(input, 'WEB_AUTH_ACCOUNTS_JSON', environment);
+  const telegramWebhookSecret = environment === 'production'
+    ? requireVercelSecret(input, 'TELEGRAM_WEBHOOK_SECRET', environment)
+    : input.TELEGRAM_WEBHOOK_SECRET?.trim();
+  const resolvedMiniAppUrl = miniAppUrl(input, environment);
   const redis = resolveRedisRestCredentials(input);
   if (!redis) {
     const label = environment === 'unknown' ? 'deployment' : `${environment} deployment`;
@@ -65,6 +91,8 @@ export function loadVercelEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
     APP_JWT_PUBLIC_KEY_BASE64: jwtPublicKey,
     SESSION_TOKEN_PEPPER: sessionPepper,
     TELEGRAM_BOT_TOKEN: telegramBotToken,
+    TELEGRAM_WEBHOOK_SECRET: telegramWebhookSecret,
+    MINI_APP_URL: resolvedMiniAppUrl,
     WEB_AUTH_ACCOUNTS_JSON: webAccounts,
     UPSTASH_REDIS_REST_URL: redis.url,
     UPSTASH_REDIS_REST_TOKEN: redis.token,

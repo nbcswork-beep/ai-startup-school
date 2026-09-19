@@ -6,6 +6,7 @@ import { loadEnv } from './config/env.js';
 import { MemoryRepository } from './data/memory-repository.js';
 import { MockAiProvider } from './services/ai-provider.js';
 import { createSchoolBot } from './telegram/school-bot.js';
+import { unavailableTelegramWebhookDependencies } from './routes/telegram-webhook.js';
 
 const SECRET='telegram_webhook_test_secret_123';
 const MINI_APP_URL='https://ai-startup-school.example.test';
@@ -40,7 +41,10 @@ describe('Telegram production webhook',()=>{
 
   it('fails closed when webhook environment is incomplete',async()=>{
     const app=await testApp(false);
-    expect((await app.inject({method:'POST',url:'/api/telegram/webhook',headers:{'x-telegram-bot-api-secret-token':SECRET},payload:update(4,'/id')})).statusCode).toBe(503);
+    const response=await app.inject({method:'POST',url:'/api/telegram/webhook',headers:{'x-telegram-bot-api-secret-token':SECRET},payload:update(4,'/id')});
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error.code).toBe('TELEGRAM_WEBHOOK_NOT_CONFIGURED');
+    expect(unavailableTelegramWebhookDependencies(loadEnv({NODE_ENV:'test',DATA_BACKEND:'memory',DEV_EPHEMERAL_JWT:'true',SESSION_TOKEN_PEPPER:'test-pepper'}))).toEqual(['TELEGRAM_BOT_TOKEN','TELEGRAM_WEBHOOK_SECRET','MINI_APP_URL']);
   });
 
   it('preserves /id, /start and /school behavior in the shared bot',async()=>{

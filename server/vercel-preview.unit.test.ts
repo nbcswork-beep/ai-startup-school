@@ -83,6 +83,31 @@ describe('Vercel Telegram deployment adapter', () => {
     expect(env.origins).toContain('https://ai-startup-school.vercel.app');
   });
 
+  it('requires the webhook secret and derives the Production Mini App URL before routes start',async()=>{
+    const missingSecret=await previewVariables();
+    missingSecret.VERCEL_ENV='production';
+    missingSecret.VERCEL_PROJECT_PRODUCTION_URL='ai-startup-school.vercel.app';
+    delete missingSecret.TELEGRAM_WEBHOOK_SECRET;
+    expect(()=>loadVercelEnv(missingSecret)).toThrow(/TELEGRAM_WEBHOOK_SECRET/);
+
+    const derived=await previewVariables();
+    derived.VERCEL_ENV='production';
+    derived.VERCEL_PROJECT_PRODUCTION_URL='ai-startup-school.vercel.app';
+    delete derived.MINI_APP_URL;
+    expect(loadVercelEnv(derived).MINI_APP_URL).toBe('https://ai-startup-school.vercel.app');
+  });
+
+  it('rejects an invalid explicit Mini App URL with its field name only',async()=>{
+    const variables=await previewVariables();
+    variables.VERCEL_ENV='production';
+    variables.MINI_APP_URL='http://private-mini-app.example.test';
+    let caught:unknown;
+    try{loadVercelEnv(variables)}catch(error){caught=error}
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain('MINI_APP_URL');
+    expect((caught as Error).message).not.toContain('private-mini-app.example.test');
+  });
+
   it('resolves both standard and custom-prefixed Upstash REST integration variables', async () => {
     const standard=await previewVariables();
     expect(loadVercelEnv(standard).UPSTASH_REDIS_REST_URL).toBe('https://redis.example.test');

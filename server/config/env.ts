@@ -111,6 +111,12 @@ const envSchema = z.object({
     try { if (new URL(env.UPSTASH_REDIS_REST_URL).protocol !== 'https:') throw new Error(); }
     catch { context.addIssue({ code:'custom', path:['UPSTASH_REDIS_REST_URL'], message:'must be HTTPS' }); }
   }
+  if (env.MINI_APP_URL) {
+    try {
+      const url=new URL(env.MINI_APP_URL);
+      if (url.protocol !== 'https:' || url.username || url.password) throw new Error();
+    } catch { context.addIssue({ code:'custom', path:['MINI_APP_URL'], message:'must be an HTTPS URL without credentials' }); }
+  }
 });
 
 export type AppEnv = z.infer<typeof envSchema> & { origins: string[] };
