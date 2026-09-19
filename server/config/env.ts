@@ -20,6 +20,7 @@ const envSchema = z.object({
   DATABASE_URL: optionalString,
   DATABASE_SSL: booleanFromEnv.default(true),
   TELEGRAM_BOT_TOKEN: optionalString,
+  TELEGRAM_STUDENT_BINDINGS_JSON: optionalString,
   TELEGRAM_INIT_DATA_MAX_AGE_SECONDS: z.coerce.number().int().min(30).max(3600).default(300),
   APP_JWT_ISSUER: z.string().default('ai-startup-school'),
   APP_JWT_AUDIENCE: z.string().default('authenticated'),

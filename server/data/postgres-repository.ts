@@ -16,7 +16,12 @@ type Db = Pick<PoolClient, 'query'>;
 export class PostgresRepository implements AppRepository {
   private readonly pool: Pool;
 
-  constructor(connectionString: string, ssl = true, private readonly workspaceUrl?: string) {
+  constructor(
+    connectionString: string,
+    ssl = true,
+    private readonly workspaceUrl?: string,
+    private readonly requirePrelinkedTelegramIdentity = false
+  ) {
     this.pool = new Pool({ connectionString, ssl: ssl ? { rejectUnauthorized: false } : false, max: 12 });
   }
 
@@ -35,10 +40,14 @@ export class PostgresRepository implements AppRepository {
         await client.query('commit');
         return this.authUser(existing.rows[0]);
       }
+      if (this.requirePrelinkedTelegramIdentity) {
+        await client.query('rollback');
+        throw new AppError('TELEGRAM_ACCOUNT_NOT_LINKED', 403, 'Telegram-акаунт ще не прив’язано до профілю учня');
+      }
       const userId = randomUUID();
       await client.query(`insert into public.users(id) values($1)`, [userId]);
-      await client.query(`insert into public.student_profiles(user_id,display_name,locale,level_id)
-        values($1,$2,$3,(select id from public.levels order by min_xp limit 1))`, [userId, identity.firstName.slice(0, 60) || 'Учень', identity.languageCode?.slice(0, 16) || 'uk']);
+      await client.query(`insert into public.student_profiles(user_id,display_name,profile_display_name,locale,level_id)
+        values($1,$2,$2,$3,(select id from public.levels order by min_xp limit 1))`, [userId, identity.firstName.slice(0, 60) || 'Учень', identity.languageCode?.slice(0, 16) || 'uk']);
       await client.query(`insert into public.user_identities(user_id,provider,provider_subject) values($1,'telegram',$2)`, [userId, identity.telegramId]);
       await client.query(`insert into public.enrollments(user_id,course_id,current_lesson_id)
         select $1,c.id,l.id from public.courses c join public.modules m on m.course_id=c.id join public.lessons l on l.module_id=m.id
@@ -433,7 +442,7 @@ export class PostgresRepository implements AppRepository {
 
   private async withUser<T>(userId:string,fn:(db:Db)=>Promise<T>,write=false):Promise<T>{const client=await this.pool.connect();try{await client.query('begin');await client.query(`set local role authenticated`);await client.query(`select set_config('request.jwt.claims',$1,true)`,[JSON.stringify({role:'authenticated',app_user_id:userId})]);const value=await fn(client);await client.query('commit');return value;}catch(error){await client.query('rollback');throw error;}finally{client.release();}}
   private async requireAdminDirect(userId:string):Promise<{display_name:string}>{const result=await this.pool.query(`select coalesce(sp.display_name,tp.display_name,gp.display_name,'Адміністратор') display_name from public.users u left join public.student_profiles sp on sp.user_id=u.id left join public.teacher_profiles tp on tp.user_id=u.id left join public.guardian_profiles gp on gp.user_id=u.id where u.id=$1 and u.kind='admin' and u.status='active'`,[userId]);if(!result.rows[0])throw new AppError('ROLE_FORBIDDEN',403,'Недостатньо прав');return result.rows[0];}
-  private async getViewer(userId:string){return this.withUser(userId,async db=>{const r=await db.query(`select u.id,sp.display_name,sp.current_streak,coalesce(sum(x.delta),0)::int xp,l.position level_number,l.title level_title,l.min_xp,(select title from public.levels where min_xp>coalesce(sum(x.delta),0) order by min_xp limit 1) next_title,(select min_xp from public.levels where min_xp>coalesce(sum(x.delta),0) order by min_xp limit 1) next_min_xp from public.users u join public.student_profiles sp on sp.user_id=u.id left join public.xp_events x on x.user_id=u.id join lateral(select * from public.levels where min_xp<=coalesce((select sum(delta) from public.xp_events where user_id=u.id),0) order by min_xp desc limit 1) l on true where u.id=$1 group by u.id,sp.display_name,sp.current_streak,l.position,l.title,l.min_xp`,[userId]);if(!r.rows[0])throw new AppError('USER_NOT_FOUND',404,'Користувача не знайдено');const x=r.rows[0];return{id:x.id,firstName:x.display_name,level:{number:x.level_number,title:x.level_title,nextTitle:x.next_title,currentMinXp:x.min_xp,nextMinXp:x.next_min_xp},xp:x.xp,streak:x.current_streak};});}
+  private async getViewer(userId:string){return this.withUser(userId,async db=>{const r=await db.query(`select u.id,sp.profile_display_name display_name,sp.current_streak,coalesce(sum(x.delta),0)::int xp,l.position level_number,l.title level_title,l.min_xp,(select title from public.levels where min_xp>coalesce(sum(x.delta),0) order by min_xp limit 1) next_title,(select min_xp from public.levels where min_xp>coalesce(sum(x.delta),0) order by min_xp limit 1) next_min_xp from public.users u join public.student_profiles sp on sp.user_id=u.id left join public.xp_events x on x.user_id=u.id join lateral(select * from public.levels where min_xp<=coalesce((select sum(delta) from public.xp_events where user_id=u.id),0) order by min_xp desc limit 1) l on true where u.id=$1 group by u.id,sp.profile_display_name,sp.current_streak,l.position,l.title,l.min_xp`,[userId]);if(!r.rows[0])throw new AppError('USER_NOT_FOUND',404,'Користувача не знайдено');const x=r.rows[0];return{id:x.id,firstName:x.display_name,level:{number:x.level_number,title:x.level_title,nextTitle:x.next_title,currentMinXp:x.min_xp,nextMinXp:x.next_min_xp},xp:x.xp,streak:x.current_streak};});}
   private async getMentor(userId:string):Promise<ProfileDto['mentor']>{return this.withUser(userId,async db=>{const r=await db.query(`select m.display_name,m.title,m.avatar_path,ma.next_meeting_at from public.mentor_assignments ma join public.mentors m on m.id=ma.mentor_id where ma.student_user_id=$1 and ma.ends_at is null`,[userId]);const x=r.rows[0];return x?{displayName:x.display_name,title:x.title,avatarPath:x.avatar_path,nextMeetingAt:x.next_meeting_at?.toISOString?.()??x.next_meeting_at??null}:null;});}
   private authUser(r:any):AuthUser{return{id:r.id,displayName:r.display_name,status:r.status};}
   private project(p:any,tasks:any[]):ProjectDto{return{id:p.id,title:p.title,summary:p.summary,status:p.status,completionPercent:p.completion_percent,tags:p.tags??[],workspaceUrl:p.workspace_url??this.workspaceUrl??null,stage:{id:p.stage_id,code:p.stage_code,title:p.stage_title,position:p.stage_position,total:Number(p.stage_total)},tasks:tasks.map((t):ProjectTaskDto=>({id:t.id,number:String(t.position).padStart(2,'0'),title:t.title,description:t.description,status:t.status,xpReward:t.xp_reward,weight:t.weight}))};}

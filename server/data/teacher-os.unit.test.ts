@@ -45,7 +45,8 @@ describe('Teacher OS operations and boundaries',()=>{
   it('separates grading from XP and preserves private-note isolation',async()=>{
     const repository=new MemoryRepository();
     const before=(await repository.getHome(DEV_IDS.user)).viewer.xp;
-    await repository.reviewHomework(teacher,'74000000-0000-4000-8000-000000000002',{score:3,effort:'needs_attention',status:'needs_revision',feedback:'Додай перевірку.'});
+    const submission=await repository.submitHomework(DEV_IDS.user,'73000000-0000-4000-8000-000000000002',{contentText:'Чернетка'});
+    await repository.reviewHomework(teacher,submission.id,{score:3,effort:'needs_attention',status:'needs_revision',feedback:'Додай перевірку.'});
     expect((await repository.getHome(DEV_IDS.user)).viewer.xp).toBe(before);
     const secret='Приватне спостереження для викладача';
     await repository.createTeacherNote(teacher,DEV_IDS.user,{category:'learning',content:secret});
@@ -58,6 +59,7 @@ describe('Teacher OS operations and boundaries',()=>{
 
   it('requires a reviewed human comment before report approval',async()=>{
     const repository=new MemoryRepository();
+    await repository.generateTeacherReports(teacher,group,'2026-09-01','2026-09-07');
     const report=(await repository.getTeacherWorkspace(teacher)).reports[0]!;
     await repository.saveTeacherReport(teacher,report.id,{teacherComment:'',status:'draft'});
     await expect(repository.approveTeacherReport(teacher,report.id)).rejects.toMatchObject({statusCode:409});

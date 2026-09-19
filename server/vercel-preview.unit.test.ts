@@ -16,17 +16,18 @@ async function previewVariables(): Promise<NodeJS.ProcessEnv> {
     VERCEL_URL: 'preview.example.vercel.app',
     VERCEL_BRANCH_URL: 'telegram-vercel-preview.example.vercel.app',
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
+    TELEGRAM_STUDENT_BINDINGS_JSON: JSON.stringify({ illia: '987654321' }),
     SESSION_TOKEN_PEPPER: 'preview-test-pepper-with-enough-entropy',
     APP_JWT_PRIVATE_KEY_BASE64: Buffer.from(await exportPKCS8(pair.privateKey)).toString('base64'),
     APP_JWT_PUBLIC_KEY_BASE64: Buffer.from(await exportSPKI(pair.publicKey)).toString('base64')
   };
 }
 
-function signedInitData(nowSeconds = Math.floor(Date.now() / 1000)): string {
+function signedInitData(telegramId = 987654321, nowSeconds = Math.floor(Date.now() / 1000)): string {
   const params = new URLSearchParams({
     auth_date: String(nowSeconds),
     query_id: 'preview-query',
-    user: JSON.stringify({ id: 987654321, first_name: 'Оля', language_code: 'uk' })
+    user: JSON.stringify({ id: telegramId, first_name: 'Telegram name', language_code: 'uk' })
   });
   const data = [...params.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => `${key}=${value}`).join('\n');
   const secret = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
@@ -103,5 +104,35 @@ describe('Vercel Telegram deployment adapter', () => {
     const refresh = await request(app, 'v1/auth/refresh', { method: 'POST', headers: { cookie: cookie! } });
     expect(refresh.status).toBe(200);
     expect((await refresh.json() as { accessToken?: string }).accessToken).toBeTruthy();
+  });
+
+  it('authenticates each bound pilot student and rejects a valid but unbound Telegram account', async () => {
+    const app = await createVercelApp({
+      ...await previewVariables(),
+      TELEGRAM_STUDENT_BINDINGS_JSON: JSON.stringify({
+        illia: '987654321', ivan: '987654322', rinat: '987654323', yuliia: '987654324'
+      })
+    });
+    apps.push(app);
+
+    const expectedNames = ['Ілля', 'Іван', 'Рінат', '🐭💗 Мишка'];
+    for (let index = 0; index < expectedNames.length; index += 1) {
+      const login = await request(app, 'v1/auth/telegram', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ initData: signedInitData(987654321 + index) })
+      });
+      expect(login.status).toBe(200);
+      const { accessToken } = await login.json() as { accessToken: string };
+      const bootstrap = await request(app, 'v1/bootstrap', { headers: { authorization: `Bearer ${accessToken}` } });
+      expect(bootstrap.status).toBe(200);
+      expect((await bootstrap.json() as { home: { viewer: { firstName: string } } }).home.viewer.firstName).toBe(expectedNames[index]);
+    }
+
+    const unknown = await request(app, 'v1/auth/telegram', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ initData: signedInitData(987654399) })
+    });
+    expect(unknown.status).toBe(403);
+    expect((await unknown.json() as { error: { code: string } }).error.code).toBe('TELEGRAM_ACCOUNT_NOT_LINKED');
   });
 });

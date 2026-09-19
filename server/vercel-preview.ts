@@ -60,7 +60,10 @@ export async function createVercelApp(input: NodeJS.ProcessEnv = process.env): P
   const env = loadVercelEnv(input);
   const app = await buildApp({
     env,
-    repository: new MemoryRepository(env.WORKSPACE_URL),
+    repository: new MemoryRepository(env.WORKSPACE_URL, {
+      telegramBindingsJson: env.TELEGRAM_STUDENT_BINDINGS_JSON,
+      requireSeededTelegramIdentity: true
+    }),
     jwt: await createJwtService(env),
     aiProvider: new MockAiProvider()
   });

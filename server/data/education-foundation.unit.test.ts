@@ -16,23 +16,24 @@ describe('education foundation invariants',()=>{
     const repository=new MemoryRepository(); const homeworkId='73000000-0000-4000-8000-000000000002';
     const second=await repository.submitHomework(DEV_IDS.user,homeworkId,{contentText:'Друга версія'});
     const third=await repository.submitHomework(DEV_IDS.user,homeworkId,{contentText:'Третя версія'});
-    expect(second.attemptNumber).toBe(2); expect(third.attemptNumber).toBe(3);
+    expect(second.attemptNumber).toBe(1); expect(third.attemptNumber).toBe(2);
   });
   it('keeps XP independent from teacher score and rejects student grading',async()=>{
     const repository=new MemoryRepository(); const before=(await repository.getHome(DEV_IDS.user)).viewer.xp;
-    await expect(repository.reviewHomework(DEV_IDS.user,'74000000-0000-4000-8000-000000000002',{score:10,effort:'high_effort',status:'completed',feedback:'ok'})).rejects.toMatchObject({statusCode:403});
-    await repository.reviewHomework(teacher,'74000000-0000-4000-8000-000000000002',{score:4,effort:'high_effort',status:'needs_revision',feedback:'Допрацюй перевірку'});
+    const submission=await repository.submitHomework(DEV_IDS.user,'73000000-0000-4000-8000-000000000002',{contentText:'Перша відповідь'});
+    await expect(repository.reviewHomework(DEV_IDS.user,submission.id,{score:10,effort:'high_effort',status:'completed',feedback:'ok'})).rejects.toMatchObject({statusCode:403});
+    await repository.reviewHomework(teacher,submission.id,{score:4,effort:'high_effort',status:'needs_revision',feedback:'Допрацюй перевірку'});
     expect((await repository.getHome(DEV_IDS.user)).viewer.xp).toBe(before);
   });
   it('enforces assigned teacher group boundaries and attendance confirmation',async()=>{
-    const repository=new MemoryRepository(); expect(await repository.listGroupStudents(teacher,group)).toHaveLength(2);
+    const repository=new MemoryRepository(); expect(await repository.listGroupStudents(teacher,group)).toHaveLength(4);
     await expect(repository.listGroupStudents(teacher,'70000000-0000-4000-8000-000000000099')).rejects.toMatchObject({statusCode:403});
     await repository.confirmAttendance(teacher,'71000000-0000-4000-8000-000000000001',DEV_IDS.user,'present','Підтверджено викладачем');
     await expect(repository.confirmAttendance(DEV_IDS.user,'71000000-0000-4000-8000-000000000001',DEV_IDS.user,'present')).rejects.toMatchObject({statusCode:403});
   });
   it('restricts guardian data to explicitly linked students',async()=>{
     const repository=new MemoryRepository(); expect(await repository.listLinkedStudents(guardian)).toHaveLength(1);
-    const reports=await repository.listParentReports(guardian,DEV_IDS.user); expect(reports).toHaveLength(1); expect(reports[0]?.studentId).toBe(DEV_IDS.user);
+    const reports=await repository.listParentReports(guardian,DEV_IDS.user); expect(reports).toHaveLength(0);
     await expect(repository.listParentReports(guardian,'10000000-0000-4000-8000-000000000002')).rejects.toMatchObject({statusCode:403});
     await expect(repository.listMentorSlots(guardian)).rejects.toMatchObject({statusCode:403});
   });

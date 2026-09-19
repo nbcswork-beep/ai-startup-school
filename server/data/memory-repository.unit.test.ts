@@ -13,11 +13,11 @@ describe('student domain invariants', () => {
   it('awards lesson XP only once even with different retries', async () => {
     const repository = new MemoryRepository();
     const before = (await repository.getHome(DEV_IDS.user)).viewer.xp;
-    const first = await repository.completeLesson(DEV_IDS.user, SEEDED_LESSONS[2]!.id, 'complete-attempt-1');
-    const second = await repository.completeLesson(DEV_IDS.user, SEEDED_LESSONS[2]!.id, 'complete-attempt-2');
-    expect(first.awardedXp).toBe(120);
+    const first = await repository.completeLesson(DEV_IDS.user, SEEDED_LESSONS[0]!.id, 'complete-attempt-1');
+    const second = await repository.completeLesson(DEV_IDS.user, SEEDED_LESSONS[0]!.id, 'complete-attempt-2');
+    expect(first.awardedXp).toBe(80);
     expect(second.awardedXp).toBe(0);
-    expect(second.home.viewer.xp).toBe(before + 120);
+    expect(second.home.viewer.xp).toBe(before + 80);
   });
   it('awards a data-driven achievement when a new student completes a lesson', async () => {
     const repository = new MemoryRepository();
@@ -29,12 +29,12 @@ describe('student domain invariants', () => {
   });
   it('derives project completion from completed task weights', async () => {
     const repository = new MemoryRepository();
-    const project = (await repository.listProjects(DEV_IDS.user))[0]!;
+    const project = await repository.createProject(DEV_IDS.user, { title: 'Пілотний продукт', summary: 'Перша версія' });
     const current = project.tasks.find(task => task.status === 'in_progress')!;
     const result = await repository.completeProjectTask(DEV_IDS.user, project.id, current.id, 'project-task-attempt-1');
-    expect(result?.awardedXp).toBe(160);
-    expect(result?.project.completionPercent).toBe(80);
-    expect(result?.project.tasks[3]?.status).toBe('in_progress');
+    expect(result?.awardedXp).toBe(80);
+    expect(result?.project.completionPercent).toBe(35);
+    expect(result?.project.tasks[1]?.status).toBe('in_progress');
   });
   it('does not expose another student conversation', async () => {
     const repository = new MemoryRepository();

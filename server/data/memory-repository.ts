@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../errors/app-error.js';
 import type { AppRepository } from './repository.js';
-import { DEV_IDS, SEEDED_LESSONS } from './seed.js';
+import { DEV_IDS, PILOT, PILOT_STUDENTS, PILOT_TEACHERS, SEEDED_HOMEWORK, SEEDED_LESSONS } from './seed.js';
 import type {
   AchievementDto,
   AccessContext,
@@ -44,6 +44,11 @@ type LessonState = { progressPercent: number; completedAt: string | null };
 type InternalProject = Omit<ProjectDto, 'completionPercent' | 'stage'> & { stagePosition: number; stageCode: string; stageTitle: string };
 type InternalConversation = AiConversationDto & { summary: string; messages: AiMessageDto[]; clientMessageIds: Set<string> };
 
+export interface MemoryRepositoryOptions {
+  telegramBindingsJson?: string | undefined;
+  requireSeededTelegramIdentity?: boolean;
+}
+
 function relativeIso(days: number, hour: number, durationMinutes = 0): string {
   const date = new Date();
   date.setHours(hour, durationMinutes, 0, 0);
@@ -74,27 +79,31 @@ function nowIso(): string {
 
 export class MemoryRepository implements AppRepository {
   private users = new Map<string, AuthUser>([
-    [DEV_IDS.user, { id: DEV_IDS.user, displayName: 'Максим', status: 'active' }],
-    ['12000000-0000-4000-8000-000000000001', { id: '12000000-0000-4000-8000-000000000001', displayName: 'Анна Коваль', status: 'active' }],
-    ['13000000-0000-4000-8000-000000000001', { id: '13000000-0000-4000-8000-000000000001', displayName: 'Олена', status: 'active' }],
-    ['10000000-0000-4000-8000-000000000002', { id: '10000000-0000-4000-8000-000000000002', displayName: 'Ірина', status: 'active' }],
-    ['14000000-0000-4000-8000-000000000001', { id: '14000000-0000-4000-8000-000000000001', displayName: 'Марія Адміністраторка', status: 'active' }]
+    ...PILOT_STUDENTS.map(student => [student.id, { id: student.id, displayName: student.fullName, status: 'active' as const }] as const),
+    ...PILOT_TEACHERS.map(teacher => [teacher.id, { id: teacher.id, displayName: teacher.fullName, status: 'active' as const }] as const),
+    ['13000000-0000-4000-8000-000000000001', { id: '13000000-0000-4000-8000-000000000001', displayName: 'Тестовий опікун', status: 'active' }],
+    ['14000000-0000-4000-8000-000000000001', { id: '14000000-0000-4000-8000-000000000001', displayName: 'Адміністратор', status: 'active' }]
   ]);
-  private roles = new Map<string, 'student'|'guardian'|'teacher'|'admin'>([[DEV_IDS.user,'student'],['12000000-0000-4000-8000-000000000001','teacher'],['13000000-0000-4000-8000-000000000001','guardian'],['10000000-0000-4000-8000-000000000002','student'],['14000000-0000-4000-8000-000000000001','admin']]);
+  private roles = new Map<string, 'student'|'guardian'|'teacher'|'admin'>([
+    ...PILOT_STUDENTS.map(student => [student.id, 'student' as const] as const),
+    ...PILOT_TEACHERS.map(teacher => [teacher.id, 'teacher' as const] as const),
+    ['13000000-0000-4000-8000-000000000001','guardian'],
+    ['14000000-0000-4000-8000-000000000001','admin']
+  ]);
+  private studentDisplayNames = new Map<string, string>(PILOT_STUDENTS.map(student => [student.id, student.displayName]));
   private identities = new Map<string, string>();
   private sessions = new Map<string, NewSession & { revokedAt: Date | null; replacedBy: string | null }>();
-  private xp = new Map<string, number>([[DEV_IDS.user, 640]]);
-  private streak = new Map<string, number>([[DEV_IDS.user, 4]]);
-  private lessonState = new Map<string, Map<string, LessonState>>([
-    [DEV_IDS.user, new Map([
-      [SEEDED_LESSONS[0].id, { progressPercent: 100, completedAt: '2026-09-12T12:00:00.000Z' }],
-      [SEEDED_LESSONS[1].id, { progressPercent: 100, completedAt: '2026-09-14T12:00:00.000Z' }],
-      [SEEDED_LESSONS[2].id, { progressPercent: 36, completedAt: null }]
-    ])]
-  ]);
+  private xp = new Map<string, number>(PILOT_STUDENTS.map(student => [student.id, 0]));
+  private streak = new Map<string, number>(PILOT_STUDENTS.map(student => [student.id, 0]));
+  private lessonState = new Map<string, Map<string, LessonState>>(
+    PILOT_STUDENTS.map(student => [
+      student.id,
+      new Map([[SEEDED_LESSONS[0]!.id, { progressPercent: 0, completedAt: null }]])
+    ])
+  );
   private projects = new Map<string, InternalProject[]>();
-  private achievements = new Map<string, Set<string>>([[DEV_IDS.user, new Set(['first-spark', 'builder', 'ai-explorer'])]]);
-  private xpKeys = new Set(['seed:xp']);
+  private achievements = new Map<string, Set<string>>();
+  private xpKeys = new Set<string>();
   private conversations = new Map<string, InternalConversation[]>();
   private homeworkSubmissions = new Map<string, HomeworkSubmissionDto[]>();
   private submissionHomeworkIds = new Map<string,string>();
@@ -109,75 +118,44 @@ export class MemoryRepository implements AppRepository {
   private teacherMentorBookings: TeacherWorkspaceDto['mentor']['bookings'] = [];
   private teacherReports: TeacherWorkspaceDto['reports'] = [];
   private createdClassSessions: ClassSessionDto[] = [];
-  private portfolioVisibility = new Map<string,'private'|'shareable'|'public'>([['81000000-0000-4000-8000-000000000001','private']]);
-  private portfolioIds = new Map<string,string>([[DEV_IDS.user,'81000000-0000-4000-8000-000000000001'],['10000000-0000-4000-8000-000000000002','81000000-0000-4000-8000-000000000002']]);
+  private portfolioVisibility = new Map<string,'private'|'shareable'|'public'>();
+  private portfolioIds = new Map<string,string>(PILOT_STUDENTS.map((student, index) => [student.id, `81000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`]));
   private guardianLinks = new Map<string,'active'|'revoked'>([['92000000-0000-4000-8000-000000000001','active']]);
   private adminAuditEvents: Array<Record<string,unknown>> = [];
   private securityEvents: Array<Record<string,unknown>> = [];
-  private adminNotifications: Array<Record<string,unknown>> = [{id:'96000000-0000-4000-8000-000000000001',category:'class_reminder',recipient:'Максим',status:'pending',scheduledAt:relativeIso(1,16),attempts:0}];
+  private adminNotifications: Array<Record<string,unknown>> = [];
+  private readonly requireSeededTelegramIdentity: boolean;
 
-  constructor(workspaceUrl?: string) {
-    const tasks: ProjectTaskDto[] = [
-      { id: '32000000-0000-4000-8000-000000000001', number: '01', title: 'Сформулювати проблему', description: 'Хто має проблему і що саме заважає?', status: 'completed', xpReward: 80, weight: 30 },
-      { id: '32000000-0000-4000-8000-000000000002', number: '02', title: 'Описати користувача', description: 'Для кого ми створюємо рішення?', status: 'completed', xpReward: 100, weight: 32 },
-      { id: '32000000-0000-4000-8000-000000000003', number: '03', title: 'Зібрати перший прототип', description: 'Покажи головний сценарій без зайвих функцій.', status: 'in_progress', xpReward: 160, weight: 18 },
-      { id: '32000000-0000-4000-8000-000000000004', number: '04', title: 'Показати 3 людям', description: 'Збери чесний зворотний зв’язок.', status: 'locked', xpReward: 180, weight: 10 },
-      { id: '32000000-0000-4000-8000-000000000005', number: '05', title: 'Підготувати пітч', description: 'Поясни проблему, рішення та доказ.', status: 'locked', xpReward: 200, weight: 10 }
-    ];
-    this.projects.set(DEV_IDS.user, [{
-      id: DEV_IDS.project,
-      title: 'Smart Study Planner',
-      summary: 'AI-помічник для навчання без хаосу.',
-      status: 'active',
-      stagePosition: 3,
-      stageCode: 'prototype',
-      stageTitle: 'Прототип',
-      tags: ['AI', 'WEB', 'EDUCATION'],
-      workspaceUrl: workspaceUrl ?? null,
-      tasks
-    }]);
-
-    const created = '2026-09-17T10:00:00.000Z';
-    this.conversations.set(DEV_IDS.user, [{
-      id: DEV_IDS.conversation,
-      title: 'Smart Study Planner',
-      courseId: DEV_IDS.course,
-      lessonId: SEEDED_LESSONS[2].id,
-      projectId: DEV_IDS.project,
-      createdAt: created,
-      updatedAt: created,
-      summary: '',
-      clientMessageIds: new Set(),
-      messages: [{
-        id: '41000000-0000-4000-8000-000000000001',
-        role: 'assistant',
-        content: 'Привіт, Максим! Бачу, ти збираєш Smart Study Planner. З чого почнемо?',
-        createdAt: created
-      }]
-    }]);
-    this.homeworkSubmissions.set(DEV_IDS.user, [
-      { id: '74000000-0000-4000-8000-000000000001', attemptNumber: 1, submittedAt: relativeIso(-3, 18), studentComment: 'Перевірив джерела та додав пояснення.', contentText: 'Чекліст перевірки відповіді AI', contentUrl: null, status: 'completed', review: { score: 9, effort: 'high_effort', status: 'completed', feedback: 'Сильна перевірка джерел. Продовжуй пояснювати, чому джерело надійне.', reviewedAt: relativeIso(-2, 15) } },
-      { id: '74000000-0000-4000-8000-000000000002', attemptNumber: 1, submittedAt: relativeIso(-1, 19), studentComment: 'Це перша версія плану.', contentText: 'План Smart Study Planner', contentUrl: 'https://example.com/smart-study-plan', status: 'needs_revision', review: { score: 6, effort: 'high_effort', status: 'needs_revision', feedback: 'Зусилля видно. Додай одну конкретну перевірку для головного припущення.', reviewedAt: relativeIso(0, 10) } }
-    ]);
-    this.submissionHomeworkIds.set('74000000-0000-4000-8000-000000000001','73000000-0000-4000-8000-000000000001');
-    this.submissionHomeworkIds.set('74000000-0000-4000-8000-000000000002','73000000-0000-4000-8000-000000000002');
-    this.homeworkSubmissions.set('10000000-0000-4000-8000-000000000002', [{ id:'74000000-0000-4000-8000-000000000003',attemptNumber:1,submittedAt:relativeIso(0,9),studentComment:'Додала перший сценарій прототипу.',contentText:'Прототип навчального помічника та короткий опис перевірки.',contentUrl:'https://example.com/iryna-prototype',status:'submitted',review:null }]);
-    this.submissionHomeworkIds.set('74000000-0000-4000-8000-000000000003','73000000-0000-4000-8000-000000000003');
-    this.portfolioProjects.set(DEV_IDS.user, [{
-      id: '82000000-0000-4000-8000-000000000001', projectId: DEV_IDS.project, title: 'Smart Study Planner', shortDescription: 'AI-помічник, що допомагає планувати навчання без хаосу.', reflection: 'Я навчився починати з проблеми, а не з функцій.', learned: 'Перевіряти припущення, будувати прототип і слухати користувача.', skills: ['AI', 'Product thinking', 'UX'], technologies: ['HTML', 'CSS', 'JavaScript'], demoUrl: null, coverPath: null, screenshots: [], completionDate: null
-    }]);
-    this.mentorBookings.set(DEV_IDS.user, []);
-    this.classMaterials.set('71000000-0000-4000-8000-000000000001',[{id:'72000000-0000-4000-8000-000000000001',kind:'presentation',title:'Презентація заняття',url:'https://example.com/materials/ai-verification'}]);
-    this.attendanceRecords.set('71000000-0000-4000-8000-000000000003',new Map([[DEV_IDS.user,{status:'present',note:'Активно працював у практичній частині.',confirmedAt:relativeIso(-3,19)}],['10000000-0000-4000-8000-000000000002',{status:'late',note:'Приєдналася на 10 хвилин пізніше.',confirmedAt:relativeIso(-3,19)}]]));
-    this.teacherHomeworkItems=[
-      {id:'73000000-0000-4000-8000-000000000001',groupId:'70000000-0000-4000-8000-000000000001',groupName:'Creators · Осінь 2026',classSessionId:'71000000-0000-4000-8000-000000000003',title:'Перевір відповідь AI',instructions:'Обери відповідь AI, знайди два джерела та поясни висновок.',publishAt:relativeIso(-5,18),dueAt:relativeIso(-2,20),xpReward:80,status:'published',submissionCount:1,reviewCount:1,needsRevisionCount:0},
-      {id:'73000000-0000-4000-8000-000000000002',groupId:'70000000-0000-4000-8000-000000000001',groupName:'Creators · Осінь 2026',classSessionId:'71000000-0000-4000-8000-000000000001',title:'План твого проєкту',instructions:'Опиши проблему, користувача, рішення та одну перевірку.',publishAt:relativeIso(-2,18),dueAt:relativeIso(2,20),xpReward:120,status:'published',submissionCount:1,reviewCount:1,needsRevisionCount:1},
-      {id:'73000000-0000-4000-8000-000000000003',groupId:'70000000-0000-4000-8000-000000000001',groupName:'Creators · Осінь 2026',classSessionId:null,title:'Підготуй перший прототип',instructions:'Збери один головний сценарій та додай посилання або скриншот.',publishAt:relativeIso(0,12),dueAt:relativeIso(6,20),xpReward:160,status:'published',submissionCount:1,reviewCount:0,needsRevisionCount:0}
-    ];
-    this.teacherNotes=[{id:'94000000-0000-4000-8000-000000000001',studentId:DEV_IDS.user,category:'project',content:'На наступній зустрічі допомогти звузити сценарій першого тесту.',createdAt:relativeIso(-2,12),updatedAt:relativeIso(-2,12)}];
-    this.teacherMentorAvailability=[{id:'91000000-0000-4000-8000-000000000001',mentorId:'60000000-0000-4000-8000-000000000001',startsAt:relativeIso(2,18),endsAt:relativeIso(2,18,30),timezone:'Europe/Kyiv',status:'open'},{id:'91000000-0000-4000-8000-000000000002',mentorId:'60000000-0000-4000-8000-000000000001',startsAt:relativeIso(5,16),endsAt:relativeIso(5,16,30),timezone:'Europe/Kyiv',status:'blocked'}];
-    this.teacherMentorBookings=[{id:'95000000-0000-4000-8000-000000000001',mentorId:'60000000-0000-4000-8000-000000000001',mentorName:'Анна Коваль',studentId:DEV_IDS.user,studentName:'Максим',projectTitle:'Smart Study Planner',startsAt:relativeIso(0,18),endsAt:relativeIso(0,18,30),status:'confirmed',meetingUrl:'https://meet.google.com/mentor-demo'}];
-    this.teacherReports=[{id:'93000000-0000-4000-8000-000000000001',studentId:DEV_IDS.user,studentFirstName:'Максим',groupId:'70000000-0000-4000-8000-000000000001',groupName:'Creators · Осінь 2026',periodStart:new Date(Date.now()-7*86400000).toISOString().slice(0,10),periodEnd:new Date(Date.now()-86400000).toISOString().slice(0,10),payload:{classesScheduled:2,classesAttended:2,attendance:{present:2,late:0,absent:0,excused:0},homeworkSubmitted:2,scores:[9,6],effort:{high:2},project:'Smart Study Planner',projectProgress:62,xpEarned:120,level:'Creator'},teacherComment:'Максим уважно працював із джерелами та допрацьовує план проєкту.',status:'ready_for_review',approvedAt:null}];
+  constructor(private readonly workspaceUrl?: string, options: MemoryRepositoryOptions = {}) {
+    this.requireSeededTelegramIdentity = options.requireSeededTelegramIdentity ?? false;
+    for (const student of PILOT_STUDENTS) {
+      this.projects.set(student.id, []);
+      this.achievements.set(student.id, new Set());
+      this.conversations.set(student.id, []);
+      this.homeworkSubmissions.set(student.id, []);
+      this.portfolioProjects.set(student.id, []);
+      this.mentorBookings.set(student.id, []);
+      const portfolioId = this.portfolioIds.get(student.id)!;
+      this.portfolioVisibility.set(portfolioId, 'private');
+    }
+    this.loadTelegramBindings(options.telegramBindingsJson);
+    this.teacherHomeworkItems = SEEDED_HOMEWORK.map((instructions, index) => ({
+      id: `73000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      groupId: PILOT.groupId,
+      groupName: PILOT.groupName,
+      classSessionId: `71000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      title: `Домашнє завдання · заняття ${index + 1}`,
+      instructions,
+      publishAt: relativeIso(1 + index * 7, 18, 30),
+      dueAt: relativeIso(7 + index * 7, 20),
+      xpReward: SEEDED_LESSONS[index]!.xp,
+      status: 'published',
+      submissionCount: 0,
+      reviewCount: 0,
+      needsRevisionCount: 0,
+      resources: []
+    }));
+    this.teacherMentorAvailability = [{ id:'91000000-0000-4000-8000-000000000001', mentorId:PILOT.mentorId, startsAt:relativeIso(2,18), endsAt:relativeIso(2,18,30), timezone:PILOT.timezone, status:'open' }];
   }
 
   async ping(): Promise<void> {}
@@ -186,6 +164,9 @@ export class MemoryRepository implements AppRepository {
     const key = `telegram:${identity.telegramId}`;
     const existingId = this.identities.get(key);
     if (existingId) return this.requireUser(existingId);
+    if (this.requireSeededTelegramIdentity) {
+      throw new AppError('TELEGRAM_ACCOUNT_NOT_LINKED', 403, 'Telegram-акаунт ще не прив’язано до профілю учня');
+    }
     const user: AuthUser = { id: randomUUID(), displayName: identity.firstName.slice(0, 60) || 'Учень', status: 'active' };
     this.users.set(user.id, user);
     this.roles.set(user.id, 'student');
@@ -199,6 +180,7 @@ export class MemoryRepository implements AppRepository {
     this.homeworkSubmissions.set(user.id, []);
     this.portfolioProjects.set(user.id, []);
     this.mentorBookings.set(user.id, []);
+    this.studentDisplayNames.set(user.id, user.displayName);
     return structuredClone(user);
   }
 
@@ -268,24 +250,21 @@ export class MemoryRepository implements AppRepository {
     const session = (id: string, title: string, days: number, status: ScheduleDto['upcoming'][number]['status']) => {
       const override=this.classSessionOverrides.get(id); const startsAt=override?.startsAt??relativeIso(days,17); const endsAt=override?.endsAt??relativeIso(days,18,30); const currentStatus=override?.status??status;
       return { id, title:override?.title??title, description:override?.description??'Живе групове заняття з практикою та роботою над проєктом.', startsAt, endsAt, durationMinutes: Math.round((Date.parse(endsAt)-Date.parse(startsAt))/60000), status:currentStatus,
-        meetingProvider:override?.meetingProvider??'Google Meet', meetingUrl:currentStatus==='cancelled'?null:(override?.meetingUrl??'https://meet.google.com/abc-defg-hij'), courseTitle:'Основи роботи з AI',moduleTitle:'Основи роботи з AI',lessonTitle:override?.lessonId?SEEDED_LESSONS.find(item=>item.id===override.lessonId)?.title??title:title,teacherName:'Анна Коваль',materials:structuredClone(this.classMaterials.get(id)??[]) };
+        meetingProvider:override?.meetingProvider??'Google Meet', meetingUrl:currentStatus==='cancelled'?null:(override?.meetingUrl??PILOT.meetingUrl), courseTitle:PILOT.courseTitle,moduleTitle:PILOT.moduleTitle,lessonTitle:override?.lessonId?SEEDED_LESSONS.find(item=>item.id===override.lessonId)?.title??title:title,teacherName:'Команда викладачів',materials:structuredClone(this.classMaterials.get(id)??[]) };
     };
-    const upcoming = [session('71000000-0000-4000-8000-000000000001','Як перевіряти відповіді AI',1,'scheduled'),session('71000000-0000-4000-8000-000000000002','Від проблеми до ідеї',4,'rescheduled'),...this.createdClassSessions].filter(item=>new Date(item.endsAt)>=new Date()&&item.status!=='cancelled').sort((a,b)=>Date.parse(a.startsAt)-Date.parse(b.startsAt));
-    const past = [session('71000000-0000-4000-8000-000000000003', 'Як працювати з AI', -3, 'completed')];
-    return { timezone: 'Europe/Kyiv', nextClass: upcoming[0] ?? null, today: upcoming.filter(item => new Date(item.startsAt).toDateString() === new Date().toDateString()), thisWeek: upcoming, upcoming, past };
+    const upcoming = [...SEEDED_LESSONS.map((lesson,index)=>session(`71000000-0000-4000-8000-${String(index+1).padStart(12,'0')}`,lesson.title,1+index*7,'scheduled')),...this.createdClassSessions].filter(item=>new Date(item.endsAt)>=new Date()&&item.status!=='cancelled').sort((a,b)=>Date.parse(a.startsAt)-Date.parse(b.startsAt));
+    return { timezone: PILOT.timezone, nextClass: upcoming[0] ?? null, today: upcoming.filter(item => new Date(item.startsAt).toDateString() === new Date().toDateString()), thisWeek: upcoming, upcoming, past: [] };
   }
 
   async listHomework(userId: string): Promise<HomeworkSummaryDto[]> {
     this.requireRole(userId,'student');
     const submissions = this.homeworkSubmissions.get(userId) ?? [];
     const latestFor=(homeworkId:string)=>submissions.filter(item=>this.submissionHomeworkIds.get(item.id)===homeworkId).sort((a,b)=>b.attemptNumber-a.attemptNumber)[0]??null;
-    const reviewed = latestFor('73000000-0000-4000-8000-000000000001');
-    const revision = latestFor('73000000-0000-4000-8000-000000000002');
-    return [
-      { id: '73000000-0000-4000-8000-000000000001', title: 'Перевір відповідь AI', instructions: 'Обери відповідь AI, знайди два джерела та поясни висновок.', publishedAt: relativeIso(-5, 18), dueAt: relativeIso(-2, 20), xpReward: 80, classTitle: 'Як перевіряти відповіді AI', state: reviewed?.status ?? 'not_started', latestSubmission: reviewed },
-      { id: '73000000-0000-4000-8000-000000000002', title: 'План твого проєкту', instructions: 'Опиши проблему, користувача, рішення та одну перевірку.', publishedAt: relativeIso(-2, 18), dueAt: relativeIso(2, 20), xpReward: 120, classTitle: 'Від проблеми до ідеї', state: revision?.status ?? 'not_started', latestSubmission: revision },
-      { id: '73000000-0000-4000-8000-000000000003', title: 'Підготуй перший прототип', instructions: 'Збери один головний сценарій та додай посилання або скриншот.', publishedAt: relativeIso(0, 12), dueAt: relativeIso(6, 20), xpReward: 160, classTitle: 'Створюємо першу версію', state: 'not_started', latestSubmission: null }
-    ];
+    return SEEDED_HOMEWORK.map((instructions,index)=>{
+      const id=`73000000-0000-4000-8000-${String(index+1).padStart(12,'0')}`;
+      const latest=latestFor(id);
+      return {id,title:`Домашнє завдання · заняття ${index+1}`,instructions,publishedAt:relativeIso(1+index*7,18,30),dueAt:relativeIso(7+index*7,20),xpReward:SEEDED_LESSONS[index]!.xp,classTitle:SEEDED_LESSONS[index]!.title,state:latest?.status??'not_started',latestSubmission:latest};
+    });
   }
 
   async submitHomework(userId: string, homeworkId: string, input: { contentText: string; contentUrl?: string; studentComment?: string }): Promise<HomeworkSubmissionDto> {
@@ -325,8 +304,8 @@ export class MemoryRepository implements AppRepository {
     return {
       course: {
         id: DEV_IDS.course,
-        title: 'Основи роботи з AI',
-        description: 'Думай разом з AI, став правильні питання й перевіряй результат.',
+        title: PILOT.courseTitle,
+        description: PILOT.courseDescription,
         progressPercent: Math.round(totalProgress / lessons.length),
         completedLessons: lessons.filter(lesson => lesson.state === 'completed').length,
         totalLessons: lessons.length
@@ -334,8 +313,8 @@ export class MemoryRepository implements AppRepository {
       modules: [{
         id: DEV_IDS.module,
         number: '01',
-        title: 'Основи роботи з AI',
-        description: 'Від першого запиту до перевіреного MVP.',
+        title: PILOT.moduleTitle,
+        description: PILOT.moduleDescription,
         lessons
       }]
     };
@@ -351,7 +330,7 @@ export class MemoryRepository implements AppRepository {
     if (!source) return null;
     return {
       ...summary,
-      moduleTitle: 'Основи роботи з AI',
+      moduleTitle: PILOT.moduleTitle,
       content: JSON.parse(JSON.stringify(source.content)) as LessonDto['content'],
       nextLessonId: SEEDED_LESSONS[sourceIndex + 1]?.id ?? null
     };
@@ -384,7 +363,7 @@ export class MemoryRepository implements AppRepository {
     this.requireUser(userId);
     const project: InternalProject = {
       id: randomUUID(), title: input.title, summary: input.summary, status: 'active',
-      stagePosition: 1, stageCode: 'idea', stageTitle: 'Ідея', tags: ['AI'], workspaceUrl: null,
+      stagePosition: 1, stageCode: 'idea', stageTitle: 'Ідея', tags: ['AI'], workspaceUrl: this.workspaceUrl ?? null,
       tasks: [
         { id: randomUUID(), number: '01', title: 'Сформулювати проблему', description: 'Опиши проблему конкретної людини.', status: 'in_progress', xpReward: 80, weight: 35 },
         { id: randomUUID(), number: '02', title: 'Описати користувача', description: 'Хто потребує рішення?', status: 'locked', xpReward: 100, weight: 25 },
@@ -447,7 +426,7 @@ export class MemoryRepository implements AppRepository {
       lessonCount: learning.course.completedLessons,
       projectCount: projects.length,
       achievements: await this.listAchievements(userId),
-      mentor: { displayName: 'Анна', title: 'Product mentor', avatarPath: null, nextMeetingAt: null }
+      mentor: { displayName: PILOT_TEACHERS[0].fullName, title: 'Ментор', avatarPath: null, nextMeetingAt: null }
     };
   }
 
@@ -499,7 +478,7 @@ export class MemoryRepository implements AppRepository {
     const booked = new Set((this.mentorBookings.get(userId) ?? []).filter(item => ['reserved', 'confirmed'].includes(item.status)).map(item => item.startsAt));
     return [2, 5].map((days, index) => {
       const startsAt = relativeIso(days, index ? 16 : 18);
-      return { id: `91000000-0000-4000-8000-00000000000${index + 1}`, mentorId: '60000000-0000-4000-8000-000000000001', mentorName: 'Анна Коваль', mentorTitle: 'Product mentor', startsAt, endsAt: relativeIso(days, index ? 16 : 18, 30), timezone: 'Europe/Kyiv', available: !booked.has(startsAt) };
+      return { id: `91000000-0000-4000-8000-00000000000${index + 1}`, mentorId: PILOT.mentorId, mentorName: PILOT_TEACHERS[0].fullName, mentorTitle: 'Ментор', startsAt, endsAt: relativeIso(days, index ? 16 : 18, 30), timezone: PILOT.timezone, available: !booked.has(startsAt) };
     });
   }
 
@@ -515,28 +494,28 @@ export class MemoryRepository implements AppRepository {
 
   async listTeacherGroups(userId: string): Promise<TeacherGroupDto[]> {
     this.requireRole(userId, 'teacher');
-    return [{ id:'70000000-0000-4000-8000-000000000001',name:'Creators · Осінь 2026',courseTitle:'Основи роботи з AI',timezone:'Europe/Kyiv',studentCount:2,nextClassAt:relativeIso(1,17) }];
+    return [{ id:PILOT.groupId,name:PILOT.groupName,courseTitle:PILOT.courseTitle,timezone:PILOT.timezone,studentCount:PILOT_STUDENTS.length,nextClassAt:relativeIso(1,17) }];
   }
 
   async listGroupStudents(userId: string, groupId: string): Promise<TeacherStudentDto[]> {
     this.requireRole(userId,'teacher');
-    if(groupId!=='70000000-0000-4000-8000-000000000001') throw new AppError('GROUP_FORBIDDEN',403,'Група недоступна');
-    return [{id:DEV_IDS.user,firstName:'Максим',progressPercent:20,projectTitle:'Smart Study Planner'},{id:'10000000-0000-4000-8000-000000000002',firstName:'Ірина',progressPercent:10,projectTitle:null}];
+    if(groupId!==PILOT.groupId) throw new AppError('GROUP_FORBIDDEN',403,'Група недоступна');
+    return PILOT_STUDENTS.map(student=>({id:student.id,firstName:student.fullName,progressPercent:0,projectTitle:null}));
   }
 
   async createClassSession(userId:string,input:{groupId:string;courseId:string;moduleId?:string;lessonId?:string;title:string;description?:string;startsAt:string;endsAt:string;meetingUrl?:string;meetingProvider?:string}):Promise<ClassSessionDto>{
-    this.requireRole(userId,'teacher'); if(input.groupId!=='70000000-0000-4000-8000-000000000001')throw new AppError('GROUP_FORBIDDEN',403,'Група недоступна');
-    const created:ClassSessionDto={id:randomUUID(),title:input.title,description:input.description??'',startsAt:input.startsAt,endsAt:input.endsAt,durationMinutes:Math.round((Date.parse(input.endsAt)-Date.parse(input.startsAt))/60000),status:'scheduled',meetingProvider:input.meetingProvider??null,meetingUrl:input.meetingUrl??null,courseTitle:'Основи роботи з AI',moduleTitle:'Основи роботи з AI',lessonTitle:input.lessonId?SEEDED_LESSONS.find(item=>item.id===input.lessonId)?.title??null:null,teacherName:'Анна Коваль',materials:[]};
+    this.requireRole(userId,'teacher'); if(input.groupId!==PILOT.groupId)throw new AppError('GROUP_FORBIDDEN',403,'Група недоступна');
+    const created:ClassSessionDto={id:randomUUID(),title:input.title,description:input.description??'',startsAt:input.startsAt,endsAt:input.endsAt,durationMinutes:Math.round((Date.parse(input.endsAt)-Date.parse(input.startsAt))/60000),status:'scheduled',meetingProvider:input.meetingProvider??null,meetingUrl:input.meetingUrl??null,courseTitle:PILOT.courseTitle,moduleTitle:PILOT.moduleTitle,lessonTitle:input.lessonId?SEEDED_LESSONS.find(item=>item.id===input.lessonId)?.title??null:null,teacherName:this.requireUser(userId).displayName,materials:[]};
     this.createdClassSessions.push(created); return structuredClone(created);
   }
-  async rescheduleClass(userId:string,sessionId:string,input:{startsAt:string;endsAt:string;reason?:string}):Promise<void>{this.requireRole(userId,'teacher');if(!['71000000-0000-4000-8000-000000000001','71000000-0000-4000-8000-000000000002'].includes(sessionId)&&!this.createdClassSessions.some(item=>item.id===sessionId))throw new AppError('CLASS_FORBIDDEN',403,'Заняття недоступне');if(Date.parse(input.endsAt)<=Date.parse(input.startsAt))throw new AppError('INVALID_TIME',400,'Некоректний час заняття');this.classSessionOverrides.set(sessionId,{...this.classSessionOverrides.get(sessionId),startsAt:input.startsAt,endsAt:input.endsAt,status:'rescheduled'});const created=this.createdClassSessions.find(item=>item.id===sessionId);if(created){created.startsAt=input.startsAt;created.endsAt=input.endsAt;created.durationMinutes=Math.round((Date.parse(input.endsAt)-Date.parse(input.startsAt))/60000);created.status='rescheduled';}}
-  async confirmAttendance(userId:string,sessionId:string,studentId:string,status:'present'|'late'|'absent'|'excused',note?:string):Promise<void>{this.requireRole(userId,'teacher');if(!this.teacherCanAccessSession(sessionId)||![DEV_IDS.user,'10000000-0000-4000-8000-000000000002'].includes(studentId))throw new AppError('ATTENDANCE_FORBIDDEN',403,'Учень або заняття недоступні');const records=this.attendanceRecords.get(sessionId)??new Map();records.set(studentId,{status,note:note??'',confirmedAt:nowIso()});this.attendanceRecords.set(sessionId,records);}
-  async createHomework(userId:string,input:{groupId:string;courseId:string;moduleId?:string;lessonId?:string;classSessionId?:string;title:string;instructions:string;publishAt?:string;dueAt?:string;xpReward:number;status:'draft'|'published';resources?:Array<{kind:'presentation'|'document'|'link'|'reference'|'other';title:string;url:string}>}):Promise<HomeworkSummaryDto>{this.requireRole(userId,'teacher');if(input.groupId!=='70000000-0000-4000-8000-000000000001')throw new AppError('GROUP_FORBIDDEN',403,'Група недоступна');if(input.resources?.some(resource=>!resource.url.startsWith('https://')))throw new AppError('UNSAFE_URL',400,'Дозволено лише HTTPS-посилання');const id=randomUUID();this.teacherHomeworkItems.unshift({id,groupId:input.groupId,groupName:'Creators · Осінь 2026',classSessionId:input.classSessionId??null,title:input.title,instructions:input.instructions,publishAt:input.publishAt??null,dueAt:input.dueAt??null,xpReward:input.xpReward,status:input.status,submissionCount:0,reviewCount:0,needsRevisionCount:0,resources:(input.resources??[]).map(resource=>({id:randomUUID(),...resource}))});return{id,title:input.title,instructions:input.instructions,publishedAt:input.publishAt??'',dueAt:input.dueAt??null,xpReward:input.xpReward,classTitle:null,state:'not_started',latestSubmission:null};}
+  async rescheduleClass(userId:string,sessionId:string,input:{startsAt:string;endsAt:string;reason?:string}):Promise<void>{this.requireRole(userId,'teacher');if(!this.teacherCanAccessSession(sessionId))throw new AppError('CLASS_FORBIDDEN',403,'Заняття недоступне');if(Date.parse(input.endsAt)<=Date.parse(input.startsAt))throw new AppError('INVALID_TIME',400,'Некоректний час заняття');this.classSessionOverrides.set(sessionId,{...this.classSessionOverrides.get(sessionId),startsAt:input.startsAt,endsAt:input.endsAt,status:'rescheduled'});const created=this.createdClassSessions.find(item=>item.id===sessionId);if(created){created.startsAt=input.startsAt;created.endsAt=input.endsAt;created.durationMinutes=Math.round((Date.parse(input.endsAt)-Date.parse(input.startsAt))/60000);created.status='rescheduled';}}
+  async confirmAttendance(userId:string,sessionId:string,studentId:string,status:'present'|'late'|'absent'|'excused',note?:string):Promise<void>{this.requireRole(userId,'teacher');if(!this.teacherCanAccessSession(sessionId)||!PILOT_STUDENTS.some(student=>student.id===studentId))throw new AppError('ATTENDANCE_FORBIDDEN',403,'Учень або заняття недоступні');const records=this.attendanceRecords.get(sessionId)??new Map();records.set(studentId,{status,note:note??'',confirmedAt:nowIso()});this.attendanceRecords.set(sessionId,records);}
+  async createHomework(userId:string,input:{groupId:string;courseId:string;moduleId?:string;lessonId?:string;classSessionId?:string;title:string;instructions:string;publishAt?:string;dueAt?:string;xpReward:number;status:'draft'|'published';resources?:Array<{kind:'presentation'|'document'|'link'|'reference'|'other';title:string;url:string}>}):Promise<HomeworkSummaryDto>{this.requireRole(userId,'teacher');if(input.groupId!==PILOT.groupId)throw new AppError('GROUP_FORBIDDEN',403,'Група недоступна');if(input.resources?.some(resource=>!resource.url.startsWith('https://')))throw new AppError('UNSAFE_URL',400,'Дозволено лише HTTPS-посилання');const id=randomUUID();this.teacherHomeworkItems.unshift({id,groupId:input.groupId,groupName:PILOT.groupName,classSessionId:input.classSessionId??null,title:input.title,instructions:input.instructions,publishAt:input.publishAt??null,dueAt:input.dueAt??null,xpReward:input.xpReward,status:input.status,submissionCount:0,reviewCount:0,needsRevisionCount:0,resources:(input.resources??[]).map(resource=>({id:randomUUID(),...resource}))});return{id,title:input.title,instructions:input.instructions,publishedAt:input.publishAt??'',dueAt:input.dueAt??null,xpReward:input.xpReward,classTitle:null,state:'not_started',latestSubmission:null};}
   async reviewHomework(userId:string,submissionId:string,input:{score:number;effort:EffortLevel;status:'reviewed'|'needs_revision'|'completed';feedback:string}):Promise<void>{this.requireRole(userId,'teacher');if(input.score<0||input.score>10||!Number.isInteger(input.score))throw new AppError('INVALID_SCORE',400,'Оцінка має бути цілим числом від 0 до 10');const submission=[...this.homeworkSubmissions.values()].flat().find(item=>item.id===submissionId);if(!submission)throw new AppError('SUBMISSION_FORBIDDEN',403,'Робота недоступна');submission.status=input.status==='needs_revision'?'needs_revision':input.status==='completed'?'completed':submission.status;submission.review={score:input.score,effort:input.effort,status:input.status,feedback:input.feedback,reviewedAt:nowIso()};}
 
   async getTeacherWorkspace(userId:string):Promise<TeacherWorkspaceDto>{
     this.requireRole(userId,'teacher');
-    const groupId='70000000-0000-4000-8000-000000000001'; const groupName='Creators · Осінь 2026';
+    const groupId=PILOT.groupId; const groupName=PILOT.groupName;
     const groupStudents=await this.listGroupStudents(userId,groupId);
     const schedule=await this.getSchedule(DEV_IDS.user);
     const allSessions=[...schedule.upcoming,...schedule.past].map(item=>{
@@ -559,7 +538,8 @@ export class MemoryRepository implements AppRepository {
       students.push({...student,groupId,groupName,courseTitle:learning.course.title,moduleTitle:learning.modules[0]?.title??'',xp:this.xp.get(student.id)??0,level:LEVELS.filter(level=>(this.xp.get(student.id)??0)>=level.minXp).at(-1)?.title??LEVELS[0]!.title,attendance:{present:attendance.filter(value=>value==='present').length,late:attendance.filter(value=>value==='late').length,absent:attendance.filter(value=>value==='absent').length,excused:attendance.filter(value=>value==='excused').length},homework:{assigned:this.teacherHomeworkItems.filter(item=>item.status==='published').length,submitted:attempts.length,needsRevision:attempts.filter(item=>item.status==='needs_revision').length,averageScore:scores.length?Math.round(scores.reduce((sum,value)=>sum+value,0)/scores.length*10)/10:null,effort:effort as EffortLevel|null},projects,portfolio,mentorBookings:structuredClone(this.mentorBookings.get(student.id)??[]),notes:structuredClone(this.teacherNotes.filter(note=>note.studentId===student.id)),attentionReasons:reasons,recentActivityAt:attempts.map(item=>item.submittedAt).filter(Boolean).sort().at(-1)??null});
     }
     const todayKey=new Date().toISOString().slice(0,10); const attention=students.filter(student=>student.attentionReasons.length).map(student=>({studentId:student.id,studentName:student.firstName,reasons:student.attentionReasons}));
-    return{teacher:{id:userId,name:'Анна Коваль',title:'Викладачка · Product mentor',timezone:'Europe/Kyiv'},metrics:{todayClasses:allSessions.filter(item=>item.startsAt.slice(0,10)===todayKey).length,awaitingReview:submissions.filter(item=>item.status==='submitted'&&!item.review).length,resubmitted:submissions.filter(item=>item.attemptNumber>1&&item.status==='submitted').length,mentorToday:this.teacherMentorBookings.filter(item=>item.startsAt.slice(0,10)===todayKey).length,reportsPending:this.teacherReports.filter(item=>['draft','ready_for_review'].includes(item.status)).length},groups:[{id:groupId,courseId:DEV_IDS.course,name:groupName,courseTitle:'Основи роботи з AI',timezone:'Europe/Kyiv',studentCount:groupStudents.length,nextClassAt:schedule.nextClass?.startsAt??null,scheduleLabel:'Вт · Сб, 17:00',progressPercent:Math.round(groupStudents.reduce((sum,item)=>sum+item.progressPercent,0)/groupStudents.length),attendanceRate:75,recentHomework:this.teacherHomeworkItems[0]?.title??null}],sessions:allSessions,homework:structuredClone(this.teacherHomeworkItems),submissions,students,mentor:{mentorId:'60000000-0000-4000-8000-000000000001',availability:structuredClone(this.teacherMentorAvailability),bookings:structuredClone(this.teacherMentorBookings)},reports:structuredClone(this.teacherReports),lessons:SEEDED_LESSONS.map(lesson=>({id:lesson.id,title:lesson.title,moduleTitle:'Основи роботи з AI'})),attention};
+    const teacher=PILOT_TEACHERS.find(item=>item.id===userId)??PILOT_TEACHERS[0];
+    return{teacher:{id:userId,name:teacher.fullName,title:teacher.title,timezone:PILOT.timezone},metrics:{todayClasses:allSessions.filter(item=>item.startsAt.slice(0,10)===todayKey).length,awaitingReview:submissions.filter(item=>item.status==='submitted'&&!item.review).length,resubmitted:submissions.filter(item=>item.attemptNumber>1&&item.status==='submitted').length,mentorToday:this.teacherMentorBookings.filter(item=>item.startsAt.slice(0,10)===todayKey).length,reportsPending:this.teacherReports.filter(item=>['draft','ready_for_review'].includes(item.status)).length},groups:[{id:groupId,courseId:DEV_IDS.course,name:groupName,courseTitle:PILOT.courseTitle,timezone:PILOT.timezone,studentCount:groupStudents.length,nextClassAt:schedule.nextClass?.startsAt??null,scheduleLabel:'8 занять · розклад уточнюється',progressPercent:Math.round(groupStudents.reduce((sum,item)=>sum+item.progressPercent,0)/groupStudents.length),attendanceRate:0,recentHomework:this.teacherHomeworkItems[0]?.title??null}],sessions:allSessions,homework:structuredClone(this.teacherHomeworkItems),submissions,students,mentor:{mentorId:teacher.mentor?PILOT.mentorId:null,availability:teacher.mentor?structuredClone(this.teacherMentorAvailability):[],bookings:teacher.mentor?structuredClone(this.teacherMentorBookings):[]},reports:structuredClone(this.teacherReports),lessons:SEEDED_LESSONS.map(lesson=>({id:lesson.id,title:lesson.title,moduleTitle:PILOT.moduleTitle})),attention};
   }
 
   async searchTeacherScope(userId:string,query:string):Promise<TeacherSearchDto>{const data=await this.getTeacherWorkspace(userId);const term=query.trim().toLocaleLowerCase('uk');const includes=(value:string)=>value.toLocaleLowerCase('uk').includes(term);return{students:data.students.filter(item=>includes(item.firstName)).map(item=>({id:item.id,label:item.firstName,meta:item.groupName})),groups:data.groups.filter(item=>includes(item.name)||includes(item.courseTitle)).map(item=>({id:item.id,label:item.name,meta:item.courseTitle})),homework:data.homework.filter(item=>includes(item.title)).map(item=>({id:item.id,label:item.title,meta:item.groupName})),projects:data.students.flatMap(student=>student.projects.filter(project=>includes(project.title)).map(project=>({id:project.id,label:project.title,meta:student.firstName})))}};
@@ -568,21 +548,21 @@ export class MemoryRepository implements AppRepository {
   async addClassMaterial(userId:string,sessionId:string,input:{kind:'presentation'|'document'|'link'|'reference'|'other';title:string;url:string}):Promise<void>{this.requireRole(userId,'teacher');if(!this.teacherCanAccessSession(sessionId))throw new AppError('CLASS_FORBIDDEN',403,'Заняття недоступне');if(!input.url.startsWith('https://'))throw new AppError('UNSAFE_URL',400,'Дозволено лише HTTPS-посилання');const materials=this.classMaterials.get(sessionId)??[];materials.push({id:randomUUID(),kind:input.kind,title:input.title,url:input.url});this.classMaterials.set(sessionId,materials);}
   async bulkConfirmAttendance(userId:string,sessionId:string,entries:Array<{studentId:string;status:'present'|'late'|'absent'|'excused';note?:string}>):Promise<void>{this.requireRole(userId,'teacher');if(!entries.length)throw new AppError('ATTENDANCE_EMPTY',400,'Додайте учнів');for(const entry of entries)await this.confirmAttendance(userId,sessionId,entry.studentId,entry.status,entry.note);}
   async publishHomework(userId:string,homeworkId:string,publishAt:string):Promise<void>{this.requireRole(userId,'teacher');const homework=this.teacherHomeworkItems.find(item=>item.id===homeworkId);if(!homework)throw new AppError('HOMEWORK_FORBIDDEN',403,'Домашня робота недоступна');if(homework.status!=='draft')throw new AppError('HOMEWORK_STATE',409,'Опублікувати можна лише чернетку');if(homework.dueAt&&Date.parse(homework.dueAt)<=Date.parse(publishAt))throw new AppError('INVALID_TIME',400,'Дедлайн має бути після публікації');homework.status='published';homework.publishAt=publishAt;}
-  async createTeacherNote(userId:string,studentId:string,input:{category:'general'|'learning'|'project'|'mentoring';content:string}):Promise<TeacherPrivateNoteDto>{this.requireRole(userId,'teacher');if(![DEV_IDS.user,'10000000-0000-4000-8000-000000000002'].includes(studentId))throw new AppError('STUDENT_FORBIDDEN',403,'Учень недоступний');const timestamp=nowIso();const note={id:randomUUID(),studentId,category:input.category,content:input.content,createdAt:timestamp,updatedAt:timestamp};this.teacherNotes.unshift(note);return structuredClone(note);}
+  async createTeacherNote(userId:string,studentId:string,input:{category:'general'|'learning'|'project'|'mentoring';content:string}):Promise<TeacherPrivateNoteDto>{this.requireRole(userId,'teacher');if(!PILOT_STUDENTS.some(student=>student.id===studentId))throw new AppError('STUDENT_FORBIDDEN',403,'Учень недоступний');const timestamp=nowIso();const note={id:randomUUID(),studentId,category:input.category,content:input.content,createdAt:timestamp,updatedAt:timestamp};this.teacherNotes.unshift(note);return structuredClone(note);}
   async updatePortfolioItemAsTeacher(userId:string,portfolioProjectId:string,input:{title?:string|null;shortDescription?:string;reflection?:string;learned?:string}):Promise<void>{this.requireRole(userId,'teacher');const item=[...this.portfolioProjects.values()].flat().find(project=>project.id===portfolioProjectId);if(!item)throw new AppError('PORTFOLIO_FORBIDDEN',403,'Елемент портфоліо недоступний');if(input.title)item.title=input.title;if(input.shortDescription!==undefined)item.shortDescription=input.shortDescription;if(input.reflection!==undefined)item.reflection=input.reflection;if(input.learned!==undefined)item.learned=input.learned;}
   async createMentorAvailability(userId:string,input:{startsAt:string;endsAt:string;timezone:string;status:'open'|'blocked'}):Promise<void>{this.requireRole(userId,'teacher');if(Date.parse(input.endsAt)<=Date.parse(input.startsAt))throw new AppError('INVALID_TIME',400,'Некоректний часовий інтервал');const overlaps=this.teacherMentorAvailability.some(item=>!['cancelled'].includes(item.status)&&Date.parse(item.startsAt)<Date.parse(input.endsAt)&&Date.parse(item.endsAt)>Date.parse(input.startsAt))||this.teacherMentorBookings.some(item=>['reserved','confirmed','rescheduled'].includes(item.status)&&Date.parse(item.startsAt)<Date.parse(input.endsAt)&&Date.parse(item.endsAt)>Date.parse(input.startsAt));if(overlaps)throw new AppError('MENTOR_SLOT_CONFLICT',409,'Цей час перетинається з іншим вікном або зустріччю');this.teacherMentorAvailability.push({id:randomUUID(),mentorId:'60000000-0000-4000-8000-000000000001',...input});}
   async updateMentorBooking(userId:string,bookingId:string,input:{status:'confirmed'|'completed'|'cancelled'|'rescheduled'|'no_show';meetingUrl?:string|null;startsAt?:string;endsAt?:string}):Promise<void>{this.requireRole(userId,'teacher');const booking=this.teacherMentorBookings.find(item=>item.id===bookingId);if(!booking)throw new AppError('BOOKING_FORBIDDEN',403,'Бронювання недоступне');if(input.meetingUrl&&!input.meetingUrl.startsWith('https://'))throw new AppError('UNSAFE_URL',400,'Дозволено лише HTTPS-посилання');if(input.status==='rescheduled'&&(!input.startsAt||!input.endsAt||Date.parse(input.endsAt)<=Date.parse(input.startsAt)))throw new AppError('INVALID_TIME',400,'Для переносу потрібен новий час');if(input.status==='rescheduled'&&this.teacherMentorBookings.some(item=>item.id!==bookingId&&['reserved','confirmed','rescheduled'].includes(item.status)&&Date.parse(item.startsAt)<Date.parse(input.endsAt!)&&Date.parse(item.endsAt)>Date.parse(input.startsAt!)))throw new AppError('MENTOR_SLOT_CONFLICT',409,'Цей час зайнятий іншою зустріччю');booking.status=input.status;if(input.meetingUrl!==undefined)booking.meetingUrl=input.meetingUrl;if(input.startsAt)booking.startsAt=input.startsAt;if(input.endsAt)booking.endsAt=input.endsAt;}
-  async generateTeacherReports(userId:string,groupId:string,periodStart:string,periodEnd:string):Promise<void>{this.requireRole(userId,'teacher');if(groupId!=='70000000-0000-4000-8000-000000000001')throw new AppError('GROUP_FORBIDDEN',403,'Група недоступна');for(const student of await this.listGroupStudents(userId,groupId)){if(this.teacherReports.some(report=>report.studentId===student.id&&report.periodStart===periodStart&&report.periodEnd===periodEnd))continue;this.teacherReports.push({id:randomUUID(),studentId:student.id,studentFirstName:student.firstName,groupId,groupName:'Creators · Осінь 2026',periodStart,periodEnd,payload:{classesScheduled:2,classesAttended:1,homeworkSubmitted:(this.homeworkSubmissions.get(student.id)??[]).length,project:student.projectTitle,projectProgress:student.progressPercent,xpEarned:0},teacherComment:'',status:'draft',approvedAt:null});}}
+  async generateTeacherReports(userId:string,groupId:string,periodStart:string,periodEnd:string):Promise<void>{this.requireRole(userId,'teacher');if(groupId!==PILOT.groupId)throw new AppError('GROUP_FORBIDDEN',403,'Група недоступна');for(const student of await this.listGroupStudents(userId,groupId)){if(this.teacherReports.some(report=>report.studentId===student.id&&report.periodStart===periodStart&&report.periodEnd===periodEnd))continue;this.teacherReports.push({id:randomUUID(),studentId:student.id,studentFirstName:student.firstName,groupId,groupName:PILOT.groupName,periodStart,periodEnd,payload:{classesScheduled:SEEDED_LESSONS.length,classesAttended:0,homeworkSubmitted:(this.homeworkSubmissions.get(student.id)??[]).length,project:student.projectTitle,projectProgress:student.progressPercent,xpEarned:0},teacherComment:'',status:'draft',approvedAt:null});}}
   async saveTeacherReport(userId:string,reportId:string,input:{teacherComment:string;status:'draft'|'ready_for_review'}):Promise<void>{this.requireRole(userId,'teacher');const report=this.teacherReports.find(item=>item.id===reportId);if(!report)throw new AppError('REPORT_FORBIDDEN',403,'Звіт недоступний');report.teacherComment=input.teacherComment;report.status=input.status;}
   async approveTeacherReport(userId:string,reportId:string):Promise<void>{this.requireRole(userId,'teacher');const report=this.teacherReports.find(item=>item.id===reportId);if(!report)throw new AppError('REPORT_FORBIDDEN',403,'Звіт недоступний');if(report.status!=='ready_for_review'||!report.teacherComment.trim())throw new AppError('REPORT_NOT_READY',409,'Звіт ще не готовий до підтвердження');report.status='approved';report.approvedAt=nowIso();}
-  async listLinkedStudents(userId:string):Promise<TeacherStudentDto[]>{this.requireRole(userId,'guardian');return[{id:DEV_IDS.user,firstName:'Максим',progressPercent:20,projectTitle:'Smart Study Planner'}];}
-  async listParentReports(userId:string,studentId:string):Promise<ParentReportDto[]>{this.requireRole(userId,'guardian');if(studentId!==DEV_IDS.user)throw new AppError('STUDENT_FORBIDDEN',403,'Учень недоступний');return[{id:'93000000-0000-4000-8000-000000000001',studentId,studentFirstName:'Максим',periodStart:new Date(Date.now()-7*86400000).toISOString().slice(0,10),periodEnd:new Date(Date.now()-86400000).toISOString().slice(0,10),payload:{classesScheduled:2,classesAttended:2,homeworkSubmitted:2,project:'Smart Study Planner',projectProgress:62,effort:{high:2}},teacherComment:'Максим уважно працював із джерелами й наполегливо допрацьовує план проєкту.',status:'approved'}];}
+  async listLinkedStudents(userId:string):Promise<TeacherStudentDto[]>{this.requireRole(userId,'guardian');return[{id:DEV_IDS.user,firstName:PILOT_STUDENTS[0].fullName,progressPercent:0,projectTitle:null}];}
+  async listParentReports(userId:string,studentId:string):Promise<ParentReportDto[]>{this.requireRole(userId,'guardian');if(studentId!==DEV_IDS.user)throw new AppError('STUDENT_FORBIDDEN',403,'Учень недоступний');return structuredClone(this.teacherReports.filter(report=>report.studentId===studentId&&['approved','sent'].includes(report.status)).map(report=>({id:report.id,studentId:report.studentId,studentFirstName:PILOT_STUDENTS[0].fullName,periodStart:report.periodStart,periodEnd:report.periodEnd,payload:report.payload,teacherComment:report.teacherComment,status:report.status})));}
 
   async getAdminWorkspace(userId:string):Promise<AdminWorkspaceDto>{
     this.requireRole(userId,'admin');const teacher=await this.getTeacherWorkspace(userId);const now=Date.now();
-    const students=teacher.students.map(student=>({id:student.id,name:student.firstName,status:this.users.get(student.id)?.status??'active',group:student.groupName,course:student.courseTitle,progress:student.progressPercent,xp:student.xp,level:student.level,streak:this.streak.get(student.id)??0,attendance:student.attendance,homework:student.homework,project:student.projectTitle,guardianLinked:student.id===DEV_IDS.user&&this.guardianLinks.get('92000000-0000-4000-8000-000000000001')==='active',telegramLinked:student.id===DEV_IDS.user}));
-    const teachers=[{id:'12000000-0000-4000-8000-000000000001',name:'Анна Коваль',status:this.users.get('12000000-0000-4000-8000-000000000001')?.status,groups:1,upcomingClasses:teacher.sessions.filter(item=>Date.parse(item.startsAt)>now&&item.status!=='cancelled').length,classesTaught:teacher.sessions.filter(item=>item.status==='completed').length,reviews:teacher.submissions.filter(item=>item.review).length,mentor:true}];
-    const guardians=[{id:'13000000-0000-4000-8000-000000000001',name:'Олена',status:this.users.get('13000000-0000-4000-8000-000000000001')?.status,linkedStudents:this.guardianLinks.get('92000000-0000-4000-8000-000000000001')==='active'?['Максим']:[],relationshipStatus:this.guardianLinks.get('92000000-0000-4000-8000-000000000001'),telegramLinked:false,linkId:'92000000-0000-4000-8000-000000000001'}];
+    const students=teacher.students.map(student=>({id:student.id,name:student.firstName,status:this.users.get(student.id)?.status??'active',group:student.groupName,course:student.courseTitle,progress:student.progressPercent,xp:student.xp,level:student.level,streak:this.streak.get(student.id)??0,attendance:student.attendance,homework:student.homework,project:student.projectTitle,guardianLinked:false,telegramLinked:[...this.identities.values()].includes(student.id)}));
+    const teachers=PILOT_TEACHERS.map(item=>({id:item.id,name:item.fullName,status:this.users.get(item.id)?.status,groups:1,upcomingClasses:teacher.sessions.filter(session=>Date.parse(session.startsAt)>now&&session.status!=='cancelled').length,classesTaught:teacher.sessions.filter(session=>session.status==='completed').length,reviews:teacher.submissions.filter(submission=>submission.review).length,mentor:item.mentor}));
+    const guardians:Array<Record<string,unknown>>=[];
     const sessions=teacher.sessions.map(item=>({id:item.id,title:item.title,group:item.groupName,teacher:item.teacherName,lesson:item.lessonTitle,startsAt:item.startsAt,durationMinutes:item.durationMinutes,status:item.status,meetingProvider:item.meetingProvider,meetingUrl:item.meetingUrl,attendanceComplete:item.attendance.every(entry=>entry.status)}));
     const homework=teacher.homework.map(item=>({id:item.id,title:item.title,group:item.groupName,status:item.status,dueAt:item.dueAt,submissions:item.submissionCount,reviews:item.reviewCount,revisions:item.needsRevisionCount}));
     const projects=teacher.students.flatMap(student=>student.projects.map(project=>({id:project.id,studentId:student.id,student:student.firstName,title:project.title,stage:project.stage.title,progress:project.completionPercent,technologies:project.tags,status:project.status})));
@@ -594,13 +574,13 @@ export class MemoryRepository implements AppRepository {
 
   async searchAdmin(userId:string,query:string):Promise<AdminSearchDto>{const data=await this.getAdminWorkspace(userId),term=query.toLocaleLowerCase('uk'),match=(value:unknown)=>String(value??'').toLocaleLowerCase('uk').includes(term);return{results:[...data.students.filter(x=>match(x.name)).map(x=>({type:'student' as const,id:String(x.id),label:String(x.name),meta:String(x.group)})),...data.teachers.filter(x=>match(x.name)).map(x=>({type:'teacher' as const,id:String(x.id),label:String(x.name),meta:'Викладач'})),...data.guardians.filter(x=>match(x.name)).map(x=>({type:'guardian' as const,id:String(x.id),label:String(x.name),meta:'Батьки'})),...data.groups.filter(x=>match(x.name)).map(x=>({type:'group' as const,id:String(x.id),label:String(x.name),meta:String(x.courseTitle)})),...data.sessions.filter(x=>match(x.title)).map(x=>({type:'class' as const,id:String(x.id),label:String(x.title),meta:String(x.group)})),...data.projects.filter(x=>match(x.title)).map(x=>({type:'project' as const,id:String(x.id),label:String(x.title),meta:String(x.student)}))].slice(0,30)}};
 
-  async exploreAdmin(userId:string,input:{entity:AdminEntity;page:number;pageSize:number;sort:string;direction:'asc'|'desc';query?:string}):Promise<AdminExplorerPageDto>{const data=await this.getAdminWorkspace(userId);const map:Record<AdminEntity,Array<Record<string,unknown>>>={users:[...data.students,...data.teachers,...data.guardians],students:data.students,teachers:data.teachers,guardians:data.guardians,groups:data.groups,courses:[{id:DEV_IDS.course,title:'Основи роботи з AI',status:'published'}],modules:[{id:DEV_IDS.module,title:'Основи роботи з AI',status:'published'}],lessons:SEEDED_LESSONS.map((item,index)=>({id:item.id,title:item.title,position:index+1,status:'published'})),sessions:data.sessions,attendance:(await this.getTeacherWorkspace(userId)).sessions.flatMap(item=>item.attendance.map(entry=>({id:item.id=== '71000000-0000-4000-8000-000000000003'&&entry.studentId===DEV_IDS.user?'72000000-0000-4000-8000-000000000011':`${item.id}:${entry.studentId}`,session:item.title,student:entry.studentName,status:entry.status,confirmedAt:entry.confirmedAt}))),homework:data.homework,submissions:(await this.getTeacherWorkspace(userId)).submissions.map(item=>({id:item.id,homework:item.homeworkTitle,student:item.studentName,attempt:item.attemptNumber,status:item.status,submittedAt:item.submittedAt})),reviews:(await this.getTeacherWorkspace(userId)).submissions.filter(item=>item.review).map(item=>({id:item.id,student:item.studentName,score:item.review!.score,effort:item.review!.effort,status:item.review!.status})),projects:data.projects,portfolios:data.portfolios,mentor_bookings:data.mentorBookings,reports:data.reports};let records=map[input.entity];const allowedSorts=new Set(records.length?Object.keys(records[0]!):['id']);if(!allowedSorts.has(input.sort))throw new AppError('INVALID_SORT',400,'Недозволене поле сортування');if(input.query){const term=input.query.toLocaleLowerCase('uk');records=records.filter(item=>Object.values(item).some(value=>String(value??'').toLocaleLowerCase('uk').includes(term)));}records=[...records].sort((left,right)=>String(left[input.sort]??'').localeCompare(String(right[input.sort]??''),'uk')*(input.direction==='asc'?1:-1));const total=records.length,start=(input.page-1)*input.pageSize;return{entity:input.entity,page:input.page,pageSize:input.pageSize,total,sort:input.sort,direction:input.direction,records:structuredClone(records.slice(start,start+input.pageSize))};}
+  async exploreAdmin(userId:string,input:{entity:AdminEntity;page:number;pageSize:number;sort:string;direction:'asc'|'desc';query?:string}):Promise<AdminExplorerPageDto>{const data=await this.getAdminWorkspace(userId);const map:Record<AdminEntity,Array<Record<string,unknown>>>={users:[...data.students,...data.teachers,...data.guardians],students:data.students,teachers:data.teachers,guardians:data.guardians,groups:data.groups,courses:[{id:DEV_IDS.course,title:PILOT.courseTitle,status:'published'}],modules:[{id:DEV_IDS.module,title:PILOT.moduleTitle,status:'published'}],lessons:SEEDED_LESSONS.map((item,index)=>({id:item.id,title:item.title,position:index+1,status:'published'})),sessions:data.sessions,attendance:(await this.getTeacherWorkspace(userId)).sessions.flatMap(item=>item.attendance.map(entry=>({id:`${item.id}:${entry.studentId}`,session:item.title,student:entry.studentName,status:entry.status,confirmedAt:entry.confirmedAt}))),homework:data.homework,submissions:(await this.getTeacherWorkspace(userId)).submissions.map(item=>({id:item.id,homework:item.homeworkTitle,student:item.studentName,attempt:item.attemptNumber,status:item.status,submittedAt:item.submittedAt})),reviews:(await this.getTeacherWorkspace(userId)).submissions.filter(item=>item.review).map(item=>({id:item.id,student:item.studentName,score:item.review!.score,effort:item.review!.effort,status:item.review!.status})),projects:data.projects,portfolios:data.portfolios,mentor_bookings:data.mentorBookings,reports:data.reports};let records=map[input.entity];const allowedSorts=new Set(records.length?Object.keys(records[0]!):['id']);if(!allowedSorts.has(input.sort))throw new AppError('INVALID_SORT',400,'Недозволене поле сортування');if(input.query){const term=input.query.toLocaleLowerCase('uk');records=records.filter(item=>Object.values(item).some(value=>String(value??'').toLocaleLowerCase('uk').includes(term)));}records=[...records].sort((left,right)=>String(left[input.sort]??'').localeCompare(String(right[input.sort]??''),'uk')*(input.direction==='asc'?1:-1));const total=records.length,start=(input.page-1)*input.pageSize;return{entity:input.entity,page:input.page,pageSize:input.pageSize,total,sort:input.sort,direction:input.direction,records:structuredClone(records.slice(start,start+input.pageSize))};}
 
   async adminSetAccountStatus(userId:string,targetUserId:string,status:'active'|'disabled'|'archived',reason:string,correlationId:string):Promise<void>{this.requireRole(userId,'admin');if(userId===targetUserId&&status!=='active')throw new AppError('ADMIN_SELF_LOCKOUT',409,'Не можна вимкнути власний обліковий запис');const target=this.requireUser(targetUserId),previous=target.status;target.status=status;this.audit(userId,'account.status_changed','user',targetUserId,{previous,status,reason},correlationId);}
   async adminCorrectAttendance(userId:string,attendanceId:string,status:'present'|'late'|'absent'|'excused',reason:string,correlationId:string):Promise<void>{this.requireRole(userId,'admin');if(attendanceId!=='72000000-0000-4000-8000-000000000011')throw new AppError('ATTENDANCE_NOT_FOUND',404,'Відвідування не знайдено');const records=this.attendanceRecords.get('71000000-0000-4000-8000-000000000003')!,entry=records.get(DEV_IDS.user)!;const previous=entry.status;entry.status=status;entry.confirmedAt=nowIso();this.audit(userId,'attendance.corrected','attendance',attendanceId,{previous,status,reason},correlationId);}
   async adminSetPortfolioVisibility(userId:string,portfolioId:string,visibility:'private'|'shareable'|'public',reason:string,correlationId:string):Promise<void>{this.requireRole(userId,'admin');if(!this.portfolioVisibility.has(portfolioId))throw new AppError('PORTFOLIO_NOT_FOUND',404,'Портфоліо не знайдено');const previous=this.portfolioVisibility.get(portfolioId);this.portfolioVisibility.set(portfolioId,visibility);this.audit(userId,'portfolio.visibility_changed','portfolio',portfolioId,{previous,visibility,reason},correlationId);}
   async adminRevokeGuardianLink(userId:string,linkId:string,reason:string,correlationId:string):Promise<void>{this.requireRole(userId,'admin');if(!this.guardianLinks.has(linkId))throw new AppError('GUARDIAN_LINK_NOT_FOUND',404,'Зв’язок не знайдено');this.guardianLinks.set(linkId,'revoked');this.audit(userId,'guardian.relationship_revoked','guardian_link',linkId,{reason},correlationId);}
-  async adminResendReport(userId:string,reportId:string,correlationId:string):Promise<void>{this.requireRole(userId,'admin');const report=this.teacherReports.find(item=>item.id===reportId);if(!report||!['approved','sent','failed'].includes(report.status)||this.guardianLinks.get('92000000-0000-4000-8000-000000000001')!=='active')throw new AppError('REPORT_RESEND_FORBIDDEN',409,'Звіт не готовий або зв’язок із батьками неактивний');this.adminNotifications.unshift({id:randomUUID(),category:'parent_weekly_report',recipient:'Олена',status:'pending',scheduledAt:nowIso(),attempts:0});this.audit(userId,'report.resend_requested','parent_report',reportId,{},correlationId);}
+  async adminResendReport(userId:string,reportId:string,correlationId:string):Promise<void>{this.requireRole(userId,'admin');const report=this.teacherReports.find(item=>item.id===reportId);if(!report||!['approved','sent','failed'].includes(report.status)||this.guardianLinks.get('92000000-0000-4000-8000-000000000001')!=='active')throw new AppError('REPORT_RESEND_FORBIDDEN',409,'Звіт не готовий або зв’язок із батьками неактивний');this.adminNotifications.unshift({id:randomUUID(),category:'parent_weekly_report',recipient:'Опікун',status:'pending',scheduledAt:nowIso(),attempts:0});this.audit(userId,'report.resend_requested','parent_report',reportId,{},correlationId);}
   async adminRevokeUserSession(userId:string,sessionId:string,reason:string,correlationId:string):Promise<void>{this.requireRole(userId,'admin');const session=this.sessions.get(sessionId);if(!session)throw new AppError('SESSION_NOT_FOUND',404,'Сесію не знайдено');session.revokedAt=new Date();this.audit(userId,'session.revoked','auth_session',sessionId,{subjectUserId:session.userId,reason},correlationId);this.securityEvents.unshift({id:randomUUID(),type:'forced_session_revocation',severity:'medium',actorId:userId,targetId:session.userId,createdAt:nowIso(),correlationId});}
   async recordSecurityEvent(input:{eventType:string;severity:'low'|'medium'|'high'|'critical';actorUserId?:string;targetUserId?:string;metadata?:Record<string,unknown>;correlationId:string}):Promise<void>{this.securityEvents.unshift({id:randomUUID(),type:input.eventType,severity:input.severity,actorId:input.actorUserId??null,targetId:input.targetUserId??null,metadata:input.metadata??{},correlationId:input.correlationId,createdAt:nowIso()});}
 
@@ -660,7 +640,7 @@ export class MemoryRepository implements AppRepository {
     const module = learning.modules.find(item => item.lessons.some(lesson => lesson.id === current?.id)) ?? null;
     const project = (await this.listProjects(userId)).find(item => item.status === 'active') ?? null;
     return {
-      firstName: this.requireUser(userId).displayName,
+      firstName: this.studentDisplayNames.get(userId) ?? this.requireUser(userId).displayName,
       courseTitle: learning.course.title,
       moduleTitle: module?.title ?? null,
       lessonTitle: current?.title ?? null,
@@ -681,6 +661,30 @@ export class MemoryRepository implements AppRepository {
     }
   }
 
+  private loadTelegramBindings(raw: string | undefined): void {
+    if (!raw?.trim()) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error('TELEGRAM_STUDENT_BINDINGS_JSON must be valid JSON');
+    }
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+      throw new Error('TELEGRAM_STUDENT_BINDINGS_JSON must be a JSON object');
+    }
+    const seenTelegramIds = new Set<string>();
+    for (const [studentKey, telegramId] of Object.entries(parsed)) {
+      const student = PILOT_STUDENTS.find(item => item.key === studentKey);
+      if (!student) throw new Error(`Unknown pilot student key in TELEGRAM_STUDENT_BINDINGS_JSON: ${studentKey}`);
+      if (typeof telegramId !== 'string' || !/^\d{5,20}$/.test(telegramId)) {
+        throw new Error(`Invalid Telegram user ID for pilot student: ${studentKey}`);
+      }
+      if (seenTelegramIds.has(telegramId)) throw new Error('Telegram user IDs must be unique');
+      seenTelegramIds.add(telegramId);
+      this.identities.set(`telegram:${telegramId}`, student.id);
+    }
+  }
+
   private requireUser(userId: string): AuthUser {
     const user = this.users.get(userId);
     if (!user) throw new AppError('USER_NOT_FOUND', 404, 'Користувача не знайдено');
@@ -689,7 +693,7 @@ export class MemoryRepository implements AppRepository {
 
   private requireRole(userId:string,role:'student'|'guardian'|'teacher'|'admin'):void{this.requireUser(userId);if(this.roles.get(userId)!==role&&this.roles.get(userId)!=='admin')throw new AppError('ROLE_FORBIDDEN',403,'Недостатньо прав');}
 
-  private teacherCanAccessSession(sessionId:string):boolean{return ['71000000-0000-4000-8000-000000000001','71000000-0000-4000-8000-000000000002','71000000-0000-4000-8000-000000000003'].includes(sessionId)||this.createdClassSessions.some(item=>item.id===sessionId);}
+  private teacherCanAccessSession(sessionId:string):boolean{return SEEDED_LESSONS.some((_,index)=>sessionId===`71000000-0000-4000-8000-${String(index+1).padStart(12,'0')}`)||this.createdClassSessions.some(item=>item.id===sessionId);}
 
   private viewer(userId: string) {
     const user = this.requireUser(userId);
@@ -702,7 +706,7 @@ export class MemoryRepository implements AppRepository {
     const next = LEVELS[levelIndex + 1] ?? null;
     return {
       id: user.id,
-      firstName: user.displayName,
+      firstName: this.studentDisplayNames.get(userId) ?? user.displayName,
       level: { number: level.number, title: level.title, nextTitle: next?.title ?? null, currentMinXp: level.minXp, nextMinXp: next?.minXp ?? null },
       xp,
       streak: this.streak.get(userId) ?? 0
