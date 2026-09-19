@@ -17,6 +17,6 @@
     "sourceMap": true,
     "types": ["node"]
   },
-  "include": ["server/**/*.ts"],
+  "include": ["server/**/*.ts", "api/**/*.ts"],
   "exclude": ["server/**/*.test.ts", "server-dist", "node_modules"]
 }

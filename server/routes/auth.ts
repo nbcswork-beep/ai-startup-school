@@ -6,8 +6,9 @@ import type { AuthService } from '../services/auth-service.js';
 const telegramBody = z.object({ initData: z.string().min(1).max(16_384) });
 
 function setRefreshCookie(reply: Parameters<FastifyInstance['post']>[1] extends never ? never : any, token: string, env: AppEnv) {
+  const secure = env.NODE_ENV === 'production' || (env.origins.length > 0 && env.origins.every(origin => origin.startsWith('https://')));
   reply.setCookie('aiss_refresh', token, {
-    path: '/api/v1/auth', httpOnly: true, secure: env.NODE_ENV === 'production', sameSite: 'strict',
+    path: '/api/v1/auth', httpOnly: true, secure, sameSite: 'strict',
     maxAge: env.REFRESH_TOKEN_TTL_DAYS * 86_400
   });
 }
