@@ -17,6 +17,7 @@
     "qa:teacher": "node scripts/capture-teacher.mjs",
     "qa:admin": "node scripts/capture-admin.mjs",
     "auth:hash-password": "tsx scripts/hash-password.mjs",
+    "auth:bootstrap-web": "tsx scripts/bootstrap-web-auth.mjs",
     "bot:set-webhook": "node scripts/set-telegram-webhook.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "server": "node server-dist/server/index.js",

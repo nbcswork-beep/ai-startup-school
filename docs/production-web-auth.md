@@ -17,13 +17,21 @@ When the Vercel integration uses the custom prefix `UPSTASH_REDIS_REST`, the run
 
 ## Create credentials
 
-Choose each email privately. Generate each password hash in a local interactive terminal:
+Create both fixed pilot identities and their password hashes in one local interactive session:
+
+```powershell
+npm run auth:bootstrap-web
+```
+
+The command asks for each email and accepts passwords only through hidden terminal input. It prints one ready-to-paste, compact `WEB_AUTH_ACCOUNTS_JSON` value with the existing user IDs. Plaintext passwords are never printed or accepted through command arguments. Copy the resulting JSON directly into the server-only Vercel variable; do not put it in Git, tickets, logs, or chat.
+
+To generate one standalone scrypt hash when needed, use:
 
 ```powershell
 npm run auth:hash-password
 ```
 
-The command accepts the password only through hidden terminal input, asks for confirmation, and prints one scrypt hash. Do not put the password or hash in Git, shell history, tickets, or chat.
+Both commands use the same Windows-compatible secure terminal prompt and require password confirmation. Passwords must contain 14–128 characters.
 
 Build `WEB_AUTH_ACCOUNTS_JSON` as one compact JSON value:
 
@@ -34,7 +42,7 @@ Build `WEB_AUTH_ACCOUNTS_JSON` as one compact JSON value:
 ]
 ```
 
-The first internal identity is Анохін Максим (`admin`, with Teacher OS and mentor access). The second is Кривич Вадим (`teacher`). Email matching is case-insensitive. Passwords must contain 14–128 characters.
+The first internal identity is Анохін Максим (`admin`, with Teacher OS and mentor access). The second is Кривич Вадим (`teacher`). These roles remain stored in the application repository and cannot be changed by editing the credential JSON. Email matching is case-insensitive.
 
 After setting all variables for Production, redeploy the commit that introduced web authentication (or promote its verified Preview deployment). Do not reuse the same `SESSION_REDIS_PREFIX` for unrelated deployments sharing one Redis database.
 
