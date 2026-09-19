@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { Bot, InlineKeyboard } from 'grammy';
+import { registerIdCommand } from './commands.js';
 
 const token = process.env.BOT_TOKEN;
 const miniAppUrl = process.env.MINI_APP_URL;
@@ -10,6 +11,8 @@ if (!token || !miniAppUrl) {
 }
 
 const bot = new Bot(token);
+
+registerIdCommand(bot);
 
 bot.command('start', async (ctx) => {
   const name = ctx.from?.first_name || 'друже';
