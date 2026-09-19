@@ -168,5 +168,10 @@ export async function injectVercelRequest(app: FastifyInstance, request: Request
     if (Array.isArray(value)) value.forEach(item => responseHeaders.append(key, String(item)));
     else if (value !== undefined) responseHeaders.set(key, String(value));
   }
-  return new Response(result.rawPayload, { status: result.statusCode, headers: responseHeaders });
+  const bodyForbidden = request.method.toUpperCase() === 'HEAD' || [204, 205, 304].includes(result.statusCode);
+  if (bodyForbidden) {
+    responseHeaders.delete('content-length');
+    responseHeaders.delete('content-type');
+  }
+  return new Response(bodyForbidden ? null : result.rawPayload, { status: result.statusCode, headers: responseHeaders });
 }

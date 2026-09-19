@@ -64,6 +64,13 @@ describe('Vercel Telegram deployment adapter', () => {
     expect(config.rewrites).toContainEqual({ source: '/api/:path*', destination: '/api/backend?__aiss_path=:path*' });
   });
 
+  it('returns bodyless Fastify responses without crashing the Vercel Web Handler', async () => {
+    const app = await createTestApp(await previewVariables()); apps.push(app);
+    const response = await request(app, 'v1/auth/logout', { method:'POST' });
+    expect(response.status).toBe(204);
+    expect(await response.text()).toBe('');
+  });
+
   it('fails closed with the detected deployment environment when persistent secrets are unavailable', async () => {
     expect(() => loadVercelEnv({ VERCEL_ENV: 'production', VERCEL_URL: 'app.example.vercel.app' })).toThrow(/Vercel production deployment requires APP_JWT_PRIVATE_KEY_BASE64/);
     const missingWebAccounts=await previewVariables();delete missingWebAccounts.WEB_AUTH_ACCOUNTS_JSON;
