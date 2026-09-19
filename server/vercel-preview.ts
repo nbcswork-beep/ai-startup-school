@@ -7,17 +7,31 @@ import { MemoryRepository } from './data/memory-repository.js';
 import { MockAiProvider } from './services/ai-provider.js';
 
 const ROUTE_PARAMETER = '__aiss_path';
-let previewApp: Promise<FastifyInstance> | undefined;
+let vercelApp: Promise<FastifyInstance> | undefined;
 
-function requirePreviewSecret(input: NodeJS.ProcessEnv, name: string): string {
+type VercelEnvironment = 'production' | 'preview' | 'development' | 'unknown';
+
+function vercelEnvironment(input: NodeJS.ProcessEnv): VercelEnvironment {
+  const value = input.VERCEL_ENV?.trim() || input.VERCEL_TARGET_ENV?.trim();
+  return value === 'production' || value === 'preview' || value === 'development' ? value : 'unknown';
+}
+
+function requireVercelSecret(input: NodeJS.ProcessEnv, name: string, environment: VercelEnvironment): string {
   const value = input[name]?.trim();
-  if (!value) throw new Error(`Vercel Preview requires ${name}`);
+  if (!value) {
+    const label = environment === 'unknown' ? 'deployment' : `${environment} deployment`;
+    throw new Error(`Vercel ${label} requires ${name}`);
+  }
   return value;
 }
 
-function previewOrigins(input: NodeJS.ProcessEnv): string {
+function vercelOrigins(input: NodeJS.ProcessEnv, environment: VercelEnvironment): string {
   const explicit = input.APP_ORIGINS?.split(',').map(value => value.trim()).filter(Boolean) ?? [];
-  const vercel = [input.VERCEL_URL, input.VERCEL_BRANCH_URL]
+  const vercel = [
+    input.VERCEL_URL,
+    input.VERCEL_BRANCH_URL,
+    ...(environment === 'production' ? [input.VERCEL_PROJECT_PRODUCTION_URL] : [])
+  ]
     .map(value => value?.trim())
     .filter((value): value is string => Boolean(value))
     .map(value => `https://${value}`);
@@ -25,23 +39,25 @@ function previewOrigins(input: NodeJS.ProcessEnv): string {
   return (origins.length ? origins : ['http://localhost:3000', 'http://localhost:5173']).join(',');
 }
 
-export function loadVercelPreviewEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
+export function loadVercelEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
+  const environment = vercelEnvironment(input);
   return loadEnv({
     ...input,
-    NODE_ENV: 'development',
+    NODE_ENV: environment === 'production' ? 'production' : 'development',
     DATA_BACKEND: 'memory',
-    APP_ORIGINS: previewOrigins(input),
+    ALLOW_VOLATILE_DATA_IN_PRODUCTION: environment === 'production' ? 'true' : 'false',
+    APP_ORIGINS: vercelOrigins(input, environment),
     DEV_AUTH_ENABLED: 'false',
     DEV_EPHEMERAL_JWT: 'false',
-    APP_JWT_PRIVATE_KEY_BASE64: requirePreviewSecret(input, 'APP_JWT_PRIVATE_KEY_BASE64'),
-    APP_JWT_PUBLIC_KEY_BASE64: requirePreviewSecret(input, 'APP_JWT_PUBLIC_KEY_BASE64'),
-    SESSION_TOKEN_PEPPER: requirePreviewSecret(input, 'SESSION_TOKEN_PEPPER'),
-    TELEGRAM_BOT_TOKEN: requirePreviewSecret(input, 'TELEGRAM_BOT_TOKEN')
+    APP_JWT_PRIVATE_KEY_BASE64: requireVercelSecret(input, 'APP_JWT_PRIVATE_KEY_BASE64', environment),
+    APP_JWT_PUBLIC_KEY_BASE64: requireVercelSecret(input, 'APP_JWT_PUBLIC_KEY_BASE64', environment),
+    SESSION_TOKEN_PEPPER: requireVercelSecret(input, 'SESSION_TOKEN_PEPPER', environment),
+    TELEGRAM_BOT_TOKEN: requireVercelSecret(input, 'TELEGRAM_BOT_TOKEN', environment)
   });
 }
 
-export async function createVercelPreviewApp(input: NodeJS.ProcessEnv = process.env): Promise<FastifyInstance> {
-  const env = loadVercelPreviewEnv(input);
+export async function createVercelApp(input: NodeJS.ProcessEnv = process.env): Promise<FastifyInstance> {
+  const env = loadVercelEnv(input);
   const app = await buildApp({
     env,
     repository: new MemoryRepository(env.WORKSPACE_URL),
@@ -52,9 +68,9 @@ export async function createVercelPreviewApp(input: NodeJS.ProcessEnv = process.
   return app;
 }
 
-export function getVercelPreviewApp(): Promise<FastifyInstance> {
-  previewApp ??= createVercelPreviewApp();
-  return previewApp;
+export function getVercelApp(input: NodeJS.ProcessEnv = process.env): Promise<FastifyInstance> {
+  vercelApp ??= createVercelApp(input);
+  return vercelApp;
 }
 
 function fastifyUrl(requestUrl: string): string {

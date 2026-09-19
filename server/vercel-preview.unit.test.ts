@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { exportPKCS8, exportSPKI, generateKeyPair } from 'jose';
 import type { FastifyInstance } from 'fastify';
 import { createJwtService } from './auth/jwt-service.js';
-import { createVercelPreviewApp, injectVercelRequest, loadVercelPreviewEnv } from './vercel-preview.js';
+import { createVercelApp, injectVercelRequest, loadVercelEnv } from './vercel-preview.js';
 
 const BOT_TOKEN = '123456789:preview-test-token';
 let apps: FastifyInstance[] = [];
@@ -43,26 +43,39 @@ afterEach(async () => {
   apps = [];
 });
 
-describe('Vercel Telegram preview adapter', () => {
+describe('Vercel Telegram deployment adapter', () => {
   it('rewrites every public API path into the single backend function', () => {
     const config = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8')) as { rewrites: Array<{ source: string; destination: string }> };
     expect(config.rewrites).toContainEqual({ source: '/api/:path*', destination: '/api/backend?__aiss_path=:path*' });
   });
 
-  it('fails closed when persistent preview secrets are unavailable', async () => {
-    expect(() => loadVercelPreviewEnv({ VERCEL_URL: 'preview.example.vercel.app' })).toThrow(/APP_JWT_PRIVATE_KEY_BASE64/);
+  it('fails closed with the detected deployment environment when persistent secrets are unavailable', async () => {
+    expect(() => loadVercelEnv({ VERCEL_ENV: 'production', VERCEL_URL: 'app.example.vercel.app' })).toThrow(/Vercel production deployment requires APP_JWT_PRIVATE_KEY_BASE64/);
+  });
+
+  it('uses production mode and the canonical production origin on a production deployment', async () => {
+    const env = loadVercelEnv({
+      ...await previewVariables(),
+      VERCEL_ENV: 'production',
+      VERCEL_URL: 'generated-deployment.example.vercel.app',
+      VERCEL_PROJECT_PRODUCTION_URL: 'ai-startup-school.vercel.app'
+    });
+    expect(env.NODE_ENV).toBe('production');
+    expect(env.DEV_AUTH_ENABLED).toBe(false);
+    expect(env.DEV_EPHEMERAL_JWT).toBe(false);
+    expect(env.origins).toContain('https://ai-startup-school.vercel.app');
   });
 
   it('uses the same persistent signing keys across function instances', async () => {
     const variables = await previewVariables();
-    const first = await createJwtService(loadVercelPreviewEnv(variables));
-    const second = await createJwtService(loadVercelPreviewEnv(variables));
+    const first = await createJwtService(loadVercelEnv(variables));
+    const second = await createJwtService(loadVercelEnv(variables));
     const token = await first.sign({ userId: crypto.randomUUID(), sessionId: crypto.randomUUID(), provider: 'telegram' });
     await expect(second.verify(token)).resolves.toMatchObject({ provider: 'telegram' });
   });
 
   it('routes health and rejects fake Telegram data and development login', async () => {
-    const app = await createVercelPreviewApp(await previewVariables());
+    const app = await createVercelApp(await previewVariables());
     apps.push(app);
     const health = await request(app, 'health', { headers: { origin: 'https://telegram-vercel-preview.example.vercel.app' } });
     expect(health.status).toBe(200);
@@ -72,7 +85,12 @@ describe('Vercel Telegram preview adapter', () => {
   });
 
   it('authenticates valid initData, serves bootstrap, and rotates the refresh session', async () => {
-    const app = await createVercelPreviewApp(await previewVariables());
+    const app = await createVercelApp({
+      ...await previewVariables(),
+      VERCEL_ENV: 'production',
+      VERCEL_URL: 'generated-deployment.example.vercel.app',
+      VERCEL_PROJECT_PRODUCTION_URL: 'ai-startup-school.vercel.app'
+    });
     apps.push(app);
     const login = await request(app, 'v1/auth/telegram', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ initData: signedInitData() }) });
     expect(login.status).toBe(200);

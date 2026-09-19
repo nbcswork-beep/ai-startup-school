@@ -16,6 +16,7 @@ const envSchema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   APP_ORIGINS: z.string().default('http://localhost:5173,http://127.0.0.1:5173'),
   DATA_BACKEND: z.enum(['postgres', 'memory']).default('postgres'),
+  ALLOW_VOLATILE_DATA_IN_PRODUCTION: booleanFromEnv.default(false),
   DATABASE_URL: optionalString,
   DATABASE_SSL: booleanFromEnv.default(true),
   TELEGRAM_BOT_TOKEN: optionalString,
@@ -39,8 +40,8 @@ const envSchema = z.object({
   SECURITY_MONITORING_CONFIGURED: booleanFromEnv.default(false)
 }).superRefine((env, context) => {
   if (env.NODE_ENV === 'production') {
-    if (env.DEV_AUTH_ENABLED || env.DEV_EPHEMERAL_JWT || env.DATA_BACKEND === 'memory') {
-      context.addIssue({ code: 'custom', message: 'Development auth, ephemeral keys, and memory data are forbidden in production' });
+    if (env.DEV_AUTH_ENABLED || env.DEV_EPHEMERAL_JWT || (env.DATA_BACKEND === 'memory' && !env.ALLOW_VOLATILE_DATA_IN_PRODUCTION)) {
+      context.addIssue({ code: 'custom', message: 'Development auth, ephemeral keys, and unapproved memory data are forbidden in production' });
     }
     const origins = env.APP_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean);
     const invalidOrigin = origins.length === 0 || origins.some(origin => {
@@ -55,7 +56,6 @@ const envSchema = z.object({
       context.addIssue({ code:'custom', message:'Production APP_ORIGINS must be an explicit HTTPS allowlist' });
     }
     for (const [key, value] of [
-      ['DATABASE_URL', env.DATABASE_URL],
       ['TELEGRAM_BOT_TOKEN', env.TELEGRAM_BOT_TOKEN],
       ['APP_JWT_PRIVATE_KEY_BASE64', env.APP_JWT_PRIVATE_KEY_BASE64],
       ['APP_JWT_PUBLIC_KEY_BASE64', env.APP_JWT_PUBLIC_KEY_BASE64],
