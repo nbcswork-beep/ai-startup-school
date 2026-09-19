@@ -9,6 +9,18 @@ const booleanFromEnv = z.preprocess(value => {
 
 const optionalString = z.preprocess(value => value === '' ? undefined : value, z.string().optional());
 
+export function resolveRedisRestCredentials(input: NodeJS.ProcessEnv): { url: string; token: string } | null {
+  const pairs = [
+    [input.UPSTASH_REDIS_REST_URL, input.UPSTASH_REDIS_REST_TOKEN],
+    [input.UPSTASH_REDIS_REST_KV_REST_API_URL, input.UPSTASH_REDIS_REST_KV_REST_API_TOKEN]
+  ];
+  for (const [rawUrl, rawToken] of pairs) {
+    const url = rawUrl?.trim(), token = rawToken?.trim();
+    if (url && token) return { url, token };
+  }
+  return null;
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   HOST: z.string().default('127.0.0.1'),
@@ -20,6 +32,8 @@ const envSchema = z.object({
   DATABASE_URL: optionalString,
   DATABASE_SSL: booleanFromEnv.default(true),
   TELEGRAM_BOT_TOKEN: optionalString,
+  TELEGRAM_WEBHOOK_SECRET: z.preprocess(value => value === '' ? undefined : value, z.string().regex(/^[A-Za-z0-9_-]{16,256}$/).optional()),
+  MINI_APP_URL: optionalString,
   TELEGRAM_STUDENT_BINDINGS_JSON: optionalString,
   TELEGRAM_INIT_DATA_MAX_AGE_SECONDS: z.coerce.number().int().min(30).max(3600).default(300),
   APP_JWT_ISSUER: z.string().default('ai-startup-school'),
@@ -94,6 +108,7 @@ const envSchema = z.object({
 export type AppEnv = z.infer<typeof envSchema> & { origins: string[] };
 
 export function loadEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
-  const parsed = envSchema.parse(input);
+  const redis = resolveRedisRestCredentials(input);
+  const parsed = envSchema.parse({ ...input, ...(redis ? { UPSTASH_REDIS_REST_URL:redis.url, UPSTASH_REDIS_REST_TOKEN:redis.token } : {}) });
   return { ...parsed, origins: parsed.APP_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean) };
 }

@@ -2,10 +2,11 @@ import type { FastifyInstance } from 'fastify';
 import type { InjectOptions } from 'light-my-request';
 import { buildApp } from './app.js';
 import { createJwtService } from './auth/jwt-service.js';
-import { loadEnv, type AppEnv } from './config/env.js';
+import { loadEnv, resolveRedisRestCredentials, type AppEnv } from './config/env.js';
 import { MemoryRepository } from './data/memory-repository.js';
 import { MockAiProvider } from './services/ai-provider.js';
 import { RedisRestLoginAttemptLimiter, RedisRestSessionStore, type LoginAttemptLimiter, type SessionStore } from './auth/session-store.js';
+import type { TelegramWebhookHandler } from './routes/telegram-webhook.js';
 
 const ROUTE_PARAMETER = '__aiss_path';
 let vercelApp: Promise<FastifyInstance> | undefined;
@@ -42,6 +43,16 @@ function vercelOrigins(input: NodeJS.ProcessEnv, environment: VercelEnvironment)
 
 export function loadVercelEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
   const environment = vercelEnvironment(input);
+  const jwtPrivateKey = requireVercelSecret(input, 'APP_JWT_PRIVATE_KEY_BASE64', environment);
+  const jwtPublicKey = requireVercelSecret(input, 'APP_JWT_PUBLIC_KEY_BASE64', environment);
+  const sessionPepper = requireVercelSecret(input, 'SESSION_TOKEN_PEPPER', environment);
+  const telegramBotToken = requireVercelSecret(input, 'TELEGRAM_BOT_TOKEN', environment);
+  const webAccounts = requireVercelSecret(input, 'WEB_AUTH_ACCOUNTS_JSON', environment);
+  const redis = resolveRedisRestCredentials(input);
+  if (!redis) {
+    const label = environment === 'unknown' ? 'deployment' : `${environment} deployment`;
+    throw new Error(`Vercel ${label} requires a complete Redis REST pair: UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN or UPSTASH_REDIS_REST_KV_REST_API_URL/UPSTASH_REDIS_REST_KV_REST_API_TOKEN`);
+  }
   return loadEnv({
     ...input,
     NODE_ENV: environment === 'production' ? 'production' : 'development',
@@ -50,19 +61,19 @@ export function loadVercelEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
     APP_ORIGINS: vercelOrigins(input, environment),
     DEV_AUTH_ENABLED: 'false',
     DEV_EPHEMERAL_JWT: 'false',
-    APP_JWT_PRIVATE_KEY_BASE64: requireVercelSecret(input, 'APP_JWT_PRIVATE_KEY_BASE64', environment),
-    APP_JWT_PUBLIC_KEY_BASE64: requireVercelSecret(input, 'APP_JWT_PUBLIC_KEY_BASE64', environment),
-    SESSION_TOKEN_PEPPER: requireVercelSecret(input, 'SESSION_TOKEN_PEPPER', environment),
-    TELEGRAM_BOT_TOKEN: requireVercelSecret(input, 'TELEGRAM_BOT_TOKEN', environment),
-    WEB_AUTH_ACCOUNTS_JSON: requireVercelSecret(input, 'WEB_AUTH_ACCOUNTS_JSON', environment),
-    UPSTASH_REDIS_REST_URL: requireVercelSecret(input, 'UPSTASH_REDIS_REST_URL', environment),
-    UPSTASH_REDIS_REST_TOKEN: requireVercelSecret(input, 'UPSTASH_REDIS_REST_TOKEN', environment),
+    APP_JWT_PRIVATE_KEY_BASE64: jwtPrivateKey,
+    APP_JWT_PUBLIC_KEY_BASE64: jwtPublicKey,
+    SESSION_TOKEN_PEPPER: sessionPepper,
+    TELEGRAM_BOT_TOKEN: telegramBotToken,
+    WEB_AUTH_ACCOUNTS_JSON: webAccounts,
+    UPSTASH_REDIS_REST_URL: redis.url,
+    UPSTASH_REDIS_REST_TOKEN: redis.token,
     SESSION_REDIS_PREFIX: input.SESSION_REDIS_PREFIX?.trim() || `aiss:${environment}:sessions:v1`,
     TRUST_PROXY: 'true'
   });
 }
 
-export async function createVercelApp(input: NodeJS.ProcessEnv = process.env, overrides: { sessionStore?: SessionStore; loginLimiter?: LoginAttemptLimiter } = {}): Promise<FastifyInstance> {
+export async function createVercelApp(input: NodeJS.ProcessEnv = process.env, overrides: { sessionStore?: SessionStore; loginLimiter?: LoginAttemptLimiter; telegramWebhookHandler?: TelegramWebhookHandler } = {}): Promise<FastifyInstance> {
   const env = loadVercelEnv(input);
   const sessionStore = overrides.sessionStore ?? new RedisRestSessionStore(env.UPSTASH_REDIS_REST_URL!, env.UPSTASH_REDIS_REST_TOKEN!, env.SESSION_REDIS_PREFIX);
   const loginLimiter = overrides.loginLimiter ?? new RedisRestLoginAttemptLimiter(env.UPSTASH_REDIS_REST_URL!, env.UPSTASH_REDIS_REST_TOKEN!, env.SESSION_REDIS_PREFIX);
@@ -75,7 +86,8 @@ export async function createVercelApp(input: NodeJS.ProcessEnv = process.env, ov
     }),
     jwt: await createJwtService(env),
     aiProvider: new MockAiProvider(),
-    loginLimiter
+    loginLimiter,
+    ...(overrides.telegramWebhookHandler ? { telegramWebhookHandler:overrides.telegramWebhookHandler } : {})
   });
   await app.ready();
   return app;

@@ -13,6 +13,8 @@ Create one Upstash Redis database from the Vercel Marketplace and make it availa
 
 Keep the existing `APP_JWT_PRIVATE_KEY_BASE64`, `APP_JWT_PUBLIC_KEY_BASE64`, `SESSION_TOKEN_PEPPER`, `TELEGRAM_BOT_TOKEN`, and `TELEGRAM_STUDENT_BINDINGS_JSON` values unchanged. Never prefix these variables with `VITE_` and never expose them to browser code.
 
+When the Vercel integration uses the custom prefix `UPSTASH_REDIS_REST`, the runtime also accepts the automatically injected pair `UPSTASH_REDIS_REST_KV_REST_API_URL` and `UPSTASH_REDIS_REST_KV_REST_API_TOKEN`. A complete standard pair takes precedence; credentials are never mixed across pairs.
+
 ## Create credentials
 
 Choose each email privately. Generate each password hash in a local interactive terminal:

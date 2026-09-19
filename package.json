@@ -17,9 +17,10 @@
     "qa:teacher": "node scripts/capture-teacher.mjs",
     "qa:admin": "node scripts/capture-admin.mjs",
     "auth:hash-password": "tsx scripts/hash-password.mjs",
+    "bot:set-webhook": "node scripts/set-telegram-webhook.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "server": "node server-dist/server/index.js",
-    "bot": "node bot/server.js"
+    "bot": "tsx bot/server.js"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",

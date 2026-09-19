@@ -1,8 +1,7 @@
 import 'dotenv/config';
-import { Bot, InlineKeyboard } from 'grammy';
-import { registerIdCommand } from './commands.js';
+import { createSchoolBot } from '../server/telegram/school-bot.ts';
 
-const token = process.env.BOT_TOKEN;
+const token = process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
 const miniAppUrl = process.env.MINI_APP_URL;
 
 if (!token || !miniAppUrl) {
@@ -10,24 +9,5 @@ if (!token || !miniAppUrl) {
   process.exit(1);
 }
 
-const bot = new Bot(token);
-
-registerIdCommand(bot);
-
-bot.command('start', async (ctx) => {
-  const name = ctx.from?.first_name || 'друже';
-  const keyboard = new InlineKeyboard().webApp('🚀 Відкрити AI Startup School', miniAppUrl);
-  await ctx.reply(
-    `Привіт, ${name}! 👋\n\nТут починається твій шлях від ідеї до реального проєкту. Відкрий школу — там уроки, твій проєкт, AI-ментор і прогрес.`,
-    { reply_markup: keyboard }
-  );
-});
-
-bot.command('school', async (ctx) => {
-  await ctx.reply('Відкрити школу:', {
-    reply_markup: new InlineKeyboard().webApp('AI Startup School ✦', miniAppUrl)
-  });
-});
-
-bot.catch((err) => console.error('Bot error:', err.error));
+const bot = createSchoolBot(token, miniAppUrl);
 bot.start({ onStart: () => console.log('AI Startup School bot is running') });

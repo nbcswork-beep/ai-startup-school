@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { exportPKCS8, exportSPKI, generateKeyPair } from 'jose';
 import type { FastifyInstance } from 'fastify';
 import { createJwtService } from './auth/jwt-service.js';
@@ -25,12 +25,14 @@ async function previewVariables(): Promise<NodeJS.ProcessEnv> {
     APP_JWT_PUBLIC_KEY_BASE64: Buffer.from(await exportSPKI(pair.publicKey)).toString('base64'),
     WEB_AUTH_ACCOUNTS_JSON: JSON.stringify([{ userId:'12000000-0000-4000-8000-000000000001',email:'admin@example.test',passwordHash:await testPasswordHash }]),
     UPSTASH_REDIS_REST_URL: 'https://redis.example.test',
-    UPSTASH_REDIS_REST_TOKEN: 'test-only-token'
+    UPSTASH_REDIS_REST_TOKEN: 'test-only-token',
+    TELEGRAM_WEBHOOK_SECRET: 'preview_webhook_test_secret_123',
+    MINI_APP_URL: 'https://preview.example.vercel.app'
   };
 }
 
-async function createTestApp(input: NodeJS.ProcessEnv): Promise<FastifyInstance> {
-  return createVercelApp(input, { sessionStore:new MemorySessionStore(), loginLimiter:new MemoryLoginAttemptLimiter() });
+async function createTestApp(input: NodeJS.ProcessEnv, telegramWebhookHandler?:Parameters<typeof createVercelApp>[1]['telegramWebhookHandler']): Promise<FastifyInstance> {
+  return createVercelApp(input, { sessionStore:new MemorySessionStore(), loginLimiter:new MemoryLoginAttemptLimiter(), ...(telegramWebhookHandler?{telegramWebhookHandler}:{}) });
 }
 
 function signedInitData(telegramId = 987654321, nowSeconds = Math.floor(Date.now() / 1000)): string {
@@ -81,6 +83,28 @@ describe('Vercel Telegram deployment adapter', () => {
     expect(env.origins).toContain('https://ai-startup-school.vercel.app');
   });
 
+  it('resolves both standard and custom-prefixed Upstash REST integration variables', async () => {
+    const standard=await previewVariables();
+    expect(loadVercelEnv(standard).UPSTASH_REDIS_REST_URL).toBe('https://redis.example.test');
+    const prefixed=await previewVariables();
+    delete prefixed.UPSTASH_REDIS_REST_URL;delete prefixed.UPSTASH_REDIS_REST_TOKEN;
+    prefixed.UPSTASH_REDIS_REST_KV_REST_API_URL='https://prefixed-redis.example.test';
+    prefixed.UPSTASH_REDIS_REST_KV_REST_API_TOKEN='prefixed-test-token';
+    const resolved=loadVercelEnv(prefixed);
+    expect(resolved.UPSTASH_REDIS_REST_URL).toBe('https://prefixed-redis.example.test');
+    expect(resolved.UPSTASH_REDIS_REST_TOKEN).toBe('prefixed-test-token');
+  });
+
+  it('prefers a complete standard Upstash pair and rejects incomplete pairs', async () => {
+    const both=await previewVariables();
+    both.UPSTASH_REDIS_REST_KV_REST_API_URL='https://fallback.example.test';
+    both.UPSTASH_REDIS_REST_KV_REST_API_TOKEN='fallback-token';
+    expect(loadVercelEnv(both).UPSTASH_REDIS_REST_URL).toBe('https://redis.example.test');
+    const incomplete=await previewVariables();
+    delete incomplete.UPSTASH_REDIS_REST_TOKEN;
+    expect(()=>loadVercelEnv(incomplete)).toThrow(/complete Redis REST pair/);
+  });
+
   it('uses the same persistent signing keys across function instances', async () => {
     const variables = await previewVariables();
     const first = await createJwtService(loadVercelEnv(variables));
@@ -97,6 +121,14 @@ describe('Vercel Telegram deployment adapter', () => {
     expect(health.headers.get('access-control-allow-origin')).toBe('https://telegram-vercel-preview.example.vercel.app');
     expect((await request(app, 'v1/auth/telegram', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ initData: 'fake' }) })).status).toBe(401);
     expect((await request(app, 'v1/auth/development', { method: 'POST' })).status).toBe(404);
+  });
+
+  it('routes the protected Telegram webhook through the Vercel catch-all function',async()=>{
+    const handler=vi.fn(async(_request,reply)=>reply.status(200).send(''));
+    const app=await createTestApp(await previewVariables(),handler);apps.push(app);
+    expect((await request(app,'telegram/webhook',{method:'POST',headers:{'content-type':'application/json','x-telegram-bot-api-secret-token':'preview_webhook_test_secret_123'},body:JSON.stringify({update_id:1})})).status).toBe(200);
+    expect(handler).toHaveBeenCalledOnce();
+    expect((await request(app,'telegram/webhook',{method:'POST',headers:{'content-type':'application/json','x-telegram-bot-api-secret-token':'wrong-secret-value'},body:JSON.stringify({update_id:2})})).status).toBe(401);
   });
 
   it('authenticates valid initData, serves bootstrap, and rotates the refresh session', async () => {

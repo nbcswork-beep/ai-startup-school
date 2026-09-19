@@ -18,9 +18,10 @@ import { AiMentorService } from './services/ai-mentor-service.js';
 import { AuthService } from './services/auth-service.js';
 import { WebCredentialDirectory } from './auth/password-credentials.js';
 import { MemoryLoginAttemptLimiter, type LoginAttemptLimiter } from './auth/session-store.js';
+import { registerTelegramWebhookRoutes, type TelegramWebhookHandler } from './routes/telegram-webhook.js';
 
-export async function buildApp(deps: { env: AppEnv; repository: AppRepository; jwt: JwtService; aiProvider: AiProvider; loginLimiter?: LoginAttemptLimiter }) {
-  const app = Fastify({ logger: deps.env.NODE_ENV === 'test' ? false : { level: deps.env.LOG_LEVEL,redact:{paths:['req.headers.authorization','req.headers.cookie','res.headers.set-cookie','body.initData','body.refreshToken','body.password','body.token'],censor:'[REDACTED]'} }, trustProxy: deps.env.TRUST_PROXY, bodyLimit: 32_768 });
+export async function buildApp(deps: { env: AppEnv; repository: AppRepository; jwt: JwtService; aiProvider: AiProvider; loginLimiter?: LoginAttemptLimiter; telegramWebhookHandler?: TelegramWebhookHandler }) {
+  const app = Fastify({ logger: deps.env.NODE_ENV === 'test' ? false : { level: deps.env.LOG_LEVEL,redact:{paths:['req.headers.authorization','req.headers.cookie','req.headers.x-telegram-bot-api-secret-token','res.headers.set-cookie','body.initData','body.refreshToken','body.password','body.token'],censor:'[REDACTED]'} }, trustProxy: deps.env.TRUST_PROXY, bodyLimit: 32_768 });
   await app.register(cookie);
   await app.register(cors, {
     credentials: true,
@@ -34,6 +35,7 @@ export async function buildApp(deps: { env: AppEnv; repository: AppRepository; j
   await app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
   registerErrorHandler(app);
   app.get('/api/health', async () => { await deps.repository.ping(); return { status: 'ok' }; });
+  registerTelegramWebhookRoutes(app, deps.env, deps.telegramWebhookHandler);
   const auth = new AuthService(deps.repository, deps.jwt, deps.env, new WebCredentialDirectory(deps.env.WEB_AUTH_ACCOUNTS_JSON), deps.loginLimiter ?? new MemoryLoginAttemptLimiter());
   registerAuthRoutes(app, auth, deps.env);
   const authenticate=createAuthenticate(deps.jwt,deps.repository);
