@@ -5,6 +5,7 @@ import { createJwtService } from './auth/jwt-service.js';
 import { loadEnv, type AppEnv } from './config/env.js';
 import { MemoryRepository } from './data/memory-repository.js';
 import { MockAiProvider } from './services/ai-provider.js';
+import { RedisRestLoginAttemptLimiter, RedisRestSessionStore, type LoginAttemptLimiter, type SessionStore } from './auth/session-store.js';
 
 const ROUTE_PARAMETER = '__aiss_path';
 let vercelApp: Promise<FastifyInstance> | undefined;
@@ -52,20 +53,29 @@ export function loadVercelEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
     APP_JWT_PRIVATE_KEY_BASE64: requireVercelSecret(input, 'APP_JWT_PRIVATE_KEY_BASE64', environment),
     APP_JWT_PUBLIC_KEY_BASE64: requireVercelSecret(input, 'APP_JWT_PUBLIC_KEY_BASE64', environment),
     SESSION_TOKEN_PEPPER: requireVercelSecret(input, 'SESSION_TOKEN_PEPPER', environment),
-    TELEGRAM_BOT_TOKEN: requireVercelSecret(input, 'TELEGRAM_BOT_TOKEN', environment)
+    TELEGRAM_BOT_TOKEN: requireVercelSecret(input, 'TELEGRAM_BOT_TOKEN', environment),
+    WEB_AUTH_ACCOUNTS_JSON: requireVercelSecret(input, 'WEB_AUTH_ACCOUNTS_JSON', environment),
+    UPSTASH_REDIS_REST_URL: requireVercelSecret(input, 'UPSTASH_REDIS_REST_URL', environment),
+    UPSTASH_REDIS_REST_TOKEN: requireVercelSecret(input, 'UPSTASH_REDIS_REST_TOKEN', environment),
+    SESSION_REDIS_PREFIX: input.SESSION_REDIS_PREFIX?.trim() || `aiss:${environment}:sessions:v1`,
+    TRUST_PROXY: 'true'
   });
 }
 
-export async function createVercelApp(input: NodeJS.ProcessEnv = process.env): Promise<FastifyInstance> {
+export async function createVercelApp(input: NodeJS.ProcessEnv = process.env, overrides: { sessionStore?: SessionStore; loginLimiter?: LoginAttemptLimiter } = {}): Promise<FastifyInstance> {
   const env = loadVercelEnv(input);
+  const sessionStore = overrides.sessionStore ?? new RedisRestSessionStore(env.UPSTASH_REDIS_REST_URL!, env.UPSTASH_REDIS_REST_TOKEN!, env.SESSION_REDIS_PREFIX);
+  const loginLimiter = overrides.loginLimiter ?? new RedisRestLoginAttemptLimiter(env.UPSTASH_REDIS_REST_URL!, env.UPSTASH_REDIS_REST_TOKEN!, env.SESSION_REDIS_PREFIX);
   const app = await buildApp({
     env,
     repository: new MemoryRepository(env.WORKSPACE_URL, {
       telegramBindingsJson: env.TELEGRAM_STUDENT_BINDINGS_JSON,
-      requireSeededTelegramIdentity: true
+      requireSeededTelegramIdentity: true,
+      sessionStore
     }),
     jwt: await createJwtService(env),
-    aiProvider: new MockAiProvider()
+    aiProvider: new MockAiProvider(),
+    loginLimiter
   });
   await app.ready();
   return app;

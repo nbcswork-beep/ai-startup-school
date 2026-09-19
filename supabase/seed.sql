@@ -50,7 +50,7 @@ insert into public.users(id,kind,status) values
 ('10000000-0000-4000-8000-000000000002','student','active'),
 ('10000000-0000-4000-8000-000000000003','student','active'),
 ('10000000-0000-4000-8000-000000000004','student','active'),
-('12000000-0000-4000-8000-000000000001','teacher','active'),
+('12000000-0000-4000-8000-000000000001','admin','active'),
 ('12000000-0000-4000-8000-000000000002','teacher','active')
 on conflict(id) do update set kind=excluded.kind,status=excluded.status;
 

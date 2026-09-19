@@ -6,7 +6,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 export default defineConfig({
   build: {
     rollupOptions: {
-      input: { student: `${root}index.html`, teacher: `${root}teacher.html`, admin: `${root}admin.html` }
+      input: { student: `${root}index.html`, teacher: `${root}teacher.html`, admin: `${root}admin.html`, login: `${root}login.html` }
     }
   },
   server: {

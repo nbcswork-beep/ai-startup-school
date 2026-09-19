@@ -4,7 +4,7 @@ import { Pool } from 'pg';
 const pool=new Pool({connectionString:process.env.TEST_DATABASE_URL,ssl:process.env.TEST_DATABASE_SSL==='false'?false:{rejectUnauthorized:false}});
 const studentA='10000000-0000-4000-8000-000000000001';
 const studentB='10000000-0000-4000-8000-000000000099';
-const teacher='12000000-0000-4000-8000-000000000001';
+const teacher='12000000-0000-4000-8000-000000000002';
 const guardian='13000000-0000-4000-8000-000000000001';
 const admin='14000000-0000-4000-8000-000000000001';
 const group='70000000-0000-4000-8000-000000000001';

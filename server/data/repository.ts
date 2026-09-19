@@ -40,6 +40,7 @@ export interface AppRepository {
   resolveTelegramUser(identity: TelegramIdentityInput): Promise<AuthUser>;
   getDevelopmentUser(userId: UserId): Promise<AuthUser | null>;
   getAuthUser(userId: UserId): Promise<AuthUser | null>;
+  getWebAuthUser(userId: UserId): Promise<{ user: AuthUser; role: AccessContext['role'] } | null>;
   createSession(session: NewSession): Promise<void>;
   rotateSession(currentTokenHash: string, next: NewSession, now: Date): Promise<RotationResult>;
   revokeSession(refreshTokenHash: string, now: Date): Promise<boolean>;

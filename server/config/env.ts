@@ -30,6 +30,10 @@ const envSchema = z.object({
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(600),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(90).default(30),
   SESSION_TOKEN_PEPPER: optionalString,
+  WEB_AUTH_ACCOUNTS_JSON: optionalString,
+  UPSTASH_REDIS_REST_URL: optionalString,
+  UPSTASH_REDIS_REST_TOKEN: optionalString,
+  SESSION_REDIS_PREFIX: z.string().regex(/^[a-zA-Z0-9:_-]{3,80}$/).default('aiss:local:sessions:v1'),
   DEV_AUTH_ENABLED: booleanFromEnv.default(false),
   DEV_EPHEMERAL_JWT: booleanFromEnv.default(false),
   DEV_USER_ID: z.string().uuid().default('10000000-0000-4000-8000-000000000001'),
@@ -60,9 +64,13 @@ const envSchema = z.object({
       ['TELEGRAM_BOT_TOKEN', env.TELEGRAM_BOT_TOKEN],
       ['APP_JWT_PRIVATE_KEY_BASE64', env.APP_JWT_PRIVATE_KEY_BASE64],
       ['APP_JWT_PUBLIC_KEY_BASE64', env.APP_JWT_PUBLIC_KEY_BASE64],
-      ['SESSION_TOKEN_PEPPER', env.SESSION_TOKEN_PEPPER]
+      ['SESSION_TOKEN_PEPPER', env.SESSION_TOKEN_PEPPER],
+      ['WEB_AUTH_ACCOUNTS_JSON', env.WEB_AUTH_ACCOUNTS_JSON]
     ] as const) {
       if (!value) context.addIssue({ code: 'custom', message: `${key} is required in production` });
+    }
+    if (env.DATA_BACKEND === 'memory' && (!env.UPSTASH_REDIS_REST_URL || !env.UPSTASH_REDIS_REST_TOKEN)) {
+      context.addIssue({ code: 'custom', message: 'Persistent Upstash Redis REST storage is required for production memory sessions' });
     }
   }
   if (env.DATA_BACKEND === 'postgres' && !env.DATABASE_URL) {
@@ -73,6 +81,13 @@ const envSchema = z.object({
   }
   if (!env.SESSION_TOKEN_PEPPER && env.NODE_ENV !== 'test') {
     context.addIssue({ code: 'custom', message: 'SESSION_TOKEN_PEPPER is required' });
+  }
+  if (Boolean(env.UPSTASH_REDIS_REST_URL) !== Boolean(env.UPSTASH_REDIS_REST_TOKEN)) {
+    context.addIssue({ code: 'custom', message: 'UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be configured together' });
+  }
+  if (env.UPSTASH_REDIS_REST_URL) {
+    try { if (new URL(env.UPSTASH_REDIS_REST_URL).protocol !== 'https:') throw new Error(); }
+    catch { context.addIssue({ code: 'custom', message: 'UPSTASH_REDIS_REST_URL must be HTTPS' }); }
   }
 });
 

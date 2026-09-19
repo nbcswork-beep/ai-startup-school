@@ -4,11 +4,12 @@ async function request(path,options={},retry=true){
   const headers=new Headers(options.headers);if(options.body&&!headers.has('content-type'))headers.set('content-type','application/json');if(accessToken)headers.set('authorization',`Bearer ${accessToken}`);
   const response=await fetch(`/api/v1${path}`,{...options,headers,credentials:'include'});
   if(response.status===401&&retry&&!path.startsWith('/auth/')){const refreshed=await fetch('/api/v1/auth/refresh',{method:'POST',credentials:'include'});if(refreshed.ok){accessToken=(await refreshed.json()).accessToken;return request(path,options,false)}}
-  const payload=response.status===204?null:await response.json().catch(()=>({}));if(!response.ok)throw new Error(payload?.error?.message||'Не вдалося виконати захищену операцію');return payload;
+  const payload=response.status===204?null:await response.json().catch(()=>({}));if(!response.ok){const error=new Error(payload?.error?.message||'Не вдалося виконати захищену операцію');error.status=response.status;throw error}return payload;
 }
 
 export const adminApi={
-  async authenticate(){const response=await request('/auth/development',{method:'POST'},false);accessToken=response.accessToken;return response.user},
+  async authenticate(){const response=await request('/auth/refresh',{method:'POST'},false);accessToken=response.accessToken;return response.user},
+  async logout(){await request('/auth/logout',{method:'POST'},false);accessToken=''},
   workspace:()=>request('/admin/bootstrap'),
   search:q=>request(`/admin/search?q=${encodeURIComponent(q)}`),
   explore:(entity,{page=1,pageSize=25,sort='id',direction='asc',q=''})=>request(`/admin/explorer/${entity}?page=${page}&pageSize=${pageSize}&sort=${encodeURIComponent(sort)}&direction=${direction}&q=${encodeURIComponent(q)}`),

@@ -13,16 +13,17 @@ async function request(path, options = {}, retry = true) {
     }
   }
   const payload = response.status === 204 ? null : await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload?.error?.message || 'Не вдалося виконати дію');
+  if (!response.ok) { const error=new Error(payload?.error?.message || 'Не вдалося виконати дію');error.status=response.status;throw error; }
   return payload;
 }
 
 export const teacherApi = {
   async authenticate() {
-    const result = await request('/auth/development', { method: 'POST' }, false);
+    const result = await request('/auth/refresh', { method: 'POST' }, false);
     accessToken = result.accessToken;
     return result.user;
   },
+  async logout() { await request('/auth/logout', { method:'POST' }, false); accessToken=''; },
   workspace: () => request('/teacher/bootstrap'),
   search: query => request(`/teacher/search?q=${encodeURIComponent(query)}`),
   createClass: input => request('/teacher/sessions', { method: 'POST', body: JSON.stringify(input) }),

@@ -31,7 +31,7 @@ function shell(content,title,eyebrow='TEACHER OS'){
       <div class="side-foot"><div class="avatar">${initials(d.teacher.name)}</div><div><strong>${esc(d.teacher.name)}</strong><small>${esc(d.teacher.title)}</small></div></div>
     </aside>
     <main class="workspace">
-      <header class="topbar"><div><span class="eyebrow">${eyebrow}</span><h1>${esc(title)}</h1></div><div class="top-actions"><button class="icon-button" data-action="search" aria-label="Пошук">⌕</button><button class="icon-button" data-action="notice" aria-label="Сповіщення">◌</button><div class="top-avatar">${initials(d.teacher.name)}</div></div></header>
+      <header class="topbar"><div><span class="eyebrow">${eyebrow}</span><h1>${esc(title)}</h1></div><div class="top-actions"><button class="icon-button" data-action="search" aria-label="Пошук">⌕</button><button class="icon-button" data-action="notice" aria-label="Сповіщення">◌</button><button class="logout-button" data-action="logout">Вийти</button><div class="top-avatar">${initials(d.teacher.name)}</div></div></header>
       <div class="page">${content}</div>
     </main>
     <div class="search-layer ${state.searchOpen?'open':''}"><button data-action="close-search" aria-label="Закрити">×</button><div class="search-box"><span>⌕</span><input id="global-search" placeholder="Учень, група, робота або проєкт" autocomplete="off"><div id="search-results"><p>Почніть вводити — пошук працює лише в межах ваших груп.</p></div></div></div>
@@ -107,6 +107,7 @@ function bind(){
  document.querySelectorAll('[data-action]').forEach(el=>{if(['search','close-search','mark-all'].includes(el.dataset.action))return;el.addEventListener('click',()=>action(el.dataset.action,el.dataset.id))});
 }
 async function action(name,id){try{
+ if(name==='logout'){await teacherApi.logout();location.replace('/login.html?next=%2Fteacher.html');return}
  if(state.saving)return;state.saving=true;
  if(name==='complete-class'||name==='cancel-class'){await teacherApi.updateClass(id,{status:name==='complete-class'?'completed':'cancelled'});await refresh(name==='complete-class'?'Заняття завершено':'Заняття скасовано')}
  if(name==='save-class-note'){await teacherApi.updateClass(id,{teacherNotes:document.querySelector('#class-note').value});await refresh('Приватну нотатку збережено')}
@@ -132,5 +133,5 @@ async function action(name,id){try{
 
 window.addEventListener('hashchange',parseRoute);
 window.addEventListener('beforeunload',event=>{if(state.dirty){event.preventDefault();event.returnValue=''}});
-async function boot(){try{await teacherApi.authenticate();state.data=await teacherApi.workspace();parseRoute()}catch(error){app.innerHTML=`<div class="fatal"><span>TEACHER OS</span><h1>Доступ не відкрито</h1><p>${esc(error.message)}</p><small>Увійдіть обліковим записом викладача або перевірте локальний DEV_USER_ID.</small></div>`}}
+async function boot(){try{await teacherApi.authenticate();state.data=await teacherApi.workspace();parseRoute()}catch(error){if(error.status===401||error.status===403){location.replace('/login.html?next=%2Fteacher.html');return}app.innerHTML=`<div class="fatal"><span>TEACHER OS</span><h1>Доступ не відкрито</h1><p>${esc(error.message)}</p><small>Спробуйте оновити сторінку або зверніться до адміністратора.</small></div>`}}
 boot();

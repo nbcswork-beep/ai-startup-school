@@ -5,9 +5,12 @@ import { exportPKCS8, exportSPKI, generateKeyPair } from 'jose';
 import type { FastifyInstance } from 'fastify';
 import { createJwtService } from './auth/jwt-service.js';
 import { createVercelApp, injectVercelRequest, loadVercelEnv } from './vercel-preview.js';
+import { hashPassword } from './auth/password-credentials.js';
+import { MemoryLoginAttemptLimiter, MemorySessionStore } from './auth/session-store.js';
 
 const BOT_TOKEN = '123456789:preview-test-token';
 let apps: FastifyInstance[] = [];
+const testPasswordHash = hashPassword('correct horse battery staple');
 
 async function previewVariables(): Promise<NodeJS.ProcessEnv> {
   const pair = await generateKeyPair('ES256', { extractable: true });
@@ -19,8 +22,15 @@ async function previewVariables(): Promise<NodeJS.ProcessEnv> {
     TELEGRAM_STUDENT_BINDINGS_JSON: JSON.stringify({ illia: '987654321' }),
     SESSION_TOKEN_PEPPER: 'preview-test-pepper-with-enough-entropy',
     APP_JWT_PRIVATE_KEY_BASE64: Buffer.from(await exportPKCS8(pair.privateKey)).toString('base64'),
-    APP_JWT_PUBLIC_KEY_BASE64: Buffer.from(await exportSPKI(pair.publicKey)).toString('base64')
+    APP_JWT_PUBLIC_KEY_BASE64: Buffer.from(await exportSPKI(pair.publicKey)).toString('base64'),
+    WEB_AUTH_ACCOUNTS_JSON: JSON.stringify([{ userId:'12000000-0000-4000-8000-000000000001',email:'admin@example.test',passwordHash:await testPasswordHash }]),
+    UPSTASH_REDIS_REST_URL: 'https://redis.example.test',
+    UPSTASH_REDIS_REST_TOKEN: 'test-only-token'
   };
+}
+
+async function createTestApp(input: NodeJS.ProcessEnv): Promise<FastifyInstance> {
+  return createVercelApp(input, { sessionStore:new MemorySessionStore(), loginLimiter:new MemoryLoginAttemptLimiter() });
 }
 
 function signedInitData(telegramId = 987654321, nowSeconds = Math.floor(Date.now() / 1000)): string {
@@ -52,6 +62,10 @@ describe('Vercel Telegram deployment adapter', () => {
 
   it('fails closed with the detected deployment environment when persistent secrets are unavailable', async () => {
     expect(() => loadVercelEnv({ VERCEL_ENV: 'production', VERCEL_URL: 'app.example.vercel.app' })).toThrow(/Vercel production deployment requires APP_JWT_PRIVATE_KEY_BASE64/);
+    const missingWebAccounts=await previewVariables();delete missingWebAccounts.WEB_AUTH_ACCOUNTS_JSON;
+    expect(()=>loadVercelEnv(missingWebAccounts)).toThrow(/WEB_AUTH_ACCOUNTS_JSON/);
+    const missingRedis=await previewVariables();delete missingRedis.UPSTASH_REDIS_REST_URL;
+    expect(()=>loadVercelEnv(missingRedis)).toThrow(/UPSTASH_REDIS_REST_URL/);
   });
 
   it('uses production mode and the canonical production origin on a production deployment', async () => {
@@ -76,7 +90,7 @@ describe('Vercel Telegram deployment adapter', () => {
   });
 
   it('routes health and rejects fake Telegram data and development login', async () => {
-    const app = await createVercelApp(await previewVariables());
+    const app = await createTestApp(await previewVariables());
     apps.push(app);
     const health = await request(app, 'health', { headers: { origin: 'https://telegram-vercel-preview.example.vercel.app' } });
     expect(health.status).toBe(200);
@@ -86,7 +100,7 @@ describe('Vercel Telegram deployment adapter', () => {
   });
 
   it('authenticates valid initData, serves bootstrap, and rotates the refresh session', async () => {
-    const app = await createVercelApp({
+    const app = await createTestApp({
       ...await previewVariables(),
       VERCEL_ENV: 'production',
       VERCEL_URL: 'generated-deployment.example.vercel.app',
@@ -107,7 +121,7 @@ describe('Vercel Telegram deployment adapter', () => {
   });
 
   it('authenticates each bound pilot student and rejects a valid but unbound Telegram account', async () => {
-    const app = await createVercelApp({
+    const app = await createTestApp({
       ...await previewVariables(),
       TELEGRAM_STUDENT_BINDINGS_JSON: JSON.stringify({
         illia: '987654321', ivan: '987654322', rinat: '987654323', yuliia: '987654324'

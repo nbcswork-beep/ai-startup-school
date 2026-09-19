@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { AppEnv } from '../config/env.js';
 import type { AppRepository } from '../data/repository.js';
 import { AppError } from '../errors/app-error.js';
@@ -6,6 +6,8 @@ import type { AuthUser, NewSession } from '../types/domain.js';
 import { JwtService } from '../auth/jwt-service.js';
 import { createRefreshToken, hashRefreshToken } from '../auth/refresh-token.js';
 import { validateTelegramInitData } from '../auth/telegram-init-data.js';
+import { normalizeEmail, WebCredentialDirectory } from '../auth/password-credentials.js';
+import type { LoginAttemptLimiter } from '../auth/session-store.js';
 
 export interface AuthResult {
   accessToken: string;
@@ -19,6 +21,8 @@ export class AuthService {
     private readonly repository: AppRepository,
     private readonly jwt: JwtService,
     private readonly env: AppEnv,
+    private readonly webCredentials: WebCredentialDirectory = new WebCredentialDirectory(),
+    private readonly loginLimiter: LoginAttemptLimiter = { consume: async () => true, reset: async () => {} },
     private readonly now: () => Date = () => new Date()
   ) {}
 
@@ -40,6 +44,21 @@ export class AuthService {
     const user = await this.repository.getDevelopmentUser(this.env.DEV_USER_ID);
     if (!user) throw new AppError('DEV_USER_MISSING', 503, 'Запусти development seed перед входом');
     return this.startSession(user, 'development');
+  }
+
+  async loginWithPassword(email: string, password: string, target: 'teacher' | 'admin', clientAddress: string): Promise<AuthResult> {
+    if (!this.webCredentials.configured) throw new AppError('WEB_AUTH_NOT_CONFIGURED', 503, 'Вхід ще не налаштовано');
+    const normalizedEmail = normalizeEmail(email);
+    const rateKeys = [clientAddress, normalizedEmail].map(value => createHash('sha256').update(value).digest('hex'));
+    const allowed = await Promise.all(rateKeys.map(key => this.loginLimiter.consume(key, 5, 900)));
+    if (allowed.some(value => !value)) throw new AppError('LOGIN_RATE_LIMITED', 429, 'Забагато спроб. Спробуйте пізніше.');
+    const credential = await this.webCredentials.authenticate(normalizedEmail, password);
+    if (!credential) throw new AppError('INVALID_CREDENTIALS', 401, 'Неправильна електронна пошта або пароль');
+    const identity = await this.repository.getWebAuthUser(credential.userId);
+    if (!identity || !['teacher', 'admin'].includes(identity.role)) throw new AppError('INVALID_CREDENTIALS', 401, 'Неправильна електронна пошта або пароль');
+    if (target === 'admin' && identity.role !== 'admin') throw new AppError('ROLE_FORBIDDEN', 403, 'Недостатньо прав для Admin Control Center');
+    await Promise.all(rateKeys.map(key => this.loginLimiter.reset(key)));
+    return this.startSession(identity.user, 'web');
   }
 
   async refresh(rawRefreshToken: string): Promise<AuthResult> {

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#080b16" />
+  <meta name="color-scheme" content="dark" />
+  <title>AI Startup School — Захищений вхід</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22><rect width=%2264%22 height=%2264%22 rx=%2216%22 fill=%22%23080b16%22/><text x=%2232%22 y=%2239%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-size=%2222%22 fill=%22%2364e9ff%22>AI</text></svg>" />
+  <link rel="stylesheet" href="/src/login.css" />
+</head>
+<body>
+  <main class="login-world">
+    <div class="signal-field" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+    <section class="identity">
+      <div class="brand"><span>AI</span><p>STARTUP SCHOOL<small id="identity-label">TEACHER OS</small></p></div>
+      <div class="route" aria-hidden="true"><i></i><b></b><i></i><b></b><i></i></div>
+      <p class="eyebrow">ЗАХИЩЕНИЙ ПРОСТІР</p>
+      <h1 id="login-title">Вхід до Teacher OS</h1>
+      <p class="intro">Операційне середовище школи для роботи з групою, заняттями та прогресом учнів.</p>
+    </section>
+    <section class="login-panel">
+      <div><span class="panel-index">01 / IDENTITY</span><h2>Підтвердьте доступ</h2><p>Використайте робочу електронну пошту та власний пароль.</p></div>
+      <form id="login-form" novalidate>
+        <label><span>Електронна пошта</span><input name="email" type="email" autocomplete="username" inputmode="email" maxlength="254" required /></label>
+        <label><span>Пароль</span><input name="password" type="password" autocomplete="current-password" maxlength="128" required /></label>
+        <p id="login-error" class="error" role="alert" aria-live="polite"></p>
+        <button type="submit"><span>Увійти</span><b>→</b></button>
+      </form>
+      <p class="security-note"><i></i> Сесія захищена та автоматично завершується після закінчення терміну дії.</p>
+    </section>
+  </main>
+  <script type="module" src="/src/login.js"></script>
+</body>
+</html>
