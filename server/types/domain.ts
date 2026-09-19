@@ -4,7 +4,13 @@ export type AppRole = 'student' | 'guardian' | 'teacher' | 'admin';
 export interface AuthUser {
   id: UserId;
   displayName: string;
-  status: 'active' | 'suspended' | 'deleted';
+  status: 'active' | 'disabled' | 'archived' | 'suspended' | 'deleted';
+}
+
+export interface AccessContext {
+  role: AppRole;
+  status: AuthUser['status'];
+  sessionActive: boolean;
 }
 
 export interface TelegramIdentityInput {
@@ -400,6 +406,42 @@ export interface TeacherSearchDto {
   groups: Array<{ id: string; label: string; meta: string }>;
   homework: Array<{ id: string; label: string; meta: string }>;
   projects: Array<{ id: string; label: string; meta: string }>;
+}
+
+export type AdminEntity = 'users'|'students'|'teachers'|'guardians'|'groups'|'courses'|'modules'|'lessons'|'sessions'|'attendance'|'homework'|'submissions'|'reviews'|'projects'|'portfolios'|'mentor_bookings'|'reports';
+
+export interface AdminWorkspaceDto {
+  admin: { id:string; name:string; role:'admin'; mfaRequired:boolean };
+  metrics: Record<string,number>;
+  students: Array<Record<string,unknown>>;
+  teachers: Array<Record<string,unknown>>;
+  guardians: Array<Record<string,unknown>>;
+  groups: Array<Record<string,unknown>>;
+  sessions: Array<Record<string,unknown>>;
+  homework: Array<Record<string,unknown>>;
+  projects: Array<Record<string,unknown>>;
+  portfolios: Array<Record<string,unknown>>;
+  mentorBookings: Array<Record<string,unknown>>;
+  reports: Array<Record<string,unknown>>;
+  notifications: Array<Record<string,unknown>>;
+  activeSessions: Array<Record<string,unknown>>;
+  auditEvents: Array<Record<string,unknown>>;
+  securityEvents: Array<Record<string,unknown>>;
+  health: Record<string,{status:'ok'|'warning'|'required';label:string}>;
+}
+
+export interface AdminSearchDto {
+  results: Array<{type:'student'|'teacher'|'guardian'|'group'|'class'|'project';id:string;label:string;meta:string}>;
+}
+
+export interface AdminExplorerPageDto {
+  entity: AdminEntity;
+  page: number;
+  pageSize: number;
+  total: number;
+  sort: string;
+  direction: 'asc'|'desc';
+  records: Array<Record<string,unknown>>;
 }
 
 export interface AiConversationDto {

@@ -32,11 +32,27 @@ const envSchema = z.object({
   DEV_EPHEMERAL_JWT: booleanFromEnv.default(false),
   DEV_USER_ID: z.string().uuid().default('10000000-0000-4000-8000-000000000001'),
   AI_PROVIDER: z.enum(['mock']).default('mock'),
-  WORKSPACE_URL: optionalString
+  WORKSPACE_URL: optionalString,
+  TRUST_PROXY: booleanFromEnv.default(false),
+  STORAGE_PRIVATE_BUCKETS_CONFIGURED: booleanFromEnv.default(false),
+  ADMIN_MFA_CONFIGURED: booleanFromEnv.default(false),
+  SECURITY_MONITORING_CONFIGURED: booleanFromEnv.default(false)
 }).superRefine((env, context) => {
   if (env.NODE_ENV === 'production') {
     if (env.DEV_AUTH_ENABLED || env.DEV_EPHEMERAL_JWT || env.DATA_BACKEND === 'memory') {
       context.addIssue({ code: 'custom', message: 'Development auth, ephemeral keys, and memory data are forbidden in production' });
+    }
+    const origins = env.APP_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean);
+    const invalidOrigin = origins.length === 0 || origins.some(origin => {
+      try {
+        const url = new URL(origin);
+        return url.protocol !== 'https:' || url.origin !== origin || Boolean(url.username || url.password);
+      } catch {
+        return true;
+      }
+    });
+    if (invalidOrigin) {
+      context.addIssue({ code:'custom', message:'Production APP_ORIGINS must be an explicit HTTPS allowlist' });
     }
     for (const [key, value] of [
       ['DATABASE_URL', env.DATABASE_URL],

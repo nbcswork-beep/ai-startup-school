@@ -4,6 +4,11 @@ import type { AppRepository } from './repository.js';
 import { DEV_IDS, SEEDED_LESSONS } from './seed.js';
 import type {
   AchievementDto,
+  AccessContext,
+  AdminEntity,
+  AdminExplorerPageDto,
+  AdminSearchDto,
+  AdminWorkspaceDto,
   AiContextDto,
   AiConversationDto,
   AiMessageDto,
@@ -72,9 +77,10 @@ export class MemoryRepository implements AppRepository {
     [DEV_IDS.user, { id: DEV_IDS.user, displayName: 'Максим', status: 'active' }],
     ['12000000-0000-4000-8000-000000000001', { id: '12000000-0000-4000-8000-000000000001', displayName: 'Анна Коваль', status: 'active' }],
     ['13000000-0000-4000-8000-000000000001', { id: '13000000-0000-4000-8000-000000000001', displayName: 'Олена', status: 'active' }],
-    ['10000000-0000-4000-8000-000000000002', { id: '10000000-0000-4000-8000-000000000002', displayName: 'Ірина', status: 'active' }]
+    ['10000000-0000-4000-8000-000000000002', { id: '10000000-0000-4000-8000-000000000002', displayName: 'Ірина', status: 'active' }],
+    ['14000000-0000-4000-8000-000000000001', { id: '14000000-0000-4000-8000-000000000001', displayName: 'Марія Адміністраторка', status: 'active' }]
   ]);
-  private roles = new Map<string, 'student'|'guardian'|'teacher'|'admin'>([[DEV_IDS.user,'student'],['12000000-0000-4000-8000-000000000001','teacher'],['13000000-0000-4000-8000-000000000001','guardian'],['10000000-0000-4000-8000-000000000002','student']]);
+  private roles = new Map<string, 'student'|'guardian'|'teacher'|'admin'>([[DEV_IDS.user,'student'],['12000000-0000-4000-8000-000000000001','teacher'],['13000000-0000-4000-8000-000000000001','guardian'],['10000000-0000-4000-8000-000000000002','student'],['14000000-0000-4000-8000-000000000001','admin']]);
   private identities = new Map<string, string>();
   private sessions = new Map<string, NewSession & { revokedAt: Date | null; replacedBy: string | null }>();
   private xp = new Map<string, number>([[DEV_IDS.user, 640]]);
@@ -103,6 +109,12 @@ export class MemoryRepository implements AppRepository {
   private teacherMentorBookings: TeacherWorkspaceDto['mentor']['bookings'] = [];
   private teacherReports: TeacherWorkspaceDto['reports'] = [];
   private createdClassSessions: ClassSessionDto[] = [];
+  private portfolioVisibility = new Map<string,'private'|'shareable'|'public'>([['81000000-0000-4000-8000-000000000001','private']]);
+  private portfolioIds = new Map<string,string>([[DEV_IDS.user,'81000000-0000-4000-8000-000000000001'],['10000000-0000-4000-8000-000000000002','81000000-0000-4000-8000-000000000002']]);
+  private guardianLinks = new Map<string,'active'|'revoked'>([['92000000-0000-4000-8000-000000000001','active']]);
+  private adminAuditEvents: Array<Record<string,unknown>> = [];
+  private securityEvents: Array<Record<string,unknown>> = [];
+  private adminNotifications: Array<Record<string,unknown>> = [{id:'96000000-0000-4000-8000-000000000001',category:'class_reminder',recipient:'Максим',status:'pending',scheduledAt:relativeIso(1,16),attempts:0}];
 
   constructor(workspaceUrl?: string) {
     const tasks: ProjectTaskDto[] = [
@@ -210,6 +222,7 @@ export class MemoryRepository implements AppRepository {
     if (!current) return { status: 'invalid' };
     if (current.replacedBy) {
       for (const session of this.sessions.values()) if (session.familyId === current.familyId) session.revokedAt = now;
+      this.securityEvents.unshift({id:randomUUID(),type:'refresh_token_reuse',severity:'high',actorId:current.userId,targetId:current.userId,metadata:{familyRevoked:true},correlationId:`refresh:${current.id}`,createdAt:now.toISOString()});
       return { status: 'reused' };
     }
     if (current.revokedAt) return { status: 'revoked' };
@@ -226,6 +239,11 @@ export class MemoryRepository implements AppRepository {
     if (!current) return false;
     for (const session of this.sessions.values()) if (session.familyId === current.familyId) session.revokedAt = now;
     return true;
+  }
+
+  async getAccessContext(userId:string,sessionId:string):Promise<AccessContext>{
+    const user=this.users.get(userId);const session=this.sessions.get(sessionId);
+    return{role:this.roles.get(userId)??'student',status:user?.status??'disabled',sessionActive:Boolean(session&&session.userId===userId&&!session.revokedAt&&session.expiresAt.getTime()>Date.now())};
   }
 
   async getHome(userId: string): Promise<HomeDto> {
@@ -452,7 +470,7 @@ export class MemoryRepository implements AppRepository {
   async getPortfolio(userId: string): Promise<PortfolioDto> {
     this.requireRole(userId,'student');
     return {
-      id: `portfolio:${userId}`,
+      id: this.portfolioIds.get(userId)??`portfolio:${userId}`,
       title: 'Моє портфоліо',
       visibility: 'private',
       projects: structuredClone(this.portfolioProjects.get(userId) ?? []),
@@ -559,6 +577,34 @@ export class MemoryRepository implements AppRepository {
   async approveTeacherReport(userId:string,reportId:string):Promise<void>{this.requireRole(userId,'teacher');const report=this.teacherReports.find(item=>item.id===reportId);if(!report)throw new AppError('REPORT_FORBIDDEN',403,'Звіт недоступний');if(report.status!=='ready_for_review'||!report.teacherComment.trim())throw new AppError('REPORT_NOT_READY',409,'Звіт ще не готовий до підтвердження');report.status='approved';report.approvedAt=nowIso();}
   async listLinkedStudents(userId:string):Promise<TeacherStudentDto[]>{this.requireRole(userId,'guardian');return[{id:DEV_IDS.user,firstName:'Максим',progressPercent:20,projectTitle:'Smart Study Planner'}];}
   async listParentReports(userId:string,studentId:string):Promise<ParentReportDto[]>{this.requireRole(userId,'guardian');if(studentId!==DEV_IDS.user)throw new AppError('STUDENT_FORBIDDEN',403,'Учень недоступний');return[{id:'93000000-0000-4000-8000-000000000001',studentId,studentFirstName:'Максим',periodStart:new Date(Date.now()-7*86400000).toISOString().slice(0,10),periodEnd:new Date(Date.now()-86400000).toISOString().slice(0,10),payload:{classesScheduled:2,classesAttended:2,homeworkSubmitted:2,project:'Smart Study Planner',projectProgress:62,effort:{high:2}},teacherComment:'Максим уважно працював із джерелами й наполегливо допрацьовує план проєкту.',status:'approved'}];}
+
+  async getAdminWorkspace(userId:string):Promise<AdminWorkspaceDto>{
+    this.requireRole(userId,'admin');const teacher=await this.getTeacherWorkspace(userId);const now=Date.now();
+    const students=teacher.students.map(student=>({id:student.id,name:student.firstName,status:this.users.get(student.id)?.status??'active',group:student.groupName,course:student.courseTitle,progress:student.progressPercent,xp:student.xp,level:student.level,streak:this.streak.get(student.id)??0,attendance:student.attendance,homework:student.homework,project:student.projectTitle,guardianLinked:student.id===DEV_IDS.user&&this.guardianLinks.get('92000000-0000-4000-8000-000000000001')==='active',telegramLinked:student.id===DEV_IDS.user}));
+    const teachers=[{id:'12000000-0000-4000-8000-000000000001',name:'Анна Коваль',status:this.users.get('12000000-0000-4000-8000-000000000001')?.status,groups:1,upcomingClasses:teacher.sessions.filter(item=>Date.parse(item.startsAt)>now&&item.status!=='cancelled').length,classesTaught:teacher.sessions.filter(item=>item.status==='completed').length,reviews:teacher.submissions.filter(item=>item.review).length,mentor:true}];
+    const guardians=[{id:'13000000-0000-4000-8000-000000000001',name:'Олена',status:this.users.get('13000000-0000-4000-8000-000000000001')?.status,linkedStudents:this.guardianLinks.get('92000000-0000-4000-8000-000000000001')==='active'?['Максим']:[],relationshipStatus:this.guardianLinks.get('92000000-0000-4000-8000-000000000001'),telegramLinked:false,linkId:'92000000-0000-4000-8000-000000000001'}];
+    const sessions=teacher.sessions.map(item=>({id:item.id,title:item.title,group:item.groupName,teacher:item.teacherName,lesson:item.lessonTitle,startsAt:item.startsAt,durationMinutes:item.durationMinutes,status:item.status,meetingProvider:item.meetingProvider,meetingUrl:item.meetingUrl,attendanceComplete:item.attendance.every(entry=>entry.status)}));
+    const homework=teacher.homework.map(item=>({id:item.id,title:item.title,group:item.groupName,status:item.status,dueAt:item.dueAt,submissions:item.submissionCount,reviews:item.reviewCount,revisions:item.needsRevisionCount}));
+    const projects=teacher.students.flatMap(student=>student.projects.map(project=>({id:project.id,studentId:student.id,student:student.firstName,title:project.title,stage:project.stage.title,progress:project.completionPercent,technologies:project.tags,status:project.status})));
+    const portfolios=teacher.students.map(student=>({id:student.portfolio?.id??`portfolio:${student.id}`,studentId:student.id,student:student.firstName,title:student.portfolio?.title??'Портфоліо',visibility:student.portfolio?.id?this.portfolioVisibility.get(student.portfolio.id)??student.portfolio.visibility:'private',items:student.portfolio?.projects.length??0}));
+    const activeSessions=[...this.sessions.values()].filter(item=>!item.revokedAt&&item.expiresAt.getTime()>now).map(item=>({id:item.id,userId:item.userId,user:this.users.get(item.userId)?.displayName??'Користувач',role:this.roles.get(item.userId),provider:item.provider,createdAt:item.createdAt.toISOString(),expiresAt:item.expiresAt.toISOString(),status:'active'}));
+    const reports=teacher.reports.map(item=>({...item,guardianRelationshipActive:this.guardianLinks.get('92000000-0000-4000-8000-000000000001')==='active'}));
+    return{admin:{id:userId,name:this.requireUser(userId).displayName,role:'admin',mfaRequired:true},metrics:{activeStudents:students.filter(item=>item.status==='active').length,activeGroups:teacher.groups.length,teachers:teachers.length,upcomingClasses:sessions.filter(item=>Date.parse(String(item.startsAt))>now&&!['cancelled','completed'].includes(String(item.status))).length,classesToday:sessions.filter(item=>String(item.startsAt).slice(0,10)===new Date().toISOString().slice(0,10)).length,awaitingReview:teacher.metrics.awaitingReview,needsRevision:teacher.homework.reduce((sum,item)=>sum+item.needsRevisionCount,0),mentorBookings:teacher.mentor.bookings.length,attendanceIssues:teacher.students.reduce((sum,item)=>sum+item.attendance.absent+item.attendance.late,0),reportsAwaiting:reports.filter(item=>item.status==='ready_for_review').length,recentProjects:projects.length,portfolioMilestones:portfolios.reduce((sum,item)=>sum+Number(item.items),0)},students,teachers,guardians,groups:teacher.groups.map(item=>({...item})),sessions,homework,projects,portfolios,mentorBookings:teacher.mentor.bookings.map(item=>({...item})),reports,notifications:structuredClone(this.adminNotifications),activeSessions,auditEvents:structuredClone(this.adminAuditEvents),securityEvents:structuredClone(this.securityEvents),health:{productionMode:{status:'warning',label:'Перевіряється з server environment'},database:{status:'ok',label:'Repository доступний'},rls:{status:'warning',label:'Потребує integration test'},telegram:{status:'warning',label:'Статус без розкриття секрету'},storage:{status:'required',label:'Приватне сховище потребує конфігурації'},signingKeys:{status:'ok',label:'JWT signer завантажений'},devAuth:{status:'warning',label:'Дозволено лише поза production'},origins:{status:'ok',label:'Allowlist налаштовано'},securityHeaders:{status:'ok',label:'Helmet/CSP увімкнено'}}};
+  }
+
+  async searchAdmin(userId:string,query:string):Promise<AdminSearchDto>{const data=await this.getAdminWorkspace(userId),term=query.toLocaleLowerCase('uk'),match=(value:unknown)=>String(value??'').toLocaleLowerCase('uk').includes(term);return{results:[...data.students.filter(x=>match(x.name)).map(x=>({type:'student' as const,id:String(x.id),label:String(x.name),meta:String(x.group)})),...data.teachers.filter(x=>match(x.name)).map(x=>({type:'teacher' as const,id:String(x.id),label:String(x.name),meta:'Викладач'})),...data.guardians.filter(x=>match(x.name)).map(x=>({type:'guardian' as const,id:String(x.id),label:String(x.name),meta:'Батьки'})),...data.groups.filter(x=>match(x.name)).map(x=>({type:'group' as const,id:String(x.id),label:String(x.name),meta:String(x.courseTitle)})),...data.sessions.filter(x=>match(x.title)).map(x=>({type:'class' as const,id:String(x.id),label:String(x.title),meta:String(x.group)})),...data.projects.filter(x=>match(x.title)).map(x=>({type:'project' as const,id:String(x.id),label:String(x.title),meta:String(x.student)}))].slice(0,30)}};
+
+  async exploreAdmin(userId:string,input:{entity:AdminEntity;page:number;pageSize:number;sort:string;direction:'asc'|'desc';query?:string}):Promise<AdminExplorerPageDto>{const data=await this.getAdminWorkspace(userId);const map:Record<AdminEntity,Array<Record<string,unknown>>>={users:[...data.students,...data.teachers,...data.guardians],students:data.students,teachers:data.teachers,guardians:data.guardians,groups:data.groups,courses:[{id:DEV_IDS.course,title:'Основи роботи з AI',status:'published'}],modules:[{id:DEV_IDS.module,title:'Основи роботи з AI',status:'published'}],lessons:SEEDED_LESSONS.map((item,index)=>({id:item.id,title:item.title,position:index+1,status:'published'})),sessions:data.sessions,attendance:(await this.getTeacherWorkspace(userId)).sessions.flatMap(item=>item.attendance.map(entry=>({id:item.id=== '71000000-0000-4000-8000-000000000003'&&entry.studentId===DEV_IDS.user?'72000000-0000-4000-8000-000000000011':`${item.id}:${entry.studentId}`,session:item.title,student:entry.studentName,status:entry.status,confirmedAt:entry.confirmedAt}))),homework:data.homework,submissions:(await this.getTeacherWorkspace(userId)).submissions.map(item=>({id:item.id,homework:item.homeworkTitle,student:item.studentName,attempt:item.attemptNumber,status:item.status,submittedAt:item.submittedAt})),reviews:(await this.getTeacherWorkspace(userId)).submissions.filter(item=>item.review).map(item=>({id:item.id,student:item.studentName,score:item.review!.score,effort:item.review!.effort,status:item.review!.status})),projects:data.projects,portfolios:data.portfolios,mentor_bookings:data.mentorBookings,reports:data.reports};let records=map[input.entity];const allowedSorts=new Set(records.length?Object.keys(records[0]!):['id']);if(!allowedSorts.has(input.sort))throw new AppError('INVALID_SORT',400,'Недозволене поле сортування');if(input.query){const term=input.query.toLocaleLowerCase('uk');records=records.filter(item=>Object.values(item).some(value=>String(value??'').toLocaleLowerCase('uk').includes(term)));}records=[...records].sort((left,right)=>String(left[input.sort]??'').localeCompare(String(right[input.sort]??''),'uk')*(input.direction==='asc'?1:-1));const total=records.length,start=(input.page-1)*input.pageSize;return{entity:input.entity,page:input.page,pageSize:input.pageSize,total,sort:input.sort,direction:input.direction,records:structuredClone(records.slice(start,start+input.pageSize))};}
+
+  async adminSetAccountStatus(userId:string,targetUserId:string,status:'active'|'disabled'|'archived',reason:string,correlationId:string):Promise<void>{this.requireRole(userId,'admin');if(userId===targetUserId&&status!=='active')throw new AppError('ADMIN_SELF_LOCKOUT',409,'Не можна вимкнути власний обліковий запис');const target=this.requireUser(targetUserId),previous=target.status;target.status=status;this.audit(userId,'account.status_changed','user',targetUserId,{previous,status,reason},correlationId);}
+  async adminCorrectAttendance(userId:string,attendanceId:string,status:'present'|'late'|'absent'|'excused',reason:string,correlationId:string):Promise<void>{this.requireRole(userId,'admin');if(attendanceId!=='72000000-0000-4000-8000-000000000011')throw new AppError('ATTENDANCE_NOT_FOUND',404,'Відвідування не знайдено');const records=this.attendanceRecords.get('71000000-0000-4000-8000-000000000003')!,entry=records.get(DEV_IDS.user)!;const previous=entry.status;entry.status=status;entry.confirmedAt=nowIso();this.audit(userId,'attendance.corrected','attendance',attendanceId,{previous,status,reason},correlationId);}
+  async adminSetPortfolioVisibility(userId:string,portfolioId:string,visibility:'private'|'shareable'|'public',reason:string,correlationId:string):Promise<void>{this.requireRole(userId,'admin');if(!this.portfolioVisibility.has(portfolioId))throw new AppError('PORTFOLIO_NOT_FOUND',404,'Портфоліо не знайдено');const previous=this.portfolioVisibility.get(portfolioId);this.portfolioVisibility.set(portfolioId,visibility);this.audit(userId,'portfolio.visibility_changed','portfolio',portfolioId,{previous,visibility,reason},correlationId);}
+  async adminRevokeGuardianLink(userId:string,linkId:string,reason:string,correlationId:string):Promise<void>{this.requireRole(userId,'admin');if(!this.guardianLinks.has(linkId))throw new AppError('GUARDIAN_LINK_NOT_FOUND',404,'Зв’язок не знайдено');this.guardianLinks.set(linkId,'revoked');this.audit(userId,'guardian.relationship_revoked','guardian_link',linkId,{reason},correlationId);}
+  async adminResendReport(userId:string,reportId:string,correlationId:string):Promise<void>{this.requireRole(userId,'admin');const report=this.teacherReports.find(item=>item.id===reportId);if(!report||!['approved','sent','failed'].includes(report.status)||this.guardianLinks.get('92000000-0000-4000-8000-000000000001')!=='active')throw new AppError('REPORT_RESEND_FORBIDDEN',409,'Звіт не готовий або зв’язок із батьками неактивний');this.adminNotifications.unshift({id:randomUUID(),category:'parent_weekly_report',recipient:'Олена',status:'pending',scheduledAt:nowIso(),attempts:0});this.audit(userId,'report.resend_requested','parent_report',reportId,{},correlationId);}
+  async adminRevokeUserSession(userId:string,sessionId:string,reason:string,correlationId:string):Promise<void>{this.requireRole(userId,'admin');const session=this.sessions.get(sessionId);if(!session)throw new AppError('SESSION_NOT_FOUND',404,'Сесію не знайдено');session.revokedAt=new Date();this.audit(userId,'session.revoked','auth_session',sessionId,{subjectUserId:session.userId,reason},correlationId);this.securityEvents.unshift({id:randomUUID(),type:'forced_session_revocation',severity:'medium',actorId:userId,targetId:session.userId,createdAt:nowIso(),correlationId});}
+  async recordSecurityEvent(input:{eventType:string;severity:'low'|'medium'|'high'|'critical';actorUserId?:string;targetUserId?:string;metadata?:Record<string,unknown>;correlationId:string}):Promise<void>{this.securityEvents.unshift({id:randomUUID(),type:input.eventType,severity:input.severity,actorId:input.actorUserId??null,targetId:input.targetUserId??null,metadata:input.metadata??{},correlationId:input.correlationId,createdAt:nowIso()});}
+
+  private audit(actorId:string,action:string,targetType:string,targetId:string,metadata:Record<string,unknown>,correlationId:string):void{this.adminAuditEvents.unshift({id:randomUUID(),actorId,actor:this.users.get(actorId)?.displayName,action,targetType,targetId,metadata,correlationId,createdAt:nowIso()});}
 
   async listConversations(userId: string): Promise<AiConversationDto[]> {
     this.requireUser(userId);

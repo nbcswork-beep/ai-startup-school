@@ -12,12 +12,13 @@ import { registerAuthRoutes } from './routes/auth.js';
 import { registerStudentRoutes } from './routes/student.js';
 import { registerTeacherRoutes } from './routes/teacher.js';
 import { registerGuardianRoutes } from './routes/guardian.js';
+import { registerAdminRoutes } from './routes/admin.js';
 import type { AiProvider } from './services/ai-provider.js';
 import { AiMentorService } from './services/ai-mentor-service.js';
 import { AuthService } from './services/auth-service.js';
 
 export async function buildApp(deps: { env: AppEnv; repository: AppRepository; jwt: JwtService; aiProvider: AiProvider }) {
-  const app = Fastify({ logger: deps.env.NODE_ENV === 'test' ? false : { level: deps.env.LOG_LEVEL }, trustProxy: true, bodyLimit: 32_768 });
+  const app = Fastify({ logger: deps.env.NODE_ENV === 'test' ? false : { level: deps.env.LOG_LEVEL,redact:{paths:['req.headers.authorization','req.headers.cookie','res.headers.set-cookie','body.initData','body.refreshToken','body.password','body.token'],censor:'[REDACTED]'} }, trustProxy: deps.env.TRUST_PROXY, bodyLimit: 32_768 });
   await app.register(cookie);
   await app.register(cors, {
     credentials: true,
@@ -26,15 +27,17 @@ export async function buildApp(deps: { env: AppEnv; repository: AppRepository; j
       else callback(null, false);
     }
   });
-  await app.register(helmet, { contentSecurityPolicy: false });
+  await app.register(helmet, { contentSecurityPolicy:{directives:{defaultSrc:["'self'"],scriptSrc:["'self'",'https://telegram.org'],styleSrc:["'self'","'unsafe-inline'",'https://fonts.googleapis.com'],fontSrc:["'self'",'https://fonts.gstatic.com'],imgSrc:["'self'",'data:'],connectSrc:["'self'"],objectSrc:["'none'"],baseUri:["'self'"],frameAncestors:["'none'"],formAction:["'self'"]}},crossOriginEmbedderPolicy:false,referrerPolicy:{policy:'no-referrer'} });
+  app.addHook('onSend',async(request,reply,payload)=>{reply.header('Permissions-Policy','camera=(), microphone=(), geolocation=()');if(request.url.startsWith('/api/'))reply.header('Cache-Control','no-store');return payload;});
   await app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
   registerErrorHandler(app);
   app.get('/api/health', async () => { await deps.repository.ping(); return { status: 'ok' }; });
   const auth = new AuthService(deps.repository, deps.jwt, deps.env);
   registerAuthRoutes(app, auth, deps.env);
-  const authenticate=createAuthenticate(deps.jwt);
+  const authenticate=createAuthenticate(deps.jwt,deps.repository);
   registerStudentRoutes(app, deps.repository, new AiMentorService(deps.repository, deps.aiProvider), authenticate);
   registerTeacherRoutes(app,deps.repository,authenticate);
   registerGuardianRoutes(app,deps.repository,authenticate);
+  registerAdminRoutes(app,deps.repository,authenticate,deps.env);
   return app;
 }

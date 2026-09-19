@@ -1,5 +1,10 @@
 import type {
   AchievementDto,
+  AccessContext,
+  AdminEntity,
+  AdminExplorerPageDto,
+  AdminSearchDto,
+  AdminWorkspaceDto,
   AiContextDto,
   AiConversationDto,
   AiMessageDto,
@@ -38,6 +43,7 @@ export interface AppRepository {
   createSession(session: NewSession): Promise<void>;
   rotateSession(currentTokenHash: string, next: NewSession, now: Date): Promise<RotationResult>;
   revokeSession(refreshTokenHash: string, now: Date): Promise<boolean>;
+  getAccessContext(userId: UserId, sessionId: string): Promise<AccessContext>;
 
   getHome(userId: UserId): Promise<HomeDto>;
   getSchedule(userId: UserId): Promise<ScheduleDto>;
@@ -81,6 +87,17 @@ export interface AppRepository {
   approveTeacherReport(userId: UserId, reportId: string): Promise<void>;
   listLinkedStudents(userId: UserId): Promise<TeacherStudentDto[]>;
   listParentReports(userId: UserId, studentId: string): Promise<ParentReportDto[]>;
+
+  getAdminWorkspace(userId: UserId): Promise<AdminWorkspaceDto>;
+  searchAdmin(userId: UserId, query: string): Promise<AdminSearchDto>;
+  exploreAdmin(userId: UserId, input: { entity: AdminEntity; page: number; pageSize: number; sort: string; direction: 'asc'|'desc'; query?: string }): Promise<AdminExplorerPageDto>;
+  adminSetAccountStatus(userId: UserId, targetUserId: string, status: 'active'|'disabled'|'archived', reason: string, correlationId: string): Promise<void>;
+  adminCorrectAttendance(userId: UserId, attendanceId: string, status: 'present'|'late'|'absent'|'excused', reason: string, correlationId: string): Promise<void>;
+  adminSetPortfolioVisibility(userId: UserId, portfolioId: string, visibility: 'private'|'shareable'|'public', reason: string, correlationId: string): Promise<void>;
+  adminRevokeGuardianLink(userId: UserId, linkId: string, reason: string, correlationId: string): Promise<void>;
+  adminResendReport(userId: UserId, reportId: string, correlationId: string): Promise<void>;
+  adminRevokeUserSession(userId: UserId, sessionId: string, reason: string, correlationId: string): Promise<void>;
+  recordSecurityEvent(input: { eventType: string; severity: 'low'|'medium'|'high'|'critical'; actorUserId?: string; targetUserId?: string; metadata?: Record<string,unknown>; correlationId: string }): Promise<void>;
 
   listConversations(userId: UserId): Promise<AiConversationDto[]>;
   createConversation(userId: UserId, title?: string): Promise<AiConversationDto>;

@@ -17,7 +17,7 @@ export function registerErrorHandler(app: FastifyInstance): void {
     }
     if ('statusCode' in error && typeof error.statusCode === 'number' && error.statusCode < 500) {
       return reply.status(error.statusCode).send({
-        error: { code: error.code || 'REQUEST_ERROR', message: error.message, requestId: request.id }
+        error: { code: error.code || 'REQUEST_ERROR', message: 'Запит не вдалося виконати', requestId: request.id }
       });
     }
     request.log.error({ err: error }, 'Unhandled request error');

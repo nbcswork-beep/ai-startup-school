@@ -6,6 +6,7 @@ const studentA='10000000-0000-4000-8000-000000000001';
 const studentB='10000000-0000-4000-8000-000000000099';
 const teacher='12000000-0000-4000-8000-000000000001';
 const guardian='13000000-0000-4000-8000-000000000001';
+const admin='14000000-0000-4000-8000-000000000001';
 const group='70000000-0000-4000-8000-000000000001';
 const privateNote='94000000-0000-4000-8000-000000000001';
 
@@ -60,5 +61,16 @@ describe('RLS ownership',()=>{
     if(owned)expect((await asUser(teacher,`select * from public.file_assets where id=$1`,[owned.id])).rowCount).toBe(1);
     const foreign=await pool.query(`insert into public.file_assets(owner_user_id,bucket,object_path,original_name,mime_type,size_bytes,status) values($1,'homework-private','tests/unrelated.txt','unrelated.txt','text/plain',10,'ready') returning id`,[studentB]);
     try{expect((await asUser(teacher,`select * from public.file_assets where id=$1`,[foreign.rows[0].id])).rowCount).toBe(0);}finally{await pool.query(`delete from public.file_assets where id=$1`,[foreign.rows[0].id]);}
+  });
+  it('allows active admin domain reads while keeping private session hashes inaccessible',async()=>{
+    expect((await asUser(admin,`select id from public.users where id in($1,$2)`,[studentA,teacher])).rowCount).toBe(2);
+    await expect(asUser(admin,`select refresh_token_hash from app_private.auth_sessions limit 1`)).rejects.toBeTruthy();
+  });
+  it('rejects privileged functions and arbitrary guardian links for non-admin roles',async()=>{
+    await expect(asUser(studentA,`select public.admin_set_account_status($1,'disabled','attempt','rls-test')`,[teacher])).rejects.toBeTruthy();
+    await expect(asUser(guardian,`insert into public.guardian_student_links(guardian_id,student_id,status,invited_by) values($1,$2,'active',$1)`,[guardian,studentB])).rejects.toBeTruthy();
+  });
+  it('keeps another student portfolio private',async()=>{
+    expect((await asUser(studentB,`select * from public.portfolios where student_id=$1`,[studentA])).rowCount).toBe(0);
   });
 });

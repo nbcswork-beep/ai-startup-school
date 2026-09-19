@@ -56,6 +56,10 @@ export class AuthService {
       const code = result.status === 'reused' ? 'REFRESH_TOKEN_REUSE' : 'REFRESH_TOKEN_INVALID';
       throw new AppError(code, 401, 'Сесію завершено. Увійди ще раз.');
     }
+    if (result.user.status !== 'active') {
+      await this.repository.revokeSession(next.refreshTokenHash, now);
+      throw new AppError('USER_INACTIVE', 403, 'Обліковий запис недоступний');
+    }
     const provider = result.session.provider;
     const accessToken = await this.jwt.sign({ userId: result.user.id, sessionId: result.session.id, provider });
     return { accessToken, expiresIn: this.env.ACCESS_TOKEN_TTL_SECONDS, refreshToken: token, user: { id: result.user.id, displayName: result.user.displayName } };

@@ -84,7 +84,8 @@ insert into public.project_stages(id,code,title,position,default_completion_perc
 
 insert into public.users(id,kind) values
 ('12000000-0000-4000-8000-000000000001','teacher'),
-('13000000-0000-4000-8000-000000000001','guardian') on conflict(id) do update set kind=excluded.kind;
+('13000000-0000-4000-8000-000000000001','guardian'),
+('14000000-0000-4000-8000-000000000001','admin') on conflict(id) do update set kind=excluded.kind;
 insert into public.teacher_profiles(user_id,display_name,title,timezone) values
 ('12000000-0000-4000-8000-000000000001','Анна Коваль','Викладачка та product mentor','Europe/Kyiv') on conflict do nothing;
 insert into public.guardian_profiles(user_id,display_name,locale,timezone) values
