@@ -21,6 +21,9 @@ import type {
   ParentReportDto,
   TeacherGroupDto,
   TeacherStudentDto,
+  TeacherWorkspaceDto,
+  TeacherSearchDto,
+  TeacherPrivateNoteDto,
   RotationResult,
   TelegramIdentityInput,
   UserId
@@ -61,8 +64,21 @@ export interface AppRepository {
   createClassSession(userId: UserId, input: { groupId: string; courseId: string; moduleId?: string; lessonId?: string; title: string; description?: string; startsAt: string; endsAt: string; meetingUrl?: string; meetingProvider?: string }): Promise<ClassSessionDto>;
   rescheduleClass(userId: UserId, sessionId: string, input: { startsAt: string; endsAt: string; reason?: string }): Promise<void>;
   confirmAttendance(userId: UserId, sessionId: string, studentId: string, status: 'present' | 'late' | 'absent' | 'excused', note?: string): Promise<void>;
-  createHomework(userId: UserId, input: { groupId: string; courseId: string; moduleId?: string; lessonId?: string; classSessionId?: string; title: string; instructions: string; publishAt?: string; dueAt?: string; xpReward: number; status: 'draft' | 'published' }): Promise<HomeworkSummaryDto>;
+  createHomework(userId: UserId, input: { groupId: string; courseId: string; moduleId?: string; lessonId?: string; classSessionId?: string; title: string; instructions: string; publishAt?: string; dueAt?: string; xpReward: number; status: 'draft' | 'published'; resources?: Array<{ kind: 'presentation' | 'document' | 'link' | 'reference' | 'other'; title: string; url: string }> }): Promise<HomeworkSummaryDto>;
   reviewHomework(userId: UserId, submissionId: string, input: { score: number; effort: EffortLevel; status: 'reviewed' | 'needs_revision' | 'completed'; feedback: string }): Promise<void>;
+  getTeacherWorkspace(userId: UserId): Promise<TeacherWorkspaceDto>;
+  searchTeacherScope(userId: UserId, query: string): Promise<TeacherSearchDto>;
+  updateTeacherClass(userId: UserId, sessionId: string, input: { title?: string; description?: string; lessonId?: string | null; meetingUrl?: string | null; meetingProvider?: string | null; teacherNotes?: string; status?: 'scheduled' | 'in_progress' | 'completed' | 'cancelled' }): Promise<void>;
+  addClassMaterial(userId: UserId, sessionId: string, input: { kind: 'presentation' | 'document' | 'link' | 'reference' | 'other'; title: string; url: string }): Promise<void>;
+  bulkConfirmAttendance(userId: UserId, sessionId: string, entries: Array<{ studentId: string; status: 'present' | 'late' | 'absent' | 'excused'; note?: string }>): Promise<void>;
+  publishHomework(userId: UserId, homeworkId: string, publishAt: string): Promise<void>;
+  createTeacherNote(userId: UserId, studentId: string, input: { category: 'general' | 'learning' | 'project' | 'mentoring'; content: string }): Promise<TeacherPrivateNoteDto>;
+  updatePortfolioItemAsTeacher(userId: UserId, portfolioProjectId: string, input: { title?: string | null; shortDescription?: string; reflection?: string; learned?: string }): Promise<void>;
+  createMentorAvailability(userId: UserId, input: { startsAt: string; endsAt: string; timezone: string; status: 'open' | 'blocked' }): Promise<void>;
+  updateMentorBooking(userId: UserId, bookingId: string, input: { status: 'confirmed' | 'completed' | 'cancelled' | 'rescheduled' | 'no_show'; meetingUrl?: string | null; startsAt?: string; endsAt?: string }): Promise<void>;
+  generateTeacherReports(userId: UserId, groupId: string, periodStart: string, periodEnd: string): Promise<void>;
+  saveTeacherReport(userId: UserId, reportId: string, input: { teacherComment: string; status: 'draft' | 'ready_for_review' }): Promise<void>;
+  approveTeacherReport(userId: UserId, reportId: string): Promise<void>;
   listLinkedStudents(userId: UserId): Promise<TeacherStudentDto[]>;
   listParentReports(userId: UserId, studentId: string): Promise<ParentReportDto[]>;
 

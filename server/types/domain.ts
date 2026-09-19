@@ -274,7 +274,132 @@ export interface ParentReportDto {
   periodEnd: string;
   payload: Record<string, unknown>;
   teacherComment: string;
-  status: 'draft' | 'approved' | 'sent' | 'failed';
+  status: 'draft' | 'ready_for_review' | 'approved' | 'sent' | 'failed';
+}
+
+export type AttendanceStatus = 'present' | 'late' | 'absent' | 'excused';
+export type TeacherClassStatus = 'scheduled' | 'rescheduled' | 'in_progress' | 'completed' | 'cancelled';
+
+export interface TeacherAttendanceDto {
+  studentId: string;
+  studentName: string;
+  status: AttendanceStatus | null;
+  suggestedStatus: AttendanceStatus | null;
+  note: string;
+  confirmedAt: string | null;
+}
+
+export interface TeacherSessionDto extends ClassSessionDto {
+  groupId: string;
+  groupName: string;
+  lessonId: string | null;
+  teacherNotes: string;
+  attendance: TeacherAttendanceDto[];
+  homeworkIds: string[];
+}
+
+export interface TeacherHomeworkDto {
+  id: string;
+  groupId: string;
+  groupName: string;
+  classSessionId: string | null;
+  title: string;
+  instructions: string;
+  publishAt: string | null;
+  dueAt: string | null;
+  xpReward: number;
+  status: 'draft' | 'published' | 'closed' | 'archived';
+  submissionCount: number;
+  reviewCount: number;
+  needsRevisionCount: number;
+  resources?: ClassMaterialDto[];
+}
+
+export interface TeacherSubmissionDto {
+  id: string;
+  homeworkId: string;
+  homeworkTitle: string;
+  groupId: string;
+  groupName: string;
+  studentId: string;
+  studentName: string;
+  attemptNumber: number;
+  submittedAt: string | null;
+  studentComment: string;
+  contentText: string;
+  contentUrl: string | null;
+  status: HomeworkState;
+  review: HomeworkReviewDto | null;
+  attachments: ClassMaterialDto[];
+  previousAttempts: HomeworkSubmissionDto[];
+}
+
+export interface TeacherPrivateNoteDto {
+  id: string;
+  studentId: string;
+  category: 'general' | 'learning' | 'project' | 'mentoring';
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TeacherStudentDetailDto extends TeacherStudentDto {
+  groupId: string;
+  groupName: string;
+  courseTitle: string;
+  moduleTitle: string;
+  xp: number;
+  level: string;
+  attendance: { present: number; late: number; absent: number; excused: number };
+  homework: { assigned: number; submitted: number; needsRevision: number; averageScore: number | null; effort: EffortLevel | null };
+  projects: ProjectDto[];
+  portfolio: PortfolioDto | null;
+  mentorBookings: MentorBookingDto[];
+  notes: TeacherPrivateNoteDto[];
+  attentionReasons: string[];
+  recentActivityAt: string | null;
+}
+
+export interface TeacherMentorAvailabilityDto {
+  id: string;
+  mentorId: string;
+  startsAt: string;
+  endsAt: string;
+  timezone: string;
+  status: 'open' | 'blocked' | 'booked' | 'cancelled';
+}
+
+export interface TeacherMentorBookingDto extends MentorBookingDto {
+  studentId: string;
+  studentName: string;
+  projectTitle: string | null;
+}
+
+export interface TeacherReportDto extends ParentReportDto {
+  groupId: string;
+  groupName: string;
+  approvedAt: string | null;
+}
+
+export interface TeacherWorkspaceDto {
+  teacher: { id: string; name: string; title: string; timezone: string };
+  metrics: { todayClasses: number; awaitingReview: number; resubmitted: number; mentorToday: number; reportsPending: number };
+  groups: Array<TeacherGroupDto & { courseId: string; scheduleLabel: string; progressPercent: number; attendanceRate: number; recentHomework: string | null }>;
+  sessions: TeacherSessionDto[];
+  homework: TeacherHomeworkDto[];
+  submissions: TeacherSubmissionDto[];
+  students: TeacherStudentDetailDto[];
+  mentor: { mentorId: string | null; availability: TeacherMentorAvailabilityDto[]; bookings: TeacherMentorBookingDto[] };
+  reports: TeacherReportDto[];
+  lessons: Array<{ id: string; title: string; moduleTitle: string }>;
+  attention: Array<{ studentId: string; studentName: string; reasons: string[] }>;
+}
+
+export interface TeacherSearchDto {
+  students: Array<{ id: string; label: string; meta: string }>;
+  groups: Array<{ id: string; label: string; meta: string }>;
+  homework: Array<{ id: string; label: string; meta: string }>;
+  projects: Array<{ id: string; label: string; meta: string }>;
 }
 
 export interface AiConversationDto {

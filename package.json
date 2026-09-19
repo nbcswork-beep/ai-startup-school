@@ -14,6 +14,7 @@
     "test:unit": "vitest run --config vitest.config.ts",
     "test:integration": "node scripts/run-integration-tests.mjs",
     "qa:mobile": "node scripts/capture-mobile.mjs",
+    "qa:teacher": "node scripts/capture-teacher.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "server": "node server-dist/server/index.js",
     "bot": "node bot/server.js"

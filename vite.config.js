@@ -1,6 +1,14 @@
 import { defineConfig } from 'vite';
+import { fileURLToPath } from 'node:url';
+
+const root = fileURLToPath(new URL('.', import.meta.url));
 
 export default defineConfig({
+  build: {
+    rollupOptions: {
+      input: { student: `${root}index.html`, teacher: `${root}teacher.html` }
+    }
+  },
   server: {
     proxy: {
       '/api': {
