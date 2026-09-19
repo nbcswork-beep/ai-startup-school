@@ -46,6 +46,8 @@ describe('education foundation invariants',()=>{
   });
   it('keeps portfolio private and prevents mentor double booking',async()=>{
     const repository=new MemoryRepository(); expect((await repository.getPortfolio(DEV_IDS.user)).visibility).toBe('private');
+    const startsAt=new Date(Date.now()+86_400_000).toISOString();const endsAt=new Date(Date.now()+88_200_000).toISOString();
+    await repository.createMentorAvailability(teacher,{startsAt,endsAt,timezone:'Europe/Kyiv',status:'open'});
     const slot=(await repository.listMentorSlots(DEV_IDS.user))[0]!; await repository.bookMentorSlot(DEV_IDS.user,slot.id);
     await expect(repository.bookMentorSlot(DEV_IDS.user,slot.id)).rejects.toMatchObject({statusCode:409});
   });

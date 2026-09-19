@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { AppError } from '../errors/app-error.js';
 import { MemorySessionStore, type SessionStore } from '../auth/session-store.js';
 import type { AppRepository } from './repository.js';
+import { MemoryMentoringStore, type MentoringStore, type StoredMentorBooking } from './mentoring-store.js';
 import { DEV_IDS, PILOT, PILOT_STUDENTS, PILOT_TEACHERS, SEEDED_HOMEWORK, SEEDED_LESSONS } from './seed.js';
 import type {
   AchievementDto,
@@ -49,6 +50,7 @@ export interface MemoryRepositoryOptions {
   telegramBindingsJson?: string | undefined;
   requireSeededTelegramIdentity?: boolean;
   sessionStore?: SessionStore;
+  mentoringStore?: MentoringStore;
 }
 
 function relativeIso(days: number, hour: number, durationMinutes = 0): string {
@@ -95,6 +97,7 @@ export class MemoryRepository implements AppRepository {
   private studentDisplayNames = new Map<string, string>(PILOT_STUDENTS.map(student => [student.id, student.displayName]));
   private identities = new Map<string, string>();
   private readonly sessionStore: SessionStore;
+  private readonly mentoringStore: MentoringStore;
   private xp = new Map<string, number>(PILOT_STUDENTS.map(student => [student.id, 0]));
   private streak = new Map<string, number>(PILOT_STUDENTS.map(student => [student.id, 0]));
   private lessonState = new Map<string, Map<string, LessonState>>(
@@ -110,14 +113,11 @@ export class MemoryRepository implements AppRepository {
   private homeworkSubmissions = new Map<string, HomeworkSubmissionDto[]>();
   private submissionHomeworkIds = new Map<string,string>();
   private portfolioProjects = new Map<string, PortfolioDto['projects']>();
-  private mentorBookings = new Map<string, MentorBookingDto[]>();
   private classSessionOverrides = new Map<string, { startsAt?: string; endsAt?: string; status?: ClassSessionDto['status']; title?: string; description?: string; lessonId?: string | null; meetingUrl?: string | null; meetingProvider?: string | null; teacherNotes?: string }>();
   private classMaterials = new Map<string, ClassSessionDto['materials']>();
   private attendanceRecords = new Map<string, Map<string,{status:'present'|'late'|'absent'|'excused';note:string;confirmedAt:string}>>();
   private teacherHomeworkItems: TeacherHomeworkDto[] = [];
   private teacherNotes: TeacherPrivateNoteDto[] = [];
-  private teacherMentorAvailability: TeacherWorkspaceDto['mentor']['availability'] = [];
-  private teacherMentorBookings: TeacherWorkspaceDto['mentor']['bookings'] = [];
   private teacherReports: TeacherWorkspaceDto['reports'] = [];
   private createdClassSessions: ClassSessionDto[] = [];
   private portfolioVisibility = new Map<string,'private'|'shareable'|'public'>();
@@ -130,6 +130,7 @@ export class MemoryRepository implements AppRepository {
 
   constructor(private readonly workspaceUrl?: string, options: MemoryRepositoryOptions = {}) {
     this.sessionStore = options.sessionStore ?? new MemorySessionStore();
+    this.mentoringStore = options.mentoringStore ?? new MemoryMentoringStore();
     this.requireSeededTelegramIdentity = options.requireSeededTelegramIdentity ?? false;
     for (const student of PILOT_STUDENTS) {
       this.projects.set(student.id, []);
@@ -137,7 +138,6 @@ export class MemoryRepository implements AppRepository {
       this.conversations.set(student.id, []);
       this.homeworkSubmissions.set(student.id, []);
       this.portfolioProjects.set(student.id, []);
-      this.mentorBookings.set(student.id, []);
       const portfolioId = this.portfolioIds.get(student.id)!;
       this.portfolioVisibility.set(portfolioId, 'private');
     }
@@ -158,7 +158,6 @@ export class MemoryRepository implements AppRepository {
       needsRevisionCount: 0,
       resources: []
     }));
-    this.teacherMentorAvailability = [{ id:'91000000-0000-4000-8000-000000000001', mentorId:PILOT.mentorId, startsAt:relativeIso(2,18), endsAt:relativeIso(2,18,30), timezone:PILOT.timezone, status:'open' }];
   }
 
   async ping(): Promise<void> {}
@@ -182,7 +181,6 @@ export class MemoryRepository implements AppRepository {
     this.conversations.set(user.id, []);
     this.homeworkSubmissions.set(user.id, []);
     this.portfolioProjects.set(user.id, []);
-    this.mentorBookings.set(user.id, []);
     this.studentDisplayNames.set(user.id, user.displayName);
     return structuredClone(user);
   }
@@ -467,21 +465,40 @@ export class MemoryRepository implements AppRepository {
 
   async listMentorSlots(userId: string): Promise<MentorSlotDto[]> {
     this.requireRole(userId,'student');
-    const booked = new Set((this.mentorBookings.get(userId) ?? []).filter(item => ['reserved', 'confirmed'].includes(item.status)).map(item => item.startsAt));
-    return [2, 5].map((days, index) => {
-      const startsAt = relativeIso(days, index ? 16 : 18);
-      return { id: `91000000-0000-4000-8000-00000000000${index + 1}`, mentorId: PILOT.mentorId, mentorName: PILOT_TEACHERS[0].fullName, mentorTitle: 'Ментор', startsAt, endsAt: relativeIso(days, index ? 16 : 18, 30), timezone: PILOT.timezone, available: !booked.has(startsAt) };
-    });
+    const [availability, bookings] = await Promise.all([
+      this.mentoringStore.listAvailability(PILOT.mentorId),
+      this.mentoringStore.listBookings(PILOT.mentorId)
+    ]);
+    const activeBookings = bookings.filter(item => ['reserved', 'confirmed', 'rescheduled'].includes(item.status));
+    const now = Date.now();
+    return availability
+      .filter(item => item.status === 'open' && Date.parse(item.startsAt) > now)
+      .sort((left, right) => Date.parse(left.startsAt) - Date.parse(right.startsAt))
+      .map(item => ({
+        id: item.id,
+        mentorId: item.mentorId,
+        mentorName: PILOT_TEACHERS[0].fullName,
+        mentorTitle: 'Ментор',
+        startsAt: item.startsAt,
+        endsAt: item.endsAt,
+        timezone: item.timezone,
+        available: !activeBookings.some(booking => booking.availabilityId === item.id || (Date.parse(booking.startsAt) < Date.parse(item.endsAt) && Date.parse(booking.endsAt) > Date.parse(item.startsAt)))
+      }));
   }
 
   async bookMentorSlot(userId: string, availabilityId: string): Promise<MentorBookingDto> {
     const slot = (await this.listMentorSlots(userId)).find(item => item.id === availabilityId);
     if (!slot || !slot.available) throw new AppError('MENTOR_SLOT_UNAVAILABLE', 409, 'Цей час уже недоступний');
-    const booking: MentorBookingDto = { id: randomUUID(), mentorId: slot.mentorId, mentorName: slot.mentorName, startsAt: slot.startsAt, endsAt: slot.endsAt, status: 'reserved', meetingUrl: null };
-    const bookings = this.mentorBookings.get(userId) ?? [];
-    bookings.push(booking);
-    this.mentorBookings.set(userId, bookings);
-    return structuredClone(booking);
+    const project = (await this.listProjects(userId)).find(item => item.status === 'active') ?? null;
+    const booking: StoredMentorBooking = {
+      id: randomUUID(), availabilityId, mentorId: slot.mentorId, mentorName: slot.mentorName,
+      studentId: userId, studentName: this.requireUser(userId).displayName, projectTitle: project?.title ?? null,
+      startsAt: slot.startsAt, endsAt: slot.endsAt, status: 'reserved', meetingUrl: null
+    };
+    const created = await this.mentoringStore.bookAvailability(availabilityId, booking, new Date());
+    if (!created) throw new AppError('MENTOR_SLOT_UNAVAILABLE', 409, 'Цей час уже недоступний');
+    const { availabilityId: _availabilityId, studentId: _studentId, studentName: _studentName, projectTitle: _projectTitle, ...studentBooking } = created;
+    return studentBooking;
   }
 
   async listTeacherGroups(userId: string): Promise<TeacherGroupDto[]> {
@@ -507,6 +524,11 @@ export class MemoryRepository implements AppRepository {
 
   async getTeacherWorkspace(userId:string):Promise<TeacherWorkspaceDto>{
     this.requireRole(userId,'teacher');
+    const [mentorAvailability, mentorBookings] = await Promise.all([
+      this.mentoringStore.listAvailability(PILOT.mentorId),
+      this.mentoringStore.listBookings(PILOT.mentorId)
+    ]);
+    const activeMentorBookings = mentorBookings.filter(item => ['reserved', 'confirmed', 'rescheduled'].includes(item.status));
     const groupId=PILOT.groupId; const groupName=PILOT.groupName;
     const groupStudents=await this.listGroupStudents(userId,groupId);
     const schedule=await this.getSchedule(DEV_IDS.user);
@@ -527,11 +549,13 @@ export class MemoryRepository implements AppRepository {
       if(attendance.filter(value=>value==='absent').length>=2)reasons.push('2 або більше пропущених занять');
       if(attempts.filter(item=>item.status==='needs_revision').length)reasons.push('Є робота на доопрацюванні');
       if(!projects.length)reasons.push('Ще немає активного проєкту');
-      students.push({...student,groupId,groupName,courseTitle:learning.course.title,moduleTitle:learning.modules[0]?.title??'',xp:this.xp.get(student.id)??0,level:LEVELS.filter(level=>(this.xp.get(student.id)??0)>=level.minXp).at(-1)?.title??LEVELS[0]!.title,attendance:{present:attendance.filter(value=>value==='present').length,late:attendance.filter(value=>value==='late').length,absent:attendance.filter(value=>value==='absent').length,excused:attendance.filter(value=>value==='excused').length},homework:{assigned:this.teacherHomeworkItems.filter(item=>item.status==='published').length,submitted:attempts.length,needsRevision:attempts.filter(item=>item.status==='needs_revision').length,averageScore:scores.length?Math.round(scores.reduce((sum,value)=>sum+value,0)/scores.length*10)/10:null,effort:effort as EffortLevel|null},projects,portfolio,mentorBookings:structuredClone(this.mentorBookings.get(student.id)??[]),notes:structuredClone(this.teacherNotes.filter(note=>note.studentId===student.id)),attentionReasons:reasons,recentActivityAt:attempts.map(item=>item.submittedAt).filter(Boolean).sort().at(-1)??null});
+      const studentMentorBookings = mentorBookings.filter(item => item.studentId === student.id).map(({availabilityId:_availabilityId,studentId:_studentId,studentName:_studentName,projectTitle:_projectTitle,...booking}) => booking);
+      students.push({...student,groupId,groupName,courseTitle:learning.course.title,moduleTitle:learning.modules[0]?.title??'',xp:this.xp.get(student.id)??0,level:LEVELS.filter(level=>(this.xp.get(student.id)??0)>=level.minXp).at(-1)?.title??LEVELS[0]!.title,attendance:{present:attendance.filter(value=>value==='present').length,late:attendance.filter(value=>value==='late').length,absent:attendance.filter(value=>value==='absent').length,excused:attendance.filter(value=>value==='excused').length},homework:{assigned:this.teacherHomeworkItems.filter(item=>item.status==='published').length,submitted:attempts.length,needsRevision:attempts.filter(item=>item.status==='needs_revision').length,averageScore:scores.length?Math.round(scores.reduce((sum,value)=>sum+value,0)/scores.length*10)/10:null,effort:effort as EffortLevel|null},projects,portfolio,mentorBookings:studentMentorBookings,notes:structuredClone(this.teacherNotes.filter(note=>note.studentId===student.id)),attentionReasons:reasons,recentActivityAt:attempts.map(item=>item.submittedAt).filter(Boolean).sort().at(-1)??null});
     }
     const todayKey=new Date().toISOString().slice(0,10); const attention=students.filter(student=>student.attentionReasons.length).map(student=>({studentId:student.id,studentName:student.firstName,reasons:student.attentionReasons}));
     const teacher=PILOT_TEACHERS.find(item=>item.id===userId)??PILOT_TEACHERS[0];
-    return{teacher:{id:userId,name:teacher.fullName,title:teacher.title,timezone:PILOT.timezone},metrics:{todayClasses:allSessions.filter(item=>item.startsAt.slice(0,10)===todayKey).length,awaitingReview:submissions.filter(item=>item.status==='submitted'&&!item.review).length,resubmitted:submissions.filter(item=>item.attemptNumber>1&&item.status==='submitted').length,mentorToday:this.teacherMentorBookings.filter(item=>item.startsAt.slice(0,10)===todayKey).length,reportsPending:this.teacherReports.filter(item=>['draft','ready_for_review'].includes(item.status)).length},groups:[{id:groupId,courseId:DEV_IDS.course,name:groupName,courseTitle:PILOT.courseTitle,timezone:PILOT.timezone,studentCount:groupStudents.length,nextClassAt:schedule.nextClass?.startsAt??null,scheduleLabel:'8 занять · розклад уточнюється',progressPercent:Math.round(groupStudents.reduce((sum,item)=>sum+item.progressPercent,0)/groupStudents.length),attendanceRate:0,recentHomework:this.teacherHomeworkItems[0]?.title??null}],sessions:allSessions,homework:structuredClone(this.teacherHomeworkItems),submissions,students,mentor:{mentorId:teacher.mentor?PILOT.mentorId:null,availability:teacher.mentor?structuredClone(this.teacherMentorAvailability):[],bookings:teacher.mentor?structuredClone(this.teacherMentorBookings):[]},reports:structuredClone(this.teacherReports),lessons:SEEDED_LESSONS.map(lesson=>({id:lesson.id,title:lesson.title,moduleTitle:PILOT.moduleTitle})),attention};
+    const teacherAvailability = mentorAvailability.map(item => ({...item,status:activeMentorBookings.some(booking => booking.availabilityId === item.id || (Date.parse(booking.startsAt)<Date.parse(item.endsAt)&&Date.parse(booking.endsAt)>Date.parse(item.startsAt)))?'booked' as const:item.status}));
+    return{teacher:{id:userId,name:teacher.fullName,title:teacher.title,timezone:PILOT.timezone},metrics:{todayClasses:allSessions.filter(item=>item.startsAt.slice(0,10)===todayKey).length,awaitingReview:submissions.filter(item=>item.status==='submitted'&&!item.review).length,resubmitted:submissions.filter(item=>item.attemptNumber>1&&item.status==='submitted').length,mentorToday:mentorBookings.filter(item=>item.startsAt.slice(0,10)===todayKey).length,reportsPending:this.teacherReports.filter(item=>['draft','ready_for_review'].includes(item.status)).length},groups:[{id:groupId,courseId:DEV_IDS.course,name:groupName,courseTitle:PILOT.courseTitle,timezone:PILOT.timezone,studentCount:groupStudents.length,nextClassAt:schedule.nextClass?.startsAt??null,scheduleLabel:'8 занять · розклад уточнюється',progressPercent:Math.round(groupStudents.reduce((sum,item)=>sum+item.progressPercent,0)/groupStudents.length),attendanceRate:0,recentHomework:this.teacherHomeworkItems[0]?.title??null}],sessions:allSessions,homework:structuredClone(this.teacherHomeworkItems),submissions,students,mentor:{mentorId:teacher.mentor?PILOT.mentorId:null,availability:teacher.mentor?teacherAvailability:[],bookings:teacher.mentor?mentorBookings:[]},reports:structuredClone(this.teacherReports),lessons:SEEDED_LESSONS.map(lesson=>({id:lesson.id,title:lesson.title,moduleTitle:PILOT.moduleTitle})),attention};
   }
 
   async searchTeacherScope(userId:string,query:string):Promise<TeacherSearchDto>{const data=await this.getTeacherWorkspace(userId);const term=query.trim().toLocaleLowerCase('uk');const includes=(value:string)=>value.toLocaleLowerCase('uk').includes(term);return{students:data.students.filter(item=>includes(item.firstName)).map(item=>({id:item.id,label:item.firstName,meta:item.groupName})),groups:data.groups.filter(item=>includes(item.name)||includes(item.courseTitle)).map(item=>({id:item.id,label:item.name,meta:item.courseTitle})),homework:data.homework.filter(item=>includes(item.title)).map(item=>({id:item.id,label:item.title,meta:item.groupName})),projects:data.students.flatMap(student=>student.projects.filter(project=>includes(project.title)).map(project=>({id:project.id,label:project.title,meta:student.firstName})))}};
@@ -542,8 +566,8 @@ export class MemoryRepository implements AppRepository {
   async publishHomework(userId:string,homeworkId:string,publishAt:string):Promise<void>{this.requireRole(userId,'teacher');const homework=this.teacherHomeworkItems.find(item=>item.id===homeworkId);if(!homework)throw new AppError('HOMEWORK_FORBIDDEN',403,'Домашня робота недоступна');if(homework.status!=='draft')throw new AppError('HOMEWORK_STATE',409,'Опублікувати можна лише чернетку');if(homework.dueAt&&Date.parse(homework.dueAt)<=Date.parse(publishAt))throw new AppError('INVALID_TIME',400,'Дедлайн має бути після публікації');homework.status='published';homework.publishAt=publishAt;}
   async createTeacherNote(userId:string,studentId:string,input:{category:'general'|'learning'|'project'|'mentoring';content:string}):Promise<TeacherPrivateNoteDto>{this.requireRole(userId,'teacher');if(!PILOT_STUDENTS.some(student=>student.id===studentId))throw new AppError('STUDENT_FORBIDDEN',403,'Учень недоступний');const timestamp=nowIso();const note={id:randomUUID(),studentId,category:input.category,content:input.content,createdAt:timestamp,updatedAt:timestamp};this.teacherNotes.unshift(note);return structuredClone(note);}
   async updatePortfolioItemAsTeacher(userId:string,portfolioProjectId:string,input:{title?:string|null;shortDescription?:string;reflection?:string;learned?:string}):Promise<void>{this.requireRole(userId,'teacher');const item=[...this.portfolioProjects.values()].flat().find(project=>project.id===portfolioProjectId);if(!item)throw new AppError('PORTFOLIO_FORBIDDEN',403,'Елемент портфоліо недоступний');if(input.title)item.title=input.title;if(input.shortDescription!==undefined)item.shortDescription=input.shortDescription;if(input.reflection!==undefined)item.reflection=input.reflection;if(input.learned!==undefined)item.learned=input.learned;}
-  async createMentorAvailability(userId:string,input:{startsAt:string;endsAt:string;timezone:string;status:'open'|'blocked'}):Promise<void>{this.requireRole(userId,'teacher');if(Date.parse(input.endsAt)<=Date.parse(input.startsAt))throw new AppError('INVALID_TIME',400,'Некоректний часовий інтервал');const overlaps=this.teacherMentorAvailability.some(item=>!['cancelled'].includes(item.status)&&Date.parse(item.startsAt)<Date.parse(input.endsAt)&&Date.parse(item.endsAt)>Date.parse(input.startsAt))||this.teacherMentorBookings.some(item=>['reserved','confirmed','rescheduled'].includes(item.status)&&Date.parse(item.startsAt)<Date.parse(input.endsAt)&&Date.parse(item.endsAt)>Date.parse(input.startsAt));if(overlaps)throw new AppError('MENTOR_SLOT_CONFLICT',409,'Цей час перетинається з іншим вікном або зустріччю');this.teacherMentorAvailability.push({id:randomUUID(),mentorId:'60000000-0000-4000-8000-000000000001',...input});}
-  async updateMentorBooking(userId:string,bookingId:string,input:{status:'confirmed'|'completed'|'cancelled'|'rescheduled'|'no_show';meetingUrl?:string|null;startsAt?:string;endsAt?:string}):Promise<void>{this.requireRole(userId,'teacher');const booking=this.teacherMentorBookings.find(item=>item.id===bookingId);if(!booking)throw new AppError('BOOKING_FORBIDDEN',403,'Бронювання недоступне');if(input.meetingUrl&&!input.meetingUrl.startsWith('https://'))throw new AppError('UNSAFE_URL',400,'Дозволено лише HTTPS-посилання');if(input.status==='rescheduled'&&(!input.startsAt||!input.endsAt||Date.parse(input.endsAt)<=Date.parse(input.startsAt)))throw new AppError('INVALID_TIME',400,'Для переносу потрібен новий час');if(input.status==='rescheduled'&&this.teacherMentorBookings.some(item=>item.id!==bookingId&&['reserved','confirmed','rescheduled'].includes(item.status)&&Date.parse(item.startsAt)<Date.parse(input.endsAt!)&&Date.parse(item.endsAt)>Date.parse(input.startsAt!)))throw new AppError('MENTOR_SLOT_CONFLICT',409,'Цей час зайнятий іншою зустріччю');booking.status=input.status;if(input.meetingUrl!==undefined)booking.meetingUrl=input.meetingUrl;if(input.startsAt)booking.startsAt=input.startsAt;if(input.endsAt)booking.endsAt=input.endsAt;}
+  async createMentorAvailability(userId:string,input:{startsAt:string;endsAt:string;timezone:string;status:'open'|'blocked'}):Promise<void>{this.requireMentor(userId);if(Date.parse(input.endsAt)<=Date.parse(input.startsAt))throw new AppError('INVALID_TIME',400,'Некоректний часовий інтервал');const result=await this.mentoringStore.createAvailability({id:randomUUID(),mentorId:PILOT.mentorId,...input});if(result==='conflict')throw new AppError('MENTOR_SLOT_CONFLICT',409,'Цей час перетинається з іншим вікном або зустріччю');}
+  async updateMentorBooking(userId:string,bookingId:string,input:{status:'confirmed'|'completed'|'cancelled'|'rescheduled'|'no_show';meetingUrl?:string|null;startsAt?:string;endsAt?:string}):Promise<void>{this.requireMentor(userId);if(input.meetingUrl&&!input.meetingUrl.startsWith('https://'))throw new AppError('UNSAFE_URL',400,'Дозволено лише HTTPS-посилання');if(input.status==='rescheduled'&&(!input.startsAt||!input.endsAt||Date.parse(input.endsAt)<=Date.parse(input.startsAt)))throw new AppError('INVALID_TIME',400,'Для переносу потрібен новий час');const bookings=await this.mentoringStore.listBookings(PILOT.mentorId);const booking=bookings.find(item=>item.id===bookingId);if(!booking)throw new AppError('BOOKING_FORBIDDEN',403,'Бронювання недоступне');const result=await this.mentoringStore.updateBooking(PILOT.mentorId,bookingId,{status:input.status,meetingUrl:input.meetingUrl!==undefined?input.meetingUrl:booking.meetingUrl,startsAt:input.startsAt??booking.startsAt,endsAt:input.endsAt??booking.endsAt});if(result==='not_found')throw new AppError('BOOKING_FORBIDDEN',403,'Бронювання недоступне');if(result==='conflict')throw new AppError('MENTOR_SLOT_CONFLICT',409,'Цей час зайнятий іншою зустріччю');}
   async generateTeacherReports(userId:string,groupId:string,periodStart:string,periodEnd:string):Promise<void>{this.requireRole(userId,'teacher');if(groupId!==PILOT.groupId)throw new AppError('GROUP_FORBIDDEN',403,'Група недоступна');for(const student of await this.listGroupStudents(userId,groupId)){if(this.teacherReports.some(report=>report.studentId===student.id&&report.periodStart===periodStart&&report.periodEnd===periodEnd))continue;this.teacherReports.push({id:randomUUID(),studentId:student.id,studentFirstName:student.firstName,groupId,groupName:PILOT.groupName,periodStart,periodEnd,payload:{classesScheduled:SEEDED_LESSONS.length,classesAttended:0,homeworkSubmitted:(this.homeworkSubmissions.get(student.id)??[]).length,project:student.projectTitle,projectProgress:student.progressPercent,xpEarned:0},teacherComment:'',status:'draft',approvedAt:null});}}
   async saveTeacherReport(userId:string,reportId:string,input:{teacherComment:string;status:'draft'|'ready_for_review'}):Promise<void>{this.requireRole(userId,'teacher');const report=this.teacherReports.find(item=>item.id===reportId);if(!report)throw new AppError('REPORT_FORBIDDEN',403,'Звіт недоступний');report.teacherComment=input.teacherComment;report.status=input.status;}
   async approveTeacherReport(userId:string,reportId:string):Promise<void>{this.requireRole(userId,'teacher');const report=this.teacherReports.find(item=>item.id===reportId);if(!report)throw new AppError('REPORT_FORBIDDEN',403,'Звіт недоступний');if(report.status!=='ready_for_review'||!report.teacherComment.trim())throw new AppError('REPORT_NOT_READY',409,'Звіт ще не готовий до підтвердження');report.status='approved';report.approvedAt=nowIso();}
@@ -684,6 +708,8 @@ export class MemoryRepository implements AppRepository {
   }
 
   private requireRole(userId:string,role:'student'|'guardian'|'teacher'|'admin'):void{this.requireUser(userId);if(this.roles.get(userId)!==role&&this.roles.get(userId)!=='admin')throw new AppError('ROLE_FORBIDDEN',403,'Недостатньо прав');}
+
+  private requireMentor(userId:string):void{this.requireRole(userId,'teacher');if(!PILOT_TEACHERS.some(teacher=>teacher.id===userId&&teacher.mentor))throw new AppError('MENTOR_FORBIDDEN',403,'Менторські вікна недоступні');}
 
   private teacherCanAccessSession(sessionId:string):boolean{return SEEDED_LESSONS.some((_,index)=>sessionId===`71000000-0000-4000-8000-${String(index+1).padStart(12,'0')}`)||this.createdClassSessions.some(item=>item.id===sessionId);}
 

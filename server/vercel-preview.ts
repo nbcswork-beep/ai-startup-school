@@ -4,6 +4,7 @@ import { buildApp } from './app.js';
 import { createJwtService } from './auth/jwt-service.js';
 import { loadEnv, resolveRedisRestCredentials, type AppEnv } from './config/env.js';
 import { MemoryRepository } from './data/memory-repository.js';
+import { RedisRestMentoringStore, type MentoringStore } from './data/mentoring-store.js';
 import { MockAiProvider } from './services/ai-provider.js';
 import { RedisRestLoginAttemptLimiter, RedisRestSessionStore, type LoginAttemptLimiter, type SessionStore } from './auth/session-store.js';
 import type { TelegramWebhookHandler } from './routes/telegram-webhook.js';
@@ -101,16 +102,18 @@ export function loadVercelEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
   });
 }
 
-export async function createVercelApp(input: NodeJS.ProcessEnv = process.env, overrides: { sessionStore?: SessionStore; loginLimiter?: LoginAttemptLimiter; telegramWebhookHandler?: TelegramWebhookHandler } = {}): Promise<FastifyInstance> {
+export async function createVercelApp(input: NodeJS.ProcessEnv = process.env, overrides: { sessionStore?: SessionStore; loginLimiter?: LoginAttemptLimiter; mentoringStore?: MentoringStore; telegramWebhookHandler?: TelegramWebhookHandler } = {}): Promise<FastifyInstance> {
   const env = loadVercelEnv(input);
   const sessionStore = overrides.sessionStore ?? new RedisRestSessionStore(env.UPSTASH_REDIS_REST_URL!, env.UPSTASH_REDIS_REST_TOKEN!, env.SESSION_REDIS_PREFIX);
   const loginLimiter = overrides.loginLimiter ?? new RedisRestLoginAttemptLimiter(env.UPSTASH_REDIS_REST_URL!, env.UPSTASH_REDIS_REST_TOKEN!, env.SESSION_REDIS_PREFIX);
+  const mentoringStore = overrides.mentoringStore ?? new RedisRestMentoringStore(env.UPSTASH_REDIS_REST_URL!, env.UPSTASH_REDIS_REST_TOKEN!, `${env.SESSION_REDIS_PREFIX}:mentoring`);
   const app = await buildApp({
     env,
     repository: new MemoryRepository(env.WORKSPACE_URL, {
       telegramBindingsJson: env.TELEGRAM_STUDENT_BINDINGS_JSON,
       requireSeededTelegramIdentity: true,
-      sessionStore
+      sessionStore,
+      mentoringStore
     }),
     jwt: await createJwtService(env),
     aiProvider: new MockAiProvider(),
