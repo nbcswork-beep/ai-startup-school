@@ -92,6 +92,8 @@ describe('mentoring slots end-to-end', () => {
     }));
     expect(workspace.json().students.find((student: { id: string }) => student.id === DEV_IDS.user).mentorBookings).toContainEqual(expect.objectContaining({ id: booked.json().id }));
     expect(workspace.json().students.find((student: { id: string }) => student.id === SECOND_STUDENT_ID).mentorBookings).toEqual([]);
+    const refreshedProfile = await firstStudent.app.inject({ method: 'GET', url: '/api/v1/profile', headers: firstStudent.headers });
+    expect(refreshedProfile.json().mentor.nextMeetingAt).toBe(startsAt);
     expect((await firstStudent.app.inject({ method: 'GET', url: '/api/v1/teacher/bootstrap', headers: firstStudent.headers })).statusCode).toBe(403);
     expect((await firstStudent.app.inject({
       method: 'POST', url: '/api/v1/teacher/mentor/availability', headers: firstStudent.headers,

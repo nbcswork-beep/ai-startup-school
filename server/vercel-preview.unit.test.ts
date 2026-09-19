@@ -7,6 +7,8 @@ import { createJwtService } from './auth/jwt-service.js';
 import { createVercelApp, injectVercelRequest, loadVercelEnv } from './vercel-preview.js';
 import { hashPassword } from './auth/password-credentials.js';
 import { MemoryLoginAttemptLimiter, MemorySessionStore } from './auth/session-store.js';
+import { MemoryPilotRuntimeStore } from './data/pilot-runtime-store.js';
+import { MemoryMentoringStore } from './data/mentoring-store.js';
 
 const BOT_TOKEN = '123456789:preview-test-token';
 let apps: FastifyInstance[] = [];
@@ -32,7 +34,7 @@ async function previewVariables(): Promise<NodeJS.ProcessEnv> {
 }
 
 async function createTestApp(input: NodeJS.ProcessEnv, telegramWebhookHandler?:Parameters<typeof createVercelApp>[1]['telegramWebhookHandler']): Promise<FastifyInstance> {
-  return createVercelApp(input, { sessionStore:new MemorySessionStore(), loginLimiter:new MemoryLoginAttemptLimiter(), ...(telegramWebhookHandler?{telegramWebhookHandler}:{}) });
+  return createVercelApp(input, { sessionStore:new MemorySessionStore(), loginLimiter:new MemoryLoginAttemptLimiter(), mentoringStore:new MemoryMentoringStore(), runtimeStore:new MemoryPilotRuntimeStore(), ...(telegramWebhookHandler?{telegramWebhookHandler}:{}) });
 }
 
 function signedInitData(telegramId = 987654321, nowSeconds = Math.floor(Date.now() / 1000)): string {
