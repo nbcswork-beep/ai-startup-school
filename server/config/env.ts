@@ -8,15 +8,20 @@ const booleanFromEnv = z.preprocess(value => {
 }, z.boolean());
 
 const optionalString = z.preprocess(value => value === '' ? undefined : value, z.string().optional());
+const optionalTrimmedString = z.preprocess(value => {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}, z.string().optional());
 
-export function resolveRedisRestCredentials(input: NodeJS.ProcessEnv): { url: string; token: string } | null {
+export function resolveRedisRestCredentials(input: NodeJS.ProcessEnv): { url: string; token: string; urlField: string; tokenField: string } | null {
   const pairs = [
-    [input.UPSTASH_REDIS_REST_URL, input.UPSTASH_REDIS_REST_TOKEN],
-    [input.UPSTASH_REDIS_REST_KV_REST_API_URL, input.UPSTASH_REDIS_REST_KV_REST_API_TOKEN]
-  ];
-  for (const [rawUrl, rawToken] of pairs) {
+    [input.UPSTASH_REDIS_REST_URL, input.UPSTASH_REDIS_REST_TOKEN, 'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN'],
+    [input.UPSTASH_REDIS_REST_KV_REST_API_URL, input.UPSTASH_REDIS_REST_KV_REST_API_TOKEN, 'UPSTASH_REDIS_REST_KV_REST_API_URL', 'UPSTASH_REDIS_REST_KV_REST_API_TOKEN']
+  ] as const;
+  for (const [rawUrl, rawToken, urlField, tokenField] of pairs) {
     const url = rawUrl?.trim(), token = rawToken?.trim();
-    if (url && token) return { url, token };
+    if (url && token) return { url, token, urlField, tokenField };
   }
   return null;
 }
@@ -32,8 +37,12 @@ const envSchema = z.object({
   DATABASE_URL: optionalString,
   DATABASE_SSL: booleanFromEnv.default(true),
   TELEGRAM_BOT_TOKEN: optionalString,
-  TELEGRAM_WEBHOOK_SECRET: z.preprocess(value => value === '' ? undefined : value, z.string().regex(/^[A-Za-z0-9_-]{16,256}$/).optional()),
-  MINI_APP_URL: optionalString,
+  TELEGRAM_WEBHOOK_SECRET: z.preprocess(value => {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }, z.string().regex(/^[A-Za-z0-9_-]{16,256}$/, 'must contain 16-256 letters, digits, underscores, or hyphens').optional()),
+  MINI_APP_URL: optionalTrimmedString,
   TELEGRAM_STUDENT_BINDINGS_JSON: optionalString,
   TELEGRAM_INIT_DATA_MAX_AGE_SECONDS: z.coerce.number().int().min(30).max(3600).default(300),
   APP_JWT_ISSUER: z.string().default('ai-startup-school'),
@@ -59,9 +68,9 @@ const envSchema = z.object({
   SECURITY_MONITORING_CONFIGURED: booleanFromEnv.default(false)
 }).superRefine((env, context) => {
   if (env.NODE_ENV === 'production') {
-    if (env.DEV_AUTH_ENABLED || env.DEV_EPHEMERAL_JWT || (env.DATA_BACKEND === 'memory' && !env.ALLOW_VOLATILE_DATA_IN_PRODUCTION)) {
-      context.addIssue({ code: 'custom', message: 'Development auth, ephemeral keys, and unapproved memory data are forbidden in production' });
-    }
+    if (env.DEV_AUTH_ENABLED) context.addIssue({ code:'custom', path:['DEV_AUTH_ENABLED'], message:'Development auth is forbidden in production' });
+    if (env.DEV_EPHEMERAL_JWT) context.addIssue({ code:'custom', path:['DEV_EPHEMERAL_JWT'], message:'Ephemeral JWT keys are forbidden in production' });
+    if (env.DATA_BACKEND === 'memory' && !env.ALLOW_VOLATILE_DATA_IN_PRODUCTION) context.addIssue({ code:'custom', path:['ALLOW_VOLATILE_DATA_IN_PRODUCTION'], message:'Production memory data must be explicitly approved' });
     const origins = env.APP_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean);
     const invalidOrigin = origins.length === 0 || origins.some(origin => {
       try {
@@ -72,7 +81,7 @@ const envSchema = z.object({
       }
     });
     if (invalidOrigin) {
-      context.addIssue({ code:'custom', message:'Production APP_ORIGINS must be an explicit HTTPS allowlist' });
+      context.addIssue({ code:'custom', path:['APP_ORIGINS'], message:'Production APP_ORIGINS must be an explicit HTTPS allowlist' });
     }
     for (const [key, value] of [
       ['TELEGRAM_BOT_TOKEN', env.TELEGRAM_BOT_TOKEN],
@@ -81,34 +90,56 @@ const envSchema = z.object({
       ['SESSION_TOKEN_PEPPER', env.SESSION_TOKEN_PEPPER],
       ['WEB_AUTH_ACCOUNTS_JSON', env.WEB_AUTH_ACCOUNTS_JSON]
     ] as const) {
-      if (!value) context.addIssue({ code: 'custom', message: `${key} is required in production` });
+      if (!value) context.addIssue({ code:'custom', path:[key], message:'is required in production' });
     }
     if (env.DATA_BACKEND === 'memory' && (!env.UPSTASH_REDIS_REST_URL || !env.UPSTASH_REDIS_REST_TOKEN)) {
-      context.addIssue({ code: 'custom', message: 'Persistent Upstash Redis REST storage is required for production memory sessions' });
+      context.addIssue({ code:'custom', path:['UPSTASH_REDIS_REST_URL'], message:'Persistent Upstash Redis REST storage is required for production memory sessions' });
     }
   }
   if (env.DATA_BACKEND === 'postgres' && !env.DATABASE_URL) {
-    context.addIssue({ code: 'custom', message: 'DATABASE_URL is required when DATA_BACKEND=postgres' });
+    context.addIssue({ code:'custom', path:['DATABASE_URL'], message:'is required when DATA_BACKEND=postgres' });
   }
-  if (!env.DEV_EPHEMERAL_JWT && (!env.APP_JWT_PRIVATE_KEY_BASE64 || !env.APP_JWT_PUBLIC_KEY_BASE64)) {
-    context.addIssue({ code: 'custom', message: 'JWT keys are required unless DEV_EPHEMERAL_JWT=true' });
-  }
+  if (!env.DEV_EPHEMERAL_JWT && !env.APP_JWT_PRIVATE_KEY_BASE64) context.addIssue({ code:'custom', path:['APP_JWT_PRIVATE_KEY_BASE64'], message:'is required unless DEV_EPHEMERAL_JWT=true' });
+  if (!env.DEV_EPHEMERAL_JWT && !env.APP_JWT_PUBLIC_KEY_BASE64) context.addIssue({ code:'custom', path:['APP_JWT_PUBLIC_KEY_BASE64'], message:'is required unless DEV_EPHEMERAL_JWT=true' });
   if (!env.SESSION_TOKEN_PEPPER && env.NODE_ENV !== 'test') {
-    context.addIssue({ code: 'custom', message: 'SESSION_TOKEN_PEPPER is required' });
+    context.addIssue({ code:'custom', path:['SESSION_TOKEN_PEPPER'], message:'is required' });
   }
   if (Boolean(env.UPSTASH_REDIS_REST_URL) !== Boolean(env.UPSTASH_REDIS_REST_TOKEN)) {
-    context.addIssue({ code: 'custom', message: 'UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be configured together' });
+    context.addIssue({ code:'custom', path:['UPSTASH_REDIS_REST_URL'], message:'URL and token must be configured together' });
   }
   if (env.UPSTASH_REDIS_REST_URL) {
     try { if (new URL(env.UPSTASH_REDIS_REST_URL).protocol !== 'https:') throw new Error(); }
-    catch { context.addIssue({ code: 'custom', message: 'UPSTASH_REDIS_REST_URL must be HTTPS' }); }
+    catch { context.addIssue({ code:'custom', path:['UPSTASH_REDIS_REST_URL'], message:'must be HTTPS' }); }
   }
 });
 
 export type AppEnv = z.infer<typeof envSchema> & { origins: string[] };
 
+export class EnvironmentConfigurationError extends Error {
+  readonly fields: string[];
+
+  constructor(error: z.ZodError, aliases:Readonly<Record<string,string>>={}) {
+    const diagnostics = [...new Set(error.issues.map(issue => {
+      const rawField = issue.path.length ? issue.path.map(String).join('.') : 'ENVIRONMENT';
+      const field = aliases[rawField] ?? rawField;
+      return `${field}: ${issue.message}`;
+    }))];
+    super(`Invalid environment configuration — ${diagnostics.join('; ')}`);
+    this.name = 'EnvironmentConfigurationError';
+    this.fields = [...new Set(error.issues.map(issue => {
+      const field=issue.path.length ? String(issue.path[0]) : 'ENVIRONMENT';
+      return aliases[field] ?? field;
+    }))];
+  }
+}
+
 export function loadEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
   const redis = resolveRedisRestCredentials(input);
-  const parsed = envSchema.parse({ ...input, ...(redis ? { UPSTASH_REDIS_REST_URL:redis.url, UPSTASH_REDIS_REST_TOKEN:redis.token } : {}) });
+  const result = envSchema.safeParse({ ...input, ...(redis ? { UPSTASH_REDIS_REST_URL:redis.url, UPSTASH_REDIS_REST_TOKEN:redis.token } : {}) });
+  if (!result.success) throw new EnvironmentConfigurationError(result.error, redis ? {
+    UPSTASH_REDIS_REST_URL:redis.urlField,
+    UPSTASH_REDIS_REST_TOKEN:redis.tokenField
+  } : {});
+  const parsed = result.data;
   return { ...parsed, origins: parsed.APP_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean) };
 }
