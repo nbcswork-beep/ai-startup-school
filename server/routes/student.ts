@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AppRepository } from '../data/repository.js';
 import { AppError } from '../errors/app-error.js';
 import type { AiMentorService } from '../services/ai-mentor-service.js';
+import { requireRole } from '../middleware/authenticate.js';
 
 const uuid = z.string().uuid();
 const idempotency = z.object({ idempotencyKey: z.string().min(8).max(100) });
@@ -14,7 +15,7 @@ const homeworkSubmission = z.object({ contentText: z.string().trim().min(1).max(
 const portfolioInput = z.object({ reflection: z.string().trim().max(3000).optional(), learned: z.string().trim().max(3000).optional() });
 
 export function registerStudentRoutes(app: FastifyInstance, repository: AppRepository, ai: AiMentorService, authenticate: preHandlerHookHandler): void {
-  const secured = { preHandler: authenticate };
+  const secured = { preHandler: [authenticate,requireRole('student')] };
   app.get('/api/v1/me', secured, async request => repository.getProfile(request.auth.userId));
   app.get('/api/v1/profile', secured, async request => repository.getProfile(request.auth.userId));
   app.get('/api/v1/home', secured, async request => repository.getHome(request.auth.userId));

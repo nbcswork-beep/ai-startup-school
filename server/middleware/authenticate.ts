@@ -18,6 +18,6 @@ export function createAuthenticate(jwt: JwtService, repository: AppRepository) {
 
 export function requireRole(role: AppRole) {
   return async function authorizeRole(request: FastifyRequest, _reply: FastifyReply): Promise<void> {
-    if (request.access.role !== role) throw new AppError('ROLE_FORBIDDEN', 403, 'Недостатньо прав');
+    if (!request.access.roles.includes(role)) throw new AppError('ROLE_FORBIDDEN', 403, 'Недостатньо прав');
   };
 }

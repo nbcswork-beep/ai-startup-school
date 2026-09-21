@@ -35,7 +35,7 @@ export async function buildApp(deps: { env: AppEnv; repository: AppRepository; j
   await app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
   registerErrorHandler(app);
   app.get('/api/health', async () => { await deps.repository.ping(); return { status: 'ok' }; });
-  registerTelegramWebhookRoutes(app, deps.env, deps.telegramWebhookHandler);
+  registerTelegramWebhookRoutes(app, deps.env, deps.repository, deps.telegramWebhookHandler);
   const auth = new AuthService(deps.repository, deps.jwt, deps.env, new WebCredentialDirectory(deps.env.WEB_AUTH_ACCOUNTS_JSON), deps.loginLimiter ?? new MemoryLoginAttemptLimiter());
   registerAuthRoutes(app, auth, deps.env);
   const authenticate=createAuthenticate(deps.jwt,deps.repository);

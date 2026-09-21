@@ -19,4 +19,13 @@ export const adminApi={
   revokeGuardianLink:(id,reason)=>request(`/admin/guardian-links/${id}/revoke`,{method:'POST',body:JSON.stringify({reason})}),
   resendReport:id=>request(`/admin/reports/${id}/resend`,{method:'POST',body:JSON.stringify({confirm:true})}),
   revokeSession:(id,reason)=>request(`/admin/sessions/${id}/revoke`,{method:'POST',body:JSON.stringify({reason})})
+  ,createStudent:input=>request('/admin/students',{method:'POST',body:JSON.stringify(input)})
+  ,updateStudent:(id,input)=>request(`/admin/students/${id}`,{method:'PATCH',body:JSON.stringify(input)})
+  ,setTelegram:(id,input)=>request(`/admin/users/${id}/telegram`,{method:'PUT',body:JSON.stringify(input)})
+  ,createGuardian:input=>request('/admin/guardians',{method:'POST',body:JSON.stringify(input)})
+  ,updateGuardian:(id,input)=>request(`/admin/guardians/${id}`,{method:'PATCH',body:JSON.stringify(input)})
+  ,linkGuardian:(guardianId,studentId)=>request(`/admin/guardians/${guardianId}/students/${studentId}`,{method:'POST'})
+  ,unlinkGuardian:(guardianId,studentId)=>request(`/admin/guardians/${guardianId}/students/${studentId}`,{method:'DELETE'})
+  ,createStaff:input=>request('/admin/staff',{method:'POST',body:JSON.stringify(input)})
+  ,updateStaff:(id,input)=>request(`/admin/staff/${id}`,{method:'PATCH',body:JSON.stringify(input)})
 };

@@ -19,6 +19,7 @@ const repository = env.DATA_BACKEND === 'postgres'
   ? new PostgresRepository(env.DATABASE_URL!, env.DATABASE_SSL, env.WORKSPACE_URL, env.NODE_ENV === 'production')
   : new MemoryRepository(env.WORKSPACE_URL, {
     telegramBindingsJson: env.TELEGRAM_STUDENT_BINDINGS_JSON,
+    webAuthAccountsJson: env.WEB_AUTH_ACCOUNTS_JSON,
     requireSeededTelegramIdentity: env.NODE_ENV === 'production',
     ...(redisSessionStore ? { sessionStore: redisSessionStore } : {}),
     ...(redisRuntimeStore ? { runtimeStore: redisRuntimeStore } : {})

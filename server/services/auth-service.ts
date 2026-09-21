@@ -47,19 +47,22 @@ export class AuthService {
   }
 
   async loginWithPassword(email: string, password: string, target: 'teacher' | 'admin', clientAddress: string): Promise<AuthResult> {
-    if (!this.webCredentials.configured) throw new AppError('WEB_AUTH_NOT_CONFIGURED', 503, 'Вхід ще не налаштовано');
     const normalizedEmail = normalizeEmail(email);
     const rateKeys = [clientAddress, normalizedEmail].map(value => createHash('sha256').update(value).digest('hex'));
     const allowed = await Promise.all(rateKeys.map(key => this.loginLimiter.consume(key, 5, 900)));
     if (allowed.some(value => !value)) throw new AppError('LOGIN_RATE_LIMITED', 429, 'Забагато спроб. Спробуйте пізніше.');
-    const credential = await this.webCredentials.authenticate(normalizedEmail, password);
-    if (!credential) throw new AppError('INVALID_CREDENTIALS', 401, 'Неправильна електронна пошта або пароль');
-    const identity = await this.repository.getWebAuthUser(credential.userId);
-    if (!identity || !['teacher', 'admin'].includes(identity.role)) throw new AppError('INVALID_CREDENTIALS', 401, 'Неправильна електронна пошта або пароль');
-    if (target === 'admin' && identity.role !== 'admin') throw new AppError('ROLE_FORBIDDEN', 403, 'Недостатньо прав для Admin Control Center');
+    const persistentUser=await this.repository.authenticatePersistentWebUser(normalizedEmail,password);
+    const credential = persistentUser ? null : await this.webCredentials.authenticate(normalizedEmail, password);
+    if (!persistentUser&&!credential) throw new AppError('INVALID_CREDENTIALS', 401, 'Неправильна електронна пошта або пароль');
+    const identity = await this.repository.getWebAuthUser(persistentUser?.id??credential!.userId);
+    if (!identity || !identity.roles.some(role=>role==='teacher'||role==='admin')) throw new AppError('INVALID_CREDENTIALS', 401, 'Неправильна електронна пошта або пароль');
+    if (target === 'admin' && !identity.roles.includes('admin')) throw new AppError('ROLE_FORBIDDEN', 403, 'Недостатньо прав для Admin Control Center');
+    if (target === 'teacher' && !identity.roles.includes('teacher')) throw new AppError('ROLE_FORBIDDEN',403,'Недостатньо прав для Teacher OS');
     await Promise.all(rateKeys.map(key => this.loginLimiter.reset(key)));
     return this.startSession(identity.user, 'web');
   }
+
+  async activate(token:string,password:string):Promise<AuthResult>{const user=await this.repository.activatePersistentWebUser(token,password);return this.startSession(user,'web');}
 
   async refresh(rawRefreshToken: string): Promise<AuthResult> {
     if (!rawRefreshToken) throw new AppError('REFRESH_TOKEN_MISSING', 401, 'Сесію не знайдено');

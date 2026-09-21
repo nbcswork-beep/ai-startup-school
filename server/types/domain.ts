@@ -1,14 +1,16 @@
 export type UserId = string;
 export type AppRole = 'student' | 'guardian' | 'teacher' | 'admin';
+export type DirectoryRole = AppRole | 'mentor';
 
 export interface AuthUser {
   id: UserId;
   displayName: string;
-  status: 'active' | 'disabled' | 'archived' | 'suspended' | 'deleted';
+  status: 'pending' | 'active' | 'disabled' | 'archived' | 'suspended' | 'deleted';
 }
 
 export interface AccessContext {
   role: AppRole;
+  roles: DirectoryRole[];
   status: AuthUser['status'];
   sessionActive: boolean;
 }
@@ -281,6 +283,17 @@ export interface ParentReportDto {
   payload: Record<string, unknown>;
   teacherComment: string;
   status: 'draft' | 'ready_for_review' | 'approved' | 'sent' | 'failed';
+}
+
+export interface ParentSummaryDto {
+  student: { id: string; name: string; groupName: string };
+  nextClass: null | { id: string; title: string; startsAt: string; endsAt: string };
+  progress: { percent: number; completedLessons: number; totalLessons: number };
+  homework: { completed: number; pending: number; overdue: number };
+  attendance: { attended: number; missed: number; late: number; excused: number };
+  grades: Array<{ homeworkTitle: string; score: number; feedback: string; reviewedAt: string }>;
+  project: null | { title: string; status: string; stage: string; progressPercent: number };
+  mentoring: null | { startsAt: string; endsAt: string; status: string };
 }
 
 export type AttendanceStatus = 'present' | 'late' | 'absent' | 'excused';

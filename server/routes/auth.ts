@@ -9,6 +9,7 @@ const webBody = z.object({
   password: z.string().min(1).max(128),
   target: z.enum(['teacher', 'admin'])
 }).strict();
+const activationBody=z.object({token:z.string().min(32).max(256),password:z.string().min(14).max(128)}).strict();
 
 function setRefreshCookie(reply: Parameters<FastifyInstance['post']>[1] extends never ? never : any, token: string, env: AppEnv) {
   const secure = env.NODE_ENV === 'production' || (env.origins.length > 0 && env.origins.every(origin => origin.startsWith('https://')));
@@ -38,6 +39,8 @@ export function registerAuthRoutes(app: FastifyInstance, auth: AuthService, env:
     setRefreshCookie(reply, result.refreshToken, env);
     return reply.send({ accessToken: result.accessToken, expiresIn: result.expiresIn, user: result.user });
   });
+
+  app.post('/api/v1/auth/activate',{config:{rateLimit:{max:5,timeWindow:'15 minutes'}}},async(request,reply)=>{const input=activationBody.parse(request.body);const result=await auth.activate(input.token,input.password);setRefreshCookie(reply,result.refreshToken,env);return reply.send({accessToken:result.accessToken,expiresIn:result.expiresIn,user:result.user});});
 
   app.post('/api/v1/auth/refresh', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     const result = await auth.refresh(request.cookies.aiss_refresh ?? '');

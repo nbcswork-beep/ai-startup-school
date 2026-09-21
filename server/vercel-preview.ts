@@ -113,6 +113,7 @@ export async function createVercelApp(input: NodeJS.ProcessEnv = process.env, ov
     env,
     repository: new MemoryRepository(env.WORKSPACE_URL, {
       telegramBindingsJson: env.TELEGRAM_STUDENT_BINDINGS_JSON,
+      webAuthAccountsJson: env.WEB_AUTH_ACCOUNTS_JSON,
       requireSeededTelegramIdentity: true,
       sessionStore,
       mentoringStore,

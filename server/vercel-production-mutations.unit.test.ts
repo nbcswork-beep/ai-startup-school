@@ -76,6 +76,21 @@ describe('production-equivalent Vercel mutation smoke',()=>{
     const teacherLogin=await jsonRequest(app,'v1/auth/web','POST',{email:TEACHER_EMAIL,password:TEACHER_PASSWORD,target:'admin'});expect(teacherLogin.status).toBe(200);const teacherToken=(await teacherLogin.json() as {accessToken:string}).accessToken;
     const studentLogin=await jsonRequest(app,'v1/auth/telegram','POST',{initData:signedInitData(987654321)});expect(studentLogin.status).toBe(200);const studentToken=(await studentLogin.json() as {accessToken:string}).accessToken;
 
+    const peopleTelegramId=987654399;
+    const createdPerson=await jsonRequest(app,'v1/admin/students','POST',{firstName:'Redis',lastName:'Student',groupId:PILOT.groupId,telegramId:String(peopleTelegramId),status:'active'},teacherToken);expect(createdPerson.status).toBe(201);const createdPersonId=(await createdPerson.json() as {id:string}).id;
+    const coldPeopleApp=await createVercelApp(env,{sessionStore:sessions,loginLimiter:limiter});apps.push(coldPeopleApp);
+    const persistedPersonLogin=await jsonRequest(coldPeopleApp,'v1/auth/telegram','POST',{initData:signedInitData(peopleTelegramId)});expect(persistedPersonLogin.status).toBe(200);const persistedPersonToken=(await persistedPersonLogin.json() as {accessToken:string}).accessToken;
+    const persistedPersonBootstrap=await request(coldPeopleApp,'v1/bootstrap',{headers:{authorization:`Bearer ${persistedPersonToken}`}});expect(persistedPersonBootstrap.status).toBe(200);expect(await persistedPersonBootstrap.json()).toMatchObject({home:{viewer:{id:createdPersonId}}});
+
+    const guardianTelegramId=987654398;
+    const createdGuardian=await jsonRequest(app,'v1/admin/guardians','POST',{firstName:'Redis',lastName:'Guardian',telegramId:String(guardianTelegramId),studentIds:[createdPersonId],status:'active'},teacherToken);expect(createdGuardian.status).toBe(201);
+    const guardianLogin=await jsonRequest(await createAndTrack(env,sessions,limiter),'v1/auth/telegram','POST',{initData:signedInitData(guardianTelegramId)});expect(guardianLogin.status).toBe(200);const guardianToken=(await guardianLogin.json() as {accessToken:string}).accessToken;
+    const guardianStudents=await request(await createAndTrack(env,sessions,limiter),'v1/guardian/students',{headers:{authorization:`Bearer ${guardianToken}`}});expect(guardianStudents.status).toBe(200);expect(await guardianStudents.json()).toContainEqual(expect.objectContaining({id:createdPersonId}));
+
+    const createdStaff=await jsonRequest(app,'v1/admin/staff','POST',{firstName:'Redis',lastName:'Teacher',email:'redis.teacher@example.test',roles:['teacher','mentor']},teacherToken);expect(createdStaff.status).toBe(201);const activationToken=(await createdStaff.json() as {activationToken:string}).activationToken;
+    const activatedStaff=await jsonRequest(await createAndTrack(env,sessions,limiter),'v1/auth/activate','POST',{token:activationToken,password:'production teacher password'},undefined);expect(activatedStaff.status).toBe(200);const activatedStaffToken=(await activatedStaff.json() as {accessToken:string}).accessToken;
+    const staffWorkspace=await request(await createAndTrack(env,sessions,limiter),'v1/teacher/bootstrap',{headers:{authorization:`Bearer ${activatedStaffToken}`}});expect(staffWorkspace.status).toBe(200);
+
     const homework=await jsonRequest(app,'v1/teacher/homework','POST',{groupId:PILOT.groupId,courseId:DEV_IDS.course,classSessionId:'71000000-0000-4000-8000-000000000001',title:'Production smoke homework',instructions:'Submit a persistent answer',dueAt:'2031-10-20T18:00:00.000Z',xpReward:100,status:'draft'},teacherToken);expect(homework.status).toBe(201);const homeworkId=(await homework.json() as {id:string}).id;
     expect((await jsonRequest(app,`v1/teacher/homework/${homeworkId}/publish`,'POST',{publishAt:'2031-10-19T18:00:00.000Z'},teacherToken)).status).toBe(204);
 

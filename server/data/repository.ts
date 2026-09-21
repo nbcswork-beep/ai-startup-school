@@ -24,6 +24,7 @@ import type {
   MentorBookingDto,
   MentorSlotDto,
   ParentReportDto,
+  ParentSummaryDto,
   TeacherGroupDto,
   TeacherStudentDto,
   TeacherWorkspaceDto,
@@ -40,7 +41,9 @@ export interface AppRepository {
   resolveTelegramUser(identity: TelegramIdentityInput): Promise<AuthUser>;
   getDevelopmentUser(userId: UserId): Promise<AuthUser | null>;
   getAuthUser(userId: UserId): Promise<AuthUser | null>;
-  getWebAuthUser(userId: UserId): Promise<{ user: AuthUser; role: AccessContext['role'] } | null>;
+  getWebAuthUser(userId: UserId): Promise<{ user: AuthUser; role: AccessContext['role']; roles: AccessContext['roles'] } | null>;
+  authenticatePersistentWebUser(email: string, password: string): Promise<AuthUser | null>;
+  activatePersistentWebUser(token: string, password: string): Promise<AuthUser>;
   createSession(session: NewSession): Promise<void>;
   rotateSession(currentTokenHash: string, next: NewSession, now: Date): Promise<RotationResult>;
   revokeSession(refreshTokenHash: string, now: Date): Promise<boolean>;
@@ -88,6 +91,9 @@ export interface AppRepository {
   approveTeacherReport(userId: UserId, reportId: string): Promise<void>;
   listLinkedStudents(userId: UserId): Promise<TeacherStudentDto[]>;
   listParentReports(userId: UserId, studentId: string): Promise<ParentReportDto[]>;
+  getParentSummary(userId: UserId, studentId: string): Promise<ParentSummaryDto>;
+  getTelegramAudience(telegramId: string): Promise<{ userId: string; roles: string[]; displayName: string } | null>;
+  getGuardianSummaryByTelegram(telegramId: string, studentId?: string): Promise<{ students: TeacherStudentDto[]; selected: ParentSummaryDto | null }>;
 
   getAdminWorkspace(userId: UserId): Promise<AdminWorkspaceDto>;
   searchAdmin(userId: UserId, query: string): Promise<AdminSearchDto>;
@@ -98,6 +104,15 @@ export interface AppRepository {
   adminRevokeGuardianLink(userId: UserId, linkId: string, reason: string, correlationId: string): Promise<void>;
   adminResendReport(userId: UserId, reportId: string, correlationId: string): Promise<void>;
   adminRevokeUserSession(userId: UserId, sessionId: string, reason: string, correlationId: string): Promise<void>;
+  adminCreateStudent(userId: UserId, input: { firstName:string; lastName:string; groupId:string; telegramId?:string|undefined; status:'active'|'disabled' }, correlationId:string): Promise<Record<string,unknown>>;
+  adminUpdateStudent(userId: UserId, studentId:string, input: { firstName?:string|undefined; lastName?:string|undefined; groupId?:string|undefined; expectedVersion:number }, correlationId:string): Promise<void>;
+  adminSetTelegramBinding(userId:UserId,targetUserId:string,telegramId:string|null,expectedVersion:number,correlationId:string):Promise<void>;
+  adminCreateGuardian(userId:UserId,input:{firstName:string;lastName:string;telegramId?:string|undefined;phone?:string|undefined;email?:string|undefined;studentIds:string[];status:'active'|'disabled'},correlationId:string):Promise<Record<string,unknown>>;
+  adminUpdateGuardian(userId:UserId,guardianId:string,input:{firstName?:string|undefined;lastName?:string|undefined;phone?:string|null|undefined;email?:string|null|undefined;expectedVersion:number},correlationId:string):Promise<void>;
+  adminLinkGuardian(userId:UserId,guardianId:string,studentId:string,correlationId:string):Promise<void>;
+  adminUnlinkGuardian(userId:UserId,guardianId:string,studentId:string,correlationId:string):Promise<void>;
+  adminCreateStaff(userId:UserId,input:{firstName:string;lastName:string;email:string;roles:Array<'teacher'|'mentor'|'admin'>},correlationId:string):Promise<Record<string,unknown>>;
+  adminUpdateStaff(userId:UserId,staffId:string,input:{firstName?:string|undefined;lastName?:string|undefined;email?:string|undefined;roles?:Array<'teacher'|'mentor'|'admin'>|undefined;expectedVersion:number},correlationId:string):Promise<void>;
   recordSecurityEvent(input: { eventType: string; severity: 'low'|'medium'|'high'|'critical'; actorUserId?: string; targetUserId?: string; metadata?: Record<string,unknown>; correlationId: string }): Promise<void>;
 
   listConversations(userId: UserId): Promise<AiConversationDto[]>;

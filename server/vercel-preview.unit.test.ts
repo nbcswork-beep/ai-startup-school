@@ -215,4 +215,23 @@ describe('Vercel Telegram deployment adapter', () => {
     expect(unknown.status).toBe(403);
     expect((await unknown.json() as { error: { code: string } }).error.code).toBe('TELEGRAM_ACCOUNT_NOT_LINKED');
   });
+
+  it('persists an Admin-created student across isolated Vercel adapters and authenticates its Telegram binding',async()=>{
+    const variables=await previewVariables();
+    const runtime=new MemoryPilotRuntimeStore(),sessions=new MemorySessionStore();
+    const overrides={sessionStore:sessions,loginLimiter:new MemoryLoginAttemptLimiter(),mentoringStore:new MemoryMentoringStore(),runtimeStore:runtime};
+    const first=await createVercelApp(variables,overrides),second=await createVercelApp(variables,overrides);apps.push(first,second);
+    const login=await request(first,'v1/auth/web',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:'admin@example.test',password:'correct horse battery staple',target:'admin'})});
+    expect(login.status).toBe(200);
+    const adminToken=(await login.json() as {accessToken:string}).accessToken;
+    const created=await request(first,'v1/admin/students',{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${adminToken}`},body:JSON.stringify({firstName:'Ізольований',lastName:'Учень',groupId:'70000000-0000-4000-8000-000000000001',telegramId:'987654398',status:'active'})});
+    expect(created.status).toBe(201);
+    const studentId=String((await created.json() as {id:string}).id);
+    const workspace=await request(second,'v1/admin/bootstrap',{headers:{authorization:`Bearer ${adminToken}`}});
+    expect(workspace.status).toBe(200);
+    expect((await workspace.json() as {students:Array<{id:string}>}).students.some(item=>item.id===studentId)).toBe(true);
+    const telegram=await request(second,'v1/auth/telegram',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({initData:signedInitData(987654398)})});
+    expect(telegram.status).toBe(200);
+    expect((await telegram.json() as {user:{id:string}}).user.id).toBe(studentId);
+  });
 });

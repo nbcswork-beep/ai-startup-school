@@ -8,6 +8,36 @@ import type {
   TeacherWorkspaceDto
 } from '../types/domain.js';
 import { PILOT, PILOT_STUDENTS, PILOT_TEACHERS, SEEDED_HOMEWORK, SEEDED_LESSONS } from './seed.js';
+import { AppError } from '../errors/app-error.js';
+
+export type PilotDirectoryRole = 'student' | 'guardian' | 'teacher' | 'mentor' | 'admin';
+export interface PilotDirectoryPerson {
+  id: string;
+  firstName: string;
+  lastName: string;
+  displayName: string;
+  roles: PilotDirectoryRole[];
+  status: AuthUser['status'];
+  groupId: string | null;
+  email: string | null;
+  phone: string | null;
+  telegramId: string | null;
+  passwordHash: string | null;
+  activationTokenHash: string | null;
+  activationExpiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+}
+
+export interface PilotGuardianRelation {
+  id: string;
+  guardianId: string;
+  studentId: string;
+  status: 'active' | 'revoked';
+  createdAt: string;
+  updatedAt: string;
+}
 
 export const PILOT_PORTFOLIO_IDS = Object.fromEntries(PILOT_STUDENTS.map((student, index) => [
   student.id,
@@ -62,7 +92,10 @@ export interface PilotAttendanceRecord {
 }
 
 export interface PilotRuntimeState {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  directory: Record<string, PilotDirectoryPerson>;
+  telegramBindings: Record<string, string>;
+  guardianRelations: PilotGuardianRelation[];
   userStatus: Record<string, AuthUser['status']>;
   xp: Record<string, number>;
   streak: Record<string, number>;
@@ -95,6 +128,19 @@ function relativeIso(days: number, hour: number, minute = 0): string {
 }
 
 export function createPilotRuntimeState(): PilotRuntimeState {
+  const timestamp = '2026-09-21T00:00:00.000Z';
+  const nameParts = (value: string) => { const parts=value.trim().split(/\s+/); return { lastName:parts.shift()??'', firstName:parts.join(' ') }; };
+  const directory: Record<string, PilotDirectoryPerson> = {};
+  for (const student of PILOT_STUDENTS) {
+    const names=nameParts(student.fullName);
+    directory[student.id]={id:student.id,firstName:names.firstName,lastName:names.lastName,displayName:student.fullName,roles:['student'],status:'active',groupId:PILOT.groupId,email:null,phone:null,telegramId:null,passwordHash:null,activationTokenHash:null,activationExpiresAt:null,createdAt:timestamp,updatedAt:timestamp,version:1};
+  }
+  for (const teacher of PILOT_TEACHERS) {
+    const names=nameParts(teacher.fullName);
+    directory[teacher.id]={id:teacher.id,firstName:names.firstName,lastName:names.lastName,displayName:teacher.fullName,roles:teacher.key==='maksym'?['teacher','mentor','admin']:['teacher'],status:'active',groupId:null,email:null,phone:null,telegramId:null,passwordHash:null,activationTokenHash:null,activationExpiresAt:null,createdAt:timestamp,updatedAt:timestamp,version:1};
+  }
+  directory['13000000-0000-4000-8000-000000000001']={id:'13000000-0000-4000-8000-000000000001',firstName:'Тестовий',lastName:'Опікун',displayName:'Тестовий опікун',roles:['guardian'],status:'active',groupId:null,email:null,phone:null,telegramId:null,passwordHash:null,activationTokenHash:null,activationExpiresAt:null,createdAt:timestamp,updatedAt:timestamp,version:1};
+  directory['14000000-0000-4000-8000-000000000001']={id:'14000000-0000-4000-8000-000000000001',firstName:'Адміністратор',lastName:'',displayName:'Адміністратор',roles:['admin'],status:'active',groupId:null,email:null,phone:null,telegramId:null,passwordHash:null,activationTokenHash:null,activationExpiresAt:null,createdAt:timestamp,updatedAt:timestamp,version:1};
   const userStatus = Object.fromEntries([
     ...PILOT_STUDENTS.map(student => [student.id, 'active'] as const),
     ...PILOT_TEACHERS.map(teacher => [teacher.id, 'active'] as const),
@@ -140,7 +186,10 @@ export function createPilotRuntimeState(): PilotRuntimeState {
     resources: []
   }));
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    directory,
+    telegramBindings: {},
+    guardianRelations: [{id:'92000000-0000-4000-8000-000000000001',guardianId:'13000000-0000-4000-8000-000000000001',studentId:PILOT_STUDENTS[0]!.id,status:'active',createdAt:timestamp,updatedAt:timestamp}],
     userStatus,
     xp: studentRecord(() => 0),
     streak: studentRecord(() => 0),
@@ -161,6 +210,21 @@ export function createPilotRuntimeState(): PilotRuntimeState {
   };
 }
 
+export function migratePilotRuntimeState(input: PilotRuntimeState | (Partial<PilotRuntimeState> & { schemaVersion?: number })): PilotRuntimeState {
+  const seed=createPilotRuntimeState();
+  const state=input as PilotRuntimeState;
+  state.directory={...seed.directory,...(state.directory??{})};
+  state.telegramBindings=state.telegramBindings??{};
+  state.guardianRelations=state.guardianRelations??seed.guardianRelations;
+  state.userStatus=state.userStatus??seed.userStatus;
+  for(const person of Object.values(state.directory)){
+    person.status=state.userStatus[person.id]??person.status;
+    state.userStatus[person.id]=person.status;
+  }
+  state.schemaVersion=2;
+  return state;
+}
+
 export class MemoryPilotRuntimeStore implements PilotRuntimeStore {
   private state: PilotRuntimeState;
 
@@ -169,11 +233,11 @@ export class MemoryPilotRuntimeStore implements PilotRuntimeStore {
   }
 
   async read(): Promise<PilotRuntimeState> {
-    return structuredClone(this.state);
+    return structuredClone(migratePilotRuntimeState(this.state));
   }
 
   async mutate<T>(mutation: (state: PilotRuntimeState) => T): Promise<T> {
-    const next = structuredClone(this.state);
+    const next = migratePilotRuntimeState(structuredClone(this.state));
     const result = mutation(next);
     this.state = next;
     return structuredClone(result);
@@ -227,17 +291,17 @@ export class RedisRestPilotRuntimeStore implements PilotRuntimeStore {
   }
 
   async read(): Promise<PilotRuntimeState> {
-    return JSON.parse(await this.readRaw()) as PilotRuntimeState;
+    return migratePilotRuntimeState(JSON.parse(await this.readRaw()) as PilotRuntimeState);
   }
 
   async mutate<T>(mutation: (state: PilotRuntimeState) => T): Promise<T> {
     for (let attempt = 0; attempt < this.maxRetries; attempt += 1) {
       const currentRaw = await this.readRaw();
-      const next = JSON.parse(currentRaw) as PilotRuntimeState;
+      const next = migratePilotRuntimeState(JSON.parse(currentRaw) as PilotRuntimeState);
       const result = mutation(next);
       const updated = await this.client.command<number>(['EVAL', COMPARE_AND_SET_SCRIPT, 1, this.key, currentRaw, JSON.stringify(next)]);
       if (updated === 1) return structuredClone(result);
     }
-    throw new Error('Pilot runtime storage contention exceeded retry limit');
+    throw new AppError('PERSISTENCE_CONFLICT', 409, 'Дані змінилися паралельно. Оновіть сторінку та повторіть дію.');
   }
 }

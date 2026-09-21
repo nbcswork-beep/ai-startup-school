@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { webhookCallback } from 'grammy';
 import type { AppEnv } from '../config/env.js';
 import { createSchoolBot } from '../telegram/school-bot.js';
+import type { AppRepository } from '../data/repository.js';
 
 export type TelegramWebhookHandler = (request: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
 
@@ -28,11 +29,11 @@ export function unavailableTelegramWebhookDependencies(env:AppEnv):TelegramWebho
   return unavailable;
 }
 
-export function registerTelegramWebhookRoutes(app: FastifyInstance, env: AppEnv, injectedHandler?: TelegramWebhookHandler): void {
+export function registerTelegramWebhookRoutes(app: FastifyInstance, env: AppEnv, repository:AppRepository, injectedHandler?: TelegramWebhookHandler): void {
   const unavailableDependencies=unavailableTelegramWebhookDependencies(env);
   const configured = unavailableDependencies.length === 0;
   const handler = configured
-    ? injectedHandler ?? webhookCallback(createSchoolBot(env.TELEGRAM_BOT_TOKEN!, env.MINI_APP_URL!), 'fastify', { onTimeout:'throw', timeoutMilliseconds:9_000 }) as TelegramWebhookHandler
+    ? injectedHandler ?? webhookCallback(createSchoolBot(env.TELEGRAM_BOT_TOKEN!, env.MINI_APP_URL!,repository), 'fastify', { onTimeout:'throw', timeoutMilliseconds:9_000 }) as TelegramWebhookHandler
     : undefined;
 
   if (!configured) app.log.warn({code:'TELEGRAM_WEBHOOK_UNAVAILABLE',dependencies:unavailableDependencies},'Telegram webhook dependencies are unavailable');

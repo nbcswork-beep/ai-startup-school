@@ -1,13 +1,14 @@
 import type { FastifyInstance, preHandlerHookHandler } from 'fastify';
 import { z } from 'zod';
 import type { AppRepository } from '../data/repository.js';
+import { requireRole } from '../middleware/authenticate.js';
 
 const uuid = z.string().uuid();
 const httpsUrl = z.string().url().refine(value => new URL(value).protocol === 'https:', 'Only HTTPS URLs are allowed');
 const timeRange = z.object({ startsAt:z.string().datetime(),endsAt:z.string().datetime() }).refine(value=>Date.parse(value.endsAt)>Date.parse(value.startsAt),'End must be after start');
 
 export function registerTeacherRoutes(app:FastifyInstance,repository:AppRepository,authenticate:preHandlerHookHandler):void{
-  const secured={preHandler:authenticate};
+  const secured={preHandler:[authenticate,requireRole('teacher')]};
   app.get('/api/v1/teacher/bootstrap',secured,async request=>repository.getTeacherWorkspace(request.auth.userId));
   app.get('/api/v1/teacher/search',secured,async request=>{
     const {q}=z.object({q:z.string().trim().min(2).max(80)}).parse(request.query);

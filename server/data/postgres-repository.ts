@@ -5,7 +5,7 @@ import type {
   AccessContext, AdminEntity, AdminExplorerPageDto, AdminSearchDto, AdminWorkspaceDto,
   AchievementDto, AiContextDto, AiConversationDto, AiMessageDto, AuthUser, ClassSessionDto, EffortLevel, HomeDto,
   HomeworkSubmissionDto, HomeworkSummaryDto, LearningDto, LessonDto, LessonSummaryDto, MentorBookingDto,
-  MentorSlotDto, NewSession, ParentReportDto, PortfolioDto, ProfileDto, ProjectDto, ProjectTaskDto, RotationResult,
+  MentorSlotDto, NewSession, ParentReportDto, ParentSummaryDto, PortfolioDto, ProfileDto, ProjectDto, ProjectTaskDto, RotationResult,
   ScheduleDto, TeacherGroupDto, TeacherStudentDto, TelegramIdentityInput, TeacherWorkspaceDto, TeacherSearchDto,
   TeacherPrivateNoteDto, TeacherHomeworkDto
 } from '../types/domain.js';
@@ -70,10 +70,10 @@ export class PostgresRepository implements AppRepository {
     return result.rows[0] ? this.authUser(result.rows[0]) : null;
   }
 
-  async getWebAuthUser(userId: string): Promise<{ user: AuthUser; role: AccessContext['role'] } | null> {
+  async getWebAuthUser(userId: string): Promise<{ user: AuthUser; role: AccessContext['role']; roles: AccessContext['roles'] } | null> {
     const result = await this.pool.query(`select u.id,u.kind role,u.status,coalesce(tp.display_name,case when u.kind='admin' then 'Адміністратор' end) display_name from public.users u left join public.teacher_profiles tp on tp.user_id=u.id where u.id=$1 and u.kind in ('teacher','admin')`, [userId]);
     if (!result.rows[0]) return null;
-    return { user: this.authUser(result.rows[0]), role: result.rows[0].role };
+    return { user: this.authUser(result.rows[0]), role: result.rows[0].role, roles:[result.rows[0].role] };
   }
 
   async createSession(session: NewSession): Promise<void> {
@@ -108,7 +108,7 @@ export class PostgresRepository implements AppRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
-  async getAccessContext(userId:string,sessionId:string):Promise<AccessContext>{const result=await this.pool.query(`select u.kind role,u.status,(s.id is not null and s.user_id=u.id and s.revoked_at is null and s.expires_at>now()) session_active from public.users u left join app_private.auth_sessions s on s.id=$2 where u.id=$1`,[userId,sessionId]);const row=result.rows[0];return{role:row?.role??'student',status:row?.status??'disabled',sessionActive:Boolean(row?.session_active)};}
+  async getAccessContext(userId:string,sessionId:string):Promise<AccessContext>{const result=await this.pool.query(`select u.kind role,u.status,(s.id is not null and s.user_id=u.id and s.revoked_at is null and s.expires_at>now()) session_active from public.users u left join app_private.auth_sessions s on s.id=$2 where u.id=$1`,[userId,sessionId]);const row=result.rows[0];const role=row?.role??'student';return{role,status:row?.status??'disabled',roles:[role],sessionActive:Boolean(row?.session_active)};}
 
   async getHome(userId: string): Promise<HomeDto> {
     const [learning, projects, viewer, schedule, homework] = await Promise.all([this.getLearning(userId), this.listProjects(userId), this.getViewer(userId), this.getSchedule(userId), this.listHomework(userId)]);
@@ -418,6 +418,21 @@ export class PostgresRepository implements AppRepository {
   async adminRevokeUserSession(userId:string,sessionId:string,reason:string,correlationId:string):Promise<void>{await this.withUser(userId,db=>db.query(`select public.admin_revoke_session($1,$2,$3)`,[sessionId,reason,correlationId]),true);}
   async recordSecurityEvent(input:{eventType:string;severity:'low'|'medium'|'high'|'critical';actorUserId?:string;targetUserId?:string;metadata?:Record<string,unknown>;correlationId:string}):Promise<void>{await this.pool.query(`insert into app_private.security_events(event_type,severity,actor_user_id,target_user_id,safe_metadata,correlation_id) values($1,$2,$3,$4,$5,$6)`,[input.eventType,input.severity,input.actorUserId??null,input.targetUserId??null,input.metadata??{},input.correlationId]);}
 
+  async authenticatePersistentWebUser(_email:string,_password:string):Promise<AuthUser|null>{return null;}
+  async activatePersistentWebUser(_token:string,_password:string):Promise<AuthUser>{throw this.peopleDirectoryUnavailable();}
+  async getParentSummary(_userId:string,_studentId:string):Promise<ParentSummaryDto>{throw this.peopleDirectoryUnavailable();}
+  async getTelegramAudience(_telegramId:string):Promise<{userId:string;roles:string[];displayName:string}|null>{return null;}
+  async getGuardianSummaryByTelegram(_telegramId:string,_studentId?:string):Promise<{students:TeacherStudentDto[];selected:ParentSummaryDto|null}>{throw this.peopleDirectoryUnavailable();}
+  async adminCreateStudent(_userId:string,_input:{firstName:string;lastName:string;groupId:string;telegramId?:string;status:'active'|'disabled'},_correlationId:string):Promise<Record<string,unknown>>{throw this.peopleDirectoryUnavailable();}
+  async adminUpdateStudent(_userId:string,_studentId:string,_input:{firstName?:string;lastName?:string;groupId?:string;expectedVersion:number},_correlationId:string):Promise<void>{throw this.peopleDirectoryUnavailable();}
+  async adminSetTelegramBinding(_userId:string,_targetUserId:string,_telegramId:string|null,_expectedVersion:number,_correlationId:string):Promise<void>{throw this.peopleDirectoryUnavailable();}
+  async adminCreateGuardian(_userId:string,_input:{firstName:string;lastName:string;telegramId?:string;phone?:string;email?:string;studentIds:string[];status:'active'|'disabled'},_correlationId:string):Promise<Record<string,unknown>>{throw this.peopleDirectoryUnavailable();}
+  async adminUpdateGuardian(_userId:string,_guardianId:string,_input:{firstName?:string;lastName?:string;phone?:string|null;email?:string|null;expectedVersion:number},_correlationId:string):Promise<void>{throw this.peopleDirectoryUnavailable();}
+  async adminLinkGuardian(_userId:string,_guardianId:string,_studentId:string,_correlationId:string):Promise<void>{throw this.peopleDirectoryUnavailable();}
+  async adminUnlinkGuardian(_userId:string,_guardianId:string,_studentId:string,_correlationId:string):Promise<void>{throw this.peopleDirectoryUnavailable();}
+  async adminCreateStaff(_userId:string,_input:{firstName:string;lastName:string;email:string;roles:Array<'teacher'|'mentor'|'admin'>},_correlationId:string):Promise<Record<string,unknown>>{throw this.peopleDirectoryUnavailable();}
+  async adminUpdateStaff(_userId:string,_staffId:string,_input:{firstName?:string;lastName?:string;email?:string;roles?:Array<'teacher'|'mentor'|'admin'>;expectedVersion:number},_correlationId:string):Promise<void>{throw this.peopleDirectoryUnavailable();}
+
   async listConversations(userId: string): Promise<AiConversationDto[]> { return this.withUser(userId, async db => (await db.query(`select * from public.ai_conversations where user_id=$1 order by updated_at desc`,[userId])).rows.map(this.conversation)); }
   async createConversation(userId: string, title='Нова розмова'): Promise<AiConversationDto> {
     const result = await this.withUser(userId, db => db.query(`insert into public.ai_conversations(user_id,course_id,lesson_id,project_id,title) select $1,e.course_id,e.current_lesson_id,p.id,$2 from public.enrollments e left join public.projects p on p.user_id=e.user_id and p.status='active' where e.user_id=$1 and e.status='active' limit 1 returning *`,[userId,title]), true);
@@ -447,6 +462,7 @@ export class PostgresRepository implements AppRepository {
   async updateConversationSummary(conversationId:string,summary:string):Promise<void>{await this.pool.query(`insert into app_private.ai_conversation_state(conversation_id,summary) values($1,$2) on conflict(conversation_id) do update set summary=excluded.summary,updated_at=now()`,[conversationId,summary.slice(0,4000)]);}
 
   private async withUser<T>(userId:string,fn:(db:Db)=>Promise<T>,write=false):Promise<T>{const client=await this.pool.connect();try{await client.query('begin');await client.query(`set local role authenticated`);await client.query(`select set_config('request.jwt.claims',$1,true)`,[JSON.stringify({role:'authenticated',app_user_id:userId})]);const value=await fn(client);await client.query('commit');return value;}catch(error){await client.query('rollback');throw error;}finally{client.release();}}
+  private peopleDirectoryUnavailable():AppError{return new AppError('PEOPLE_DIRECTORY_MIGRATION_REQUIRED',503,'People Management потребує production migration для PostgreSQL backend');}
   private async requireAdminDirect(userId:string):Promise<{display_name:string}>{const result=await this.pool.query(`select coalesce(sp.display_name,tp.display_name,gp.display_name,'Адміністратор') display_name from public.users u left join public.student_profiles sp on sp.user_id=u.id left join public.teacher_profiles tp on tp.user_id=u.id left join public.guardian_profiles gp on gp.user_id=u.id where u.id=$1 and u.kind='admin' and u.status='active'`,[userId]);if(!result.rows[0])throw new AppError('ROLE_FORBIDDEN',403,'Недостатньо прав');return result.rows[0];}
   private async getViewer(userId:string){return this.withUser(userId,async db=>{const r=await db.query(`select u.id,sp.profile_display_name display_name,sp.current_streak,coalesce(sum(x.delta),0)::int xp,l.position level_number,l.title level_title,l.min_xp,(select title from public.levels where min_xp>coalesce(sum(x.delta),0) order by min_xp limit 1) next_title,(select min_xp from public.levels where min_xp>coalesce(sum(x.delta),0) order by min_xp limit 1) next_min_xp from public.users u join public.student_profiles sp on sp.user_id=u.id left join public.xp_events x on x.user_id=u.id join lateral(select * from public.levels where min_xp<=coalesce((select sum(delta) from public.xp_events where user_id=u.id),0) order by min_xp desc limit 1) l on true where u.id=$1 group by u.id,sp.profile_display_name,sp.current_streak,l.position,l.title,l.min_xp`,[userId]);if(!r.rows[0])throw new AppError('USER_NOT_FOUND',404,'Користувача не знайдено');const x=r.rows[0];return{id:x.id,firstName:x.display_name,level:{number:x.level_number,title:x.level_title,nextTitle:x.next_title,currentMinXp:x.min_xp,nextMinXp:x.next_min_xp},xp:x.xp,streak:x.current_streak};});}
   private async getMentor(userId:string):Promise<ProfileDto['mentor']>{return this.withUser(userId,async db=>{const r=await db.query(`select m.display_name,m.title,m.avatar_path,ma.next_meeting_at from public.mentor_assignments ma join public.mentors m on m.id=ma.mentor_id where ma.student_user_id=$1 and ma.ends_at is null`,[userId]);const x=r.rows[0];return x?{displayName:x.display_name,title:x.title,avatarPath:x.avatar_path,nextMeetingAt:x.next_meeting_at?.toISOString?.()??x.next_meeting_at??null}:null;});}
