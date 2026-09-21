@@ -19,8 +19,10 @@ import { AuthService } from './services/auth-service.js';
 import { WebCredentialDirectory } from './auth/password-credentials.js';
 import { MemoryLoginAttemptLimiter, type LoginAttemptLimiter } from './auth/session-store.js';
 import { registerTelegramWebhookRoutes, type TelegramWebhookHandler } from './routes/telegram-webhook.js';
+import { registerNotificationWorkerRoute } from './routes/notification-worker.js';
+import { NotificationWorker, TelegramNotificationSender, type NotificationSender } from './services/telegram-notification-service.js';
 
-export async function buildApp(deps: { env: AppEnv; repository: AppRepository; jwt: JwtService; aiProvider: AiProvider; loginLimiter?: LoginAttemptLimiter; telegramWebhookHandler?: TelegramWebhookHandler }) {
+export async function buildApp(deps: { env: AppEnv; repository: AppRepository; jwt: JwtService; aiProvider: AiProvider; loginLimiter?: LoginAttemptLimiter; telegramWebhookHandler?: TelegramWebhookHandler; notificationSender?:NotificationSender }) {
   const app = Fastify({ logger: deps.env.NODE_ENV === 'test' ? false : { level: deps.env.LOG_LEVEL,redact:{paths:['req.headers.authorization','req.headers.cookie','req.headers.x-telegram-bot-api-secret-token','res.headers.set-cookie','body.initData','body.refreshToken','body.password','body.token'],censor:'[REDACTED]'} }, trustProxy: deps.env.TRUST_PROXY, bodyLimit: 32_768 });
   await app.register(cookie);
   await app.register(cors, {
@@ -36,6 +38,8 @@ export async function buildApp(deps: { env: AppEnv; repository: AppRepository; j
   registerErrorHandler(app);
   app.get('/api/health', async () => { await deps.repository.ping(); return { status: 'ok' }; });
   registerTelegramWebhookRoutes(app, deps.env, deps.repository, deps.telegramWebhookHandler);
+  const notificationSender=deps.notificationSender??(deps.env.TELEGRAM_BOT_TOKEN?new TelegramNotificationSender(deps.env.TELEGRAM_BOT_TOKEN):undefined);
+  registerNotificationWorkerRoute(app,deps.env,notificationSender?new NotificationWorker(deps.repository,notificationSender,deps.env.PARENT_WEEKLY_REPORT_DAY,deps.env.PARENT_WEEKLY_REPORT_HOUR_KYIV):undefined);
   const auth = new AuthService(deps.repository, deps.jwt, deps.env, new WebCredentialDirectory(deps.env.WEB_AUTH_ACCOUNTS_JSON), deps.loginLimiter ?? new MemoryLoginAttemptLimiter());
   registerAuthRoutes(app, auth, deps.env);
   const authenticate=createAuthenticate(deps.jwt,deps.repository);

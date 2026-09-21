@@ -5,7 +5,8 @@ import type {
   AccessContext, AdminEntity, AdminExplorerPageDto, AdminSearchDto, AdminWorkspaceDto,
   AchievementDto, AiContextDto, AiConversationDto, AiMessageDto, AuthUser, ClassSessionDto, EffortLevel, HomeDto,
   HomeworkSubmissionDto, HomeworkSummaryDto, LearningDto, LessonDto, LessonSummaryDto, MentorBookingDto,
-  MentorSlotDto, NewSession, ParentReportDto, ParentSummaryDto, PortfolioDto, ProfileDto, ProjectDto, ProjectTaskDto, RotationResult,
+  MentorSlotDto, MissedLessonRecoveryDto, NewSession, NotificationDeliveryDto, ParentContactCategory, ParentContactRequestDto,
+  ParentReportDto, ParentSummaryDto, PortfolioDto, ProfileDto, ProjectDto, ProjectTaskDto, RotationResult,
   ScheduleDto, TeacherGroupDto, TeacherStudentDto, TelegramIdentityInput, TeacherWorkspaceDto, TeacherSearchDto,
   TeacherPrivateNoteDto, TeacherHomeworkDto
 } from '../types/domain.js';
@@ -423,6 +424,10 @@ export class PostgresRepository implements AppRepository {
   async getParentSummary(_userId:string,_studentId:string):Promise<ParentSummaryDto>{throw this.peopleDirectoryUnavailable();}
   async getTelegramAudience(_telegramId:string):Promise<{userId:string;roles:string[];displayName:string}|null>{return null;}
   async getGuardianSummaryByTelegram(_telegramId:string,_studentId?:string):Promise<{students:TeacherStudentDto[];selected:ParentSummaryDto|null}>{throw this.peopleDirectoryUnavailable();}
+  async createParentContactRequestByTelegram(_telegramId:string,_studentId:string,_category:ParentContactCategory,_message:string):Promise<ParentContactRequestDto>{throw this.peopleDirectoryUnavailable();}
+  async listMissedLessonRecoveries(_userId:string):Promise<MissedLessonRecoveryDto[]>{throw this.peopleDirectoryUnavailable();}
+  async prepareNotificationBatch(_now:Date,_limit:number):Promise<NotificationDeliveryDto[]>{throw this.peopleDirectoryUnavailable();}
+  async completeNotificationDelivery(_notificationId:string,_sent:boolean,_errorCode:string|null,_completedAt:Date,_retryable=true):Promise<void>{throw this.peopleDirectoryUnavailable();}
   async adminCreateStudent(_userId:string,_input:{firstName:string;lastName:string;groupId:string;telegramId?:string;status:'active'|'disabled'},_correlationId:string):Promise<Record<string,unknown>>{throw this.peopleDirectoryUnavailable();}
   async adminUpdateStudent(_userId:string,_studentId:string,_input:{firstName?:string;lastName?:string;groupId?:string;expectedVersion:number},_correlationId:string):Promise<void>{throw this.peopleDirectoryUnavailable();}
   async adminSetTelegramBinding(_userId:string,_targetUserId:string,_telegramId:string|null,_expectedVersion:number,_correlationId:string):Promise<void>{throw this.peopleDirectoryUnavailable();}
@@ -432,6 +437,7 @@ export class PostgresRepository implements AppRepository {
   async adminUnlinkGuardian(_userId:string,_guardianId:string,_studentId:string,_correlationId:string):Promise<void>{throw this.peopleDirectoryUnavailable();}
   async adminCreateStaff(_userId:string,_input:{firstName:string;lastName:string;email:string;roles:Array<'teacher'|'mentor'|'admin'>},_correlationId:string):Promise<Record<string,unknown>>{throw this.peopleDirectoryUnavailable();}
   async adminUpdateStaff(_userId:string,_staffId:string,_input:{firstName?:string;lastName?:string;email?:string;roles?:Array<'teacher'|'mentor'|'admin'>;expectedVersion:number},_correlationId:string):Promise<void>{throw this.peopleDirectoryUnavailable();}
+  async adminResolveParentContactRequest(_userId:string,_requestId:string,_correlationId:string):Promise<void>{throw this.peopleDirectoryUnavailable();}
 
   async listConversations(userId: string): Promise<AiConversationDto[]> { return this.withUser(userId, async db => (await db.query(`select * from public.ai_conversations where user_id=$1 order by updated_at desc`,[userId])).rows.map(this.conversation)); }
   async createConversation(userId: string, title='Нова розмова'): Promise<AiConversationDto> {

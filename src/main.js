@@ -159,6 +159,7 @@ function learn() {
   const lessonRows = module?.lessons ?? [];
   const weekClasses = data.schedule?.thisWeek ?? [];
   const homework = data.homework ?? [];
+  const recoveries = data.recoveries ?? [];
   return `
     <section class="page learn-page">
       <div class="page-title"><span class="section-kicker">ТВІЙ МАРШРУТ</span><span class="zone-code">ZONE 02 · ROUTE</span><h1>Навчання</h1><p>Живі заняття, практика й робота над власним проєктом.</p></div>
@@ -166,6 +167,16 @@ function learn() {
         <div class="section-head compact-head"><div><span class="section-kicker">ЦЬОГО ТИЖНЯ</span><h2>Живі заняття</h2></div><span class="tiny-badge">${weekClasses.length} LIVE</span></div>
         ${weekClasses.length ? weekClasses.map(item => `<article class="schedule-row"><span class="schedule-date">${escapeHtml(new Intl.DateTimeFormat('uk-UA',{weekday:'short',day:'2-digit',timeZone:data.schedule.timezone}).format(new Date(item.startsAt)).toUpperCase())}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(formatClassTime(item.startsAt,data.schedule.timezone))} · ${item.durationMinutes} хв</small></div><i class="${item.status}"></i></article>`).join('') : '<p class="empty-inline">На цей тиждень занять немає.</p>'}
       </section>
+      ${recoveries.length ? `<section class="recovery-route">
+        <div class="section-head compact-head"><div><span class="section-kicker">НАЗДОГНАТИ ПРОПУЩЕНЕ</span><h2>Матеріали після заняття</h2></div><span class="tiny-badge">${recoveries.length} ДОСТУПНО</span></div>
+        ${recoveries.map(item => `<article class="recovery-card ${item.status}">
+          <div class="recovery-card-head"><span>ПРОПУЩЕНЕ ЗАНЯТТЯ</span><small>${escapeHtml(formatClassTime(item.startsAt,data.schedule.timezone))}</small></div>
+          <h3>${escapeHtml(item.lessonTitle || item.title)}</h3><p>${escapeHtml(item.description)}</p>
+          ${item.materials.length ? `<div class="recovery-materials">${item.materials.map(material => material.url ? `<button data-external="${escapeHtml(material.url)}">${escapeHtml(material.title)} ${externalIcon()}</button>` : `<span>${escapeHtml(material.title)}</span>`).join('')}</div>` : '<small class="recovery-empty">Матеріали ще готує викладач.</small>'}
+          ${item.homework ? `<div class="recovery-task"><span>ЩО ЗРОБИТИ САМОСТІЙНО</span><strong>${escapeHtml(item.homework.title)}</strong><p>${escapeHtml(item.homework.instructions)}</p></div>` : ''}
+          <div class="recovery-actions">${item.homework ? `<button class="recovery-homework" data-homework="${item.homework.id}">Відкрити домашнє завдання ${arrowIcon()}</button>` : ''}${item.mentorSlotId ? `<button class="recovery-mentor" data-recovery-mentor="${item.mentorSlotId}">Записатися до ментора</button>` : ''}</div>
+        </article>`).join('')}
+      </section>` : ''}
       <section class="module-overview">
         <div class="module-number">01</div>
         <div><span>ПОТОЧНИЙ МОДУЛЬ</span><h2>${escapeHtml(module?.title ?? learning.course.title)}</h2><p>${escapeHtml(module?.description ?? learning.course.description)}</p></div>
@@ -451,6 +462,17 @@ function wirePage() {
   });
   view.querySelectorAll('[data-external]').forEach(element => {
     element.onclick = event => { event.stopPropagation(); openExternal(element.dataset.external); };
+  });
+  view.querySelectorAll('[data-recovery-mentor]').forEach(button => {
+    button.onclick = async event => {
+      event.stopPropagation();
+      button.disabled = true; button.textContent = 'Бронюємо…';
+      try {
+        await api.bookMentor(button.dataset.recoveryMentor);
+        button.textContent = 'Зустріч зарезервовано'; button.classList.add('booked');
+        tg?.showAlert?.('Зустріч із ментором зарезервовано. Деталі з’являться у профілі.');
+      } catch (error) { button.disabled = false; button.textContent = error.message; }
+    };
   });
 
   document.querySelector('#completeLesson')?.addEventListener('click', async event => {

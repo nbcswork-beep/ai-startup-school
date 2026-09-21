@@ -19,6 +19,7 @@ export const adminApi={
   revokeGuardianLink:(id,reason)=>request(`/admin/guardian-links/${id}/revoke`,{method:'POST',body:JSON.stringify({reason})}),
   resendReport:id=>request(`/admin/reports/${id}/resend`,{method:'POST',body:JSON.stringify({confirm:true})}),
   revokeSession:(id,reason)=>request(`/admin/sessions/${id}/revoke`,{method:'POST',body:JSON.stringify({reason})})
+  ,resolveParentRequest:id=>request(`/admin/parent-requests/${id}/resolve`,{method:'POST',body:JSON.stringify({confirm:true})})
   ,createStudent:input=>request('/admin/students',{method:'POST',body:JSON.stringify(input)})
   ,updateStudent:(id,input)=>request(`/admin/students/${id}`,{method:'PATCH',body:JSON.stringify(input)})
   ,setTelegram:(id,input)=>request(`/admin/users/${id}/telegram`,{method:'PUT',body:JSON.stringify(input)})

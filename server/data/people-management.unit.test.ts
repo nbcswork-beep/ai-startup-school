@@ -64,6 +64,15 @@ describe('persistent People Management lifecycle',()=>{
     await expect(second.getGuardianSummaryByTelegram('777777005')).rejects.toMatchObject({statusCode:403});
   });
 
+  it('allows two active guardians to independently access the same child',async()=>{
+    const {first,second}=isolatedPair(),studentId=PILOT_STUDENTS[0]!.id;
+    await first.adminCreateGuardian(ADMIN,{firstName:'Перший',lastName:'Опікун',telegramId:'777777041',studentIds:[studentId],status:'active'},'guardian-one');
+    await first.adminCreateGuardian(ADMIN,{firstName:'Другий',lastName:'Опікун',telegramId:'777777042',studentIds:[studentId],status:'active'},'guardian-two');
+    expect((await second.getGuardianSummaryByTelegram('777777041',studentId)).selected?.student.id).toBe(studentId);
+    expect((await second.getGuardianSummaryByTelegram('777777042',studentId)).selected?.student.id).toBe(studentId);
+    await expect(second.getGuardianSummaryByTelegram('777777099',studentId)).rejects.toMatchObject({statusCode:403});
+  });
+
   it('creates and activates staff without env credentials and applies roles persistently',async()=>{
     const {first,second}=isolatedPair();
     const created=await first.adminCreateStaff(ADMIN,{firstName:'Нова',lastName:'Викладачка',email:'Teacher@Example.Test',roles:['teacher']},'staff-create');

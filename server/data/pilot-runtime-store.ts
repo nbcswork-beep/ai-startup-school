@@ -5,7 +5,8 @@ import type {
   PortfolioDto,
   TeacherHomeworkDto,
   TeacherPrivateNoteDto,
-  TeacherWorkspaceDto
+  TeacherWorkspaceDto,
+  ParentContactCategory
 } from '../types/domain.js';
 import { PILOT, PILOT_STUDENTS, PILOT_TEACHERS, SEEDED_HOMEWORK, SEEDED_LESSONS } from './seed.js';
 import { AppError } from '../errors/app-error.js';
@@ -59,6 +60,7 @@ export interface PilotProject {
   stageTitle: string;
   tags: string[];
   workspaceUrl: string | null;
+  updatedAt: string;
   tasks: Array<{
     id: string;
     number: string;
@@ -70,11 +72,40 @@ export interface PilotProject {
   }>;
 }
 
+export interface PilotNotification {
+  id:string;
+  recipientUserId:string;
+  recipientTelegramId:string;
+  type:string;
+  relatedEntityId:string|null;
+  scheduledFor:string;
+  sentAt:string|null;
+  status:'pending'|'processing'|'sent'|'failed'|'skipped';
+  attempts:number;
+  lastAttemptAt:string|null;
+  nextAttemptAt:string|null;
+  idempotencyKey:string;
+  safeMetadata:{text:string;buttonText?:string;buttonUrl?:string;callbackData?:string;studentId?:string;weekKey?:string};
+  errorCode:string|null;
+}
+
+export interface PilotParentContactRequest {
+  id:string;
+  guardianId:string;
+  studentId:string;
+  category:ParentContactCategory;
+  message:string;
+  status:'new'|'resolved';
+  createdAt:string;
+  resolvedAt:string|null;
+}
+
 export interface PilotClassSession extends ClassSessionDto {
   groupId: string;
   groupName: string;
   lessonId: string | null;
   teacherNotes: string;
+  changedAt?: string | null;
 }
 
 export interface PilotHomeworkSubmission extends HomeworkSubmissionDto {
@@ -92,7 +123,7 @@ export interface PilotAttendanceRecord {
 }
 
 export interface PilotRuntimeState {
-  schemaVersion: 2;
+  schemaVersion: 3;
   directory: Record<string, PilotDirectoryPerson>;
   telegramBindings: Record<string, string>;
   guardianRelations: PilotGuardianRelation[];
@@ -113,6 +144,8 @@ export interface PilotRuntimeState {
   teacherReports: TeacherWorkspaceDto['reports'];
   adminAuditEvents: Array<Record<string, unknown>>;
   securityEvents: Array<Record<string, unknown>>;
+  notifications: PilotNotification[];
+  parentContactRequests: PilotParentContactRequest[];
 }
 
 export interface PilotRuntimeStore {
@@ -186,7 +219,7 @@ export function createPilotRuntimeState(): PilotRuntimeState {
     resources: []
   }));
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     directory,
     telegramBindings: {},
     guardianRelations: [{id:'92000000-0000-4000-8000-000000000001',guardianId:'13000000-0000-4000-8000-000000000001',studentId:PILOT_STUDENTS[0]!.id,status:'active',createdAt:timestamp,updatedAt:timestamp}],
@@ -206,7 +239,9 @@ export function createPilotRuntimeState(): PilotRuntimeState {
     teacherNotes: [],
     teacherReports: [],
     adminAuditEvents: [],
-    securityEvents: []
+    securityEvents: [],
+    notifications: [],
+    parentContactRequests: []
   };
 }
 
@@ -216,12 +251,15 @@ export function migratePilotRuntimeState(input: PilotRuntimeState | (Partial<Pil
   state.directory={...seed.directory,...(state.directory??{})};
   state.telegramBindings=state.telegramBindings??{};
   state.guardianRelations=state.guardianRelations??seed.guardianRelations;
+  state.notifications=state.notifications??[];
+  state.parentContactRequests=state.parentContactRequests??[];
   state.userStatus=state.userStatus??seed.userStatus;
   for(const person of Object.values(state.directory)){
     person.status=state.userStatus[person.id]??person.status;
     state.userStatus[person.id]=person.status;
   }
-  state.schemaVersion=2;
+  for(const projects of Object.values(state.projects??{}))for(const project of projects)project.updatedAt??='2026-09-21T00:00:00.000Z';
+  state.schemaVersion=3;
   return state;
 }
 

@@ -2166,6 +2166,35 @@ p {
 
 .week-route,
 .homework-route { margin: 20px 0 28px; }
+.recovery-route { margin: 20px 0 30px; }
+.recovery-card {
+  margin-top: 10px;
+  padding: 16px;
+  border: 1px solid rgba(255, 207, 77, .3);
+  border-radius: 18px;
+  background: linear-gradient(145deg, rgba(255, 207, 77, .09), rgba(13, 21, 59, .72));
+}
+.recovery-card.completed { border-color: rgba(69, 223, 245, .28); opacity: .78; }
+.recovery-card-head { display: flex; justify-content: space-between; gap: 12px; color: var(--yellow); font: 800 7px/1.4 Unbounded, sans-serif; letter-spacing: .1em; }
+.recovery-card-head small { color: var(--muted); font: 700 8px/1.4 Inter, sans-serif; letter-spacing: 0; }
+.recovery-card h3 { margin: 10px 0 5px; font-size: 14px; }
+.recovery-card > p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.55; }
+.recovery-materials { display: grid; gap: 6px; margin-top: 13px; }
+.recovery-materials button,
+.recovery-materials span { min-height: 44px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 11px; display: flex; align-items: center; justify-content: space-between; color: var(--text); background: rgba(255,255,255,.035); font-size: 9px; text-align: left; }
+.recovery-materials .arrow-icon { width: 16px; color: var(--cyan); }
+.recovery-empty { display: block; margin-top: 12px; color: var(--muted); font-size: 8px; }
+.recovery-task { margin-top: 13px; padding: 11px; border-left: 2px solid var(--yellow); background: rgba(255,255,255,.025); }
+.recovery-task span { display: block; color: var(--yellow); font-size: 7px; font-weight: 900; letter-spacing: .1em; }
+.recovery-task strong { display: block; margin-top: 5px; font-size: 10px; }
+.recovery-task p { margin: 4px 0 0; color: var(--muted); font-size: 8px; line-height: 1.5; }
+.recovery-actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: 13px; }
+.recovery-actions button { min-height: 44px; padding: 9px 12px; border-radius: 12px; font-size: 8px; font-weight: 800; }
+.recovery-homework { border: 0; display: flex; align-items: center; justify-content: space-between; color: #071229; background: var(--cyan); text-align: left; }
+.recovery-homework .arrow-icon { width: 16px; }
+.recovery-mentor { border: 1px solid var(--line-strong); color: var(--text); background: transparent; }
+.recovery-mentor.booked { color: var(--cyan); }
+@media (max-width: 420px) { .recovery-actions { grid-template-columns: 1fr; } }
 .compact-head { min-height: 54px; margin: 0; }
 .schedule-row {
   min-height: 68px;

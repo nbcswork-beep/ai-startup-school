@@ -6,6 +6,7 @@ import { hashPassword } from './auth/password-credentials.js';
 import { MemoryLoginAttemptLimiter, MemorySessionStore } from './auth/session-store.js';
 import { DEV_IDS, PILOT, PILOT_STUDENTS, SEEDED_LESSONS } from './data/seed.js';
 import { createVercelApp, injectVercelRequest } from './vercel-preview.js';
+import type { NotificationDeliveryDto } from './types/domain.js';
 
 const BOT_TOKEN='123456789:production-mutation-test-token';
 const TEACHER_EMAIL='teacher@production.test';
@@ -56,7 +57,7 @@ class UpstashRestEmulator {
 
 async function productionEnvironment():Promise<NodeJS.ProcessEnv>{
   const pair=await generateKeyPair('ES256',{extractable:true});
-  return{LOG_LEVEL:'silent',VERCEL_ENV:'production',VERCEL_PROJECT_PRODUCTION_URL:'ai-startup-school.vercel.app',TELEGRAM_BOT_TOKEN:BOT_TOKEN,TELEGRAM_WEBHOOK_SECRET:'production_mutation_webhook_secret',TELEGRAM_STUDENT_BINDINGS_JSON:JSON.stringify({illia:'987654321',ivan:'987654322'}),SESSION_TOKEN_PEPPER:'production-mutation-test-pepper-with-entropy',APP_JWT_PRIVATE_KEY_BASE64:Buffer.from(await exportPKCS8(pair.privateKey)).toString('base64'),APP_JWT_PUBLIC_KEY_BASE64:Buffer.from(await exportSPKI(pair.publicKey)).toString('base64'),WEB_AUTH_ACCOUNTS_JSON:JSON.stringify([{userId:'12000000-0000-4000-8000-000000000001',email:TEACHER_EMAIL,passwordHash:await hashPassword(TEACHER_PASSWORD)}]),UPSTASH_REDIS_REST_KV_REST_API_URL:'https://production-upstash.test',UPSTASH_REDIS_REST_KV_REST_API_TOKEN:'production-write-token',SESSION_REDIS_PREFIX:'aiss:production:sessions:v1',MINI_APP_URL:'https://ai-startup-school.vercel.app'};
+  return{LOG_LEVEL:'silent',VERCEL_ENV:'production',VERCEL_PROJECT_PRODUCTION_URL:'ai-startup-school.vercel.app',TELEGRAM_BOT_TOKEN:BOT_TOKEN,TELEGRAM_WEBHOOK_SECRET:'production_mutation_webhook_secret',TELEGRAM_STUDENT_BINDINGS_JSON:JSON.stringify({illia:'987654321',ivan:'987654322'}),CRON_SECRET:'production-notification-cron-secret',SESSION_TOKEN_PEPPER:'production-mutation-test-pepper-with-entropy',APP_JWT_PRIVATE_KEY_BASE64:Buffer.from(await exportPKCS8(pair.privateKey)).toString('base64'),APP_JWT_PUBLIC_KEY_BASE64:Buffer.from(await exportSPKI(pair.publicKey)).toString('base64'),WEB_AUTH_ACCOUNTS_JSON:JSON.stringify([{userId:'12000000-0000-4000-8000-000000000001',email:TEACHER_EMAIL,passwordHash:await hashPassword(TEACHER_PASSWORD)}]),UPSTASH_REDIS_REST_KV_REST_API_URL:'https://production-upstash.test',UPSTASH_REDIS_REST_KV_REST_API_TOKEN:'production-write-token',SESSION_REDIS_PREFIX:'aiss:production:sessions:v1',MINI_APP_URL:'https://ai-startup-school.vercel.app'};
 }
 
 function signedInitData(telegramId:number):string{
@@ -71,16 +72,22 @@ afterEach(async()=>{vi.unstubAllGlobals();await Promise.all(apps.splice(0).map(a
 
 describe('production-equivalent Vercel mutation smoke',()=>{
   it('persists every core pilot mutation through the Web Handler and Upstash REST stores',async()=>{
-    const redis=new UpstashRestEmulator();vi.stubGlobal('fetch',redis.fetch);const env=await productionEnvironment(),sessions=new MemorySessionStore(),limiter=new MemoryLoginAttemptLimiter();
-    const app=await createVercelApp(env,{sessionStore:sessions,loginLimiter:limiter});apps.push(app);
+    const redis=new UpstashRestEmulator();vi.stubGlobal('fetch',redis.fetch);const env=await productionEnvironment(),sessions=new MemorySessionStore(),limiter=new MemoryLoginAttemptLimiter(),deliveries:NotificationDeliveryDto[]=[];
+    const notificationSender={send:async(notification:NotificationDeliveryDto)=>{deliveries.push(notification);return{sent:true as const};}};
+    const app=await createVercelApp(env,{sessionStore:sessions,loginLimiter:limiter,notificationSender});apps.push(app);
     const teacherLogin=await jsonRequest(app,'v1/auth/web','POST',{email:TEACHER_EMAIL,password:TEACHER_PASSWORD,target:'admin'});expect(teacherLogin.status).toBe(200);const teacherToken=(await teacherLogin.json() as {accessToken:string}).accessToken;
     const studentLogin=await jsonRequest(app,'v1/auth/telegram','POST',{initData:signedInitData(987654321)});expect(studentLogin.status).toBe(200);const studentToken=(await studentLogin.json() as {accessToken:string}).accessToken;
 
     const peopleTelegramId=987654399;
     const createdPerson=await jsonRequest(app,'v1/admin/students','POST',{firstName:'Redis',lastName:'Student',groupId:PILOT.groupId,telegramId:String(peopleTelegramId),status:'active'},teacherToken);expect(createdPerson.status).toBe(201);const createdPersonId=(await createdPerson.json() as {id:string}).id;
-    const coldPeopleApp=await createVercelApp(env,{sessionStore:sessions,loginLimiter:limiter});apps.push(coldPeopleApp);
+    const coldPeopleApp=await createVercelApp(env,{sessionStore:sessions,loginLimiter:limiter,notificationSender});apps.push(coldPeopleApp);
     const persistedPersonLogin=await jsonRequest(coldPeopleApp,'v1/auth/telegram','POST',{initData:signedInitData(peopleTelegramId)});expect(persistedPersonLogin.status).toBe(200);const persistedPersonToken=(await persistedPersonLogin.json() as {accessToken:string}).accessToken;
     const persistedPersonBootstrap=await request(coldPeopleApp,'v1/bootstrap',{headers:{authorization:`Bearer ${persistedPersonToken}`}});expect(persistedPersonBootstrap.status).toBe(200);expect(await persistedPersonBootstrap.json()).toMatchObject({home:{viewer:{id:createdPersonId}}});
+    const reminderStart=new Date(Date.now()+24*60*60*1000),reminderEnd=new Date(reminderStart.getTime()+90*60*1000);
+    const reminderClass=await jsonRequest(app,'v1/teacher/sessions','POST',{groupId:PILOT.groupId,courseId:DEV_IDS.course,title:'Persistent reminder class',startsAt:reminderStart.toISOString(),endsAt:reminderEnd.toISOString()},teacherToken);expect(reminderClass.status).toBe(201);
+    expect((await request(coldPeopleApp,'v1/notifications/worker')).status).toBe(401);
+    const workerResponse=await request(coldPeopleApp,'v1/notifications/worker',{headers:{authorization:'Bearer production-notification-cron-secret'}});expect(workerResponse.status).toBe(200);expect(deliveries).toContainEqual(expect.objectContaining({recipientUserId:createdPersonId,type:'student_class_24h'}));
+    const deliveryCount=deliveries.length;const duplicateWorkerResponse=await request(coldPeopleApp,'v1/notifications/worker',{headers:{authorization:'Bearer production-notification-cron-secret'}});expect(duplicateWorkerResponse.status).toBe(200);expect(deliveries).toHaveLength(deliveryCount);
 
     const guardianTelegramId=987654398;
     const createdGuardian=await jsonRequest(app,'v1/admin/guardians','POST',{firstName:'Redis',lastName:'Guardian',telegramId:String(guardianTelegramId),studentIds:[createdPersonId],status:'active'},teacherToken);expect(createdGuardian.status).toBe(201);

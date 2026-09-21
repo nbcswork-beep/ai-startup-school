@@ -25,6 +25,10 @@ import type {
   MentorSlotDto,
   ParentReportDto,
   ParentSummaryDto,
+  ParentContactCategory,
+  ParentContactRequestDto,
+  NotificationDeliveryDto,
+  MissedLessonRecoveryDto,
   TeacherGroupDto,
   TeacherStudentDto,
   TeacherWorkspaceDto,
@@ -94,6 +98,10 @@ export interface AppRepository {
   getParentSummary(userId: UserId, studentId: string): Promise<ParentSummaryDto>;
   getTelegramAudience(telegramId: string): Promise<{ userId: string; roles: string[]; displayName: string } | null>;
   getGuardianSummaryByTelegram(telegramId: string, studentId?: string): Promise<{ students: TeacherStudentDto[]; selected: ParentSummaryDto | null }>;
+  createParentContactRequestByTelegram(telegramId:string,studentId:string,category:ParentContactCategory,message:string):Promise<ParentContactRequestDto>;
+  listMissedLessonRecoveries(userId:string):Promise<MissedLessonRecoveryDto[]>;
+  prepareNotificationBatch(now:Date,weeklyDay:number,weeklyHour:number,limit:number):Promise<NotificationDeliveryDto[]>;
+  completeNotificationDelivery(notificationId:string,sent:boolean,errorCode:string|null,now:Date,retryable?:boolean):Promise<void>;
 
   getAdminWorkspace(userId: UserId): Promise<AdminWorkspaceDto>;
   searchAdmin(userId: UserId, query: string): Promise<AdminSearchDto>;
@@ -113,6 +121,7 @@ export interface AppRepository {
   adminUnlinkGuardian(userId:UserId,guardianId:string,studentId:string,correlationId:string):Promise<void>;
   adminCreateStaff(userId:UserId,input:{firstName:string;lastName:string;email:string;roles:Array<'teacher'|'mentor'|'admin'>},correlationId:string):Promise<Record<string,unknown>>;
   adminUpdateStaff(userId:UserId,staffId:string,input:{firstName?:string|undefined;lastName?:string|undefined;email?:string|undefined;roles?:Array<'teacher'|'mentor'|'admin'>|undefined;expectedVersion:number},correlationId:string):Promise<void>;
+  adminResolveParentContactRequest(userId:UserId,requestId:string,correlationId:string):Promise<void>;
   recordSecurityEvent(input: { eventType: string; severity: 'low'|'medium'|'high'|'critical'; actorUserId?: string; targetUserId?: string; metadata?: Record<string,unknown>; correlationId: string }): Promise<void>;
 
   listConversations(userId: UserId): Promise<AiConversationDto[]>;

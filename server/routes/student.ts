@@ -21,13 +21,14 @@ export function registerStudentRoutes(app: FastifyInstance, repository: AppRepos
   app.get('/api/v1/home', secured, async request => repository.getHome(request.auth.userId));
   app.get('/api/v1/bootstrap', secured, async request => {
     const userId = request.auth.userId;
-    const [home, learning, projects, profile, conversations, schedule, homework, portfolio] = await Promise.all([
+    const [home, learning, projects, profile, conversations, schedule, homework, portfolio, recoveries] = await Promise.all([
       repository.getHome(userId), repository.getLearning(userId), repository.listProjects(userId),
       repository.getProfile(userId), repository.listConversations(userId), repository.getSchedule(userId),
-      repository.listHomework(userId), repository.getPortfolio(userId)
+      repository.listHomework(userId), repository.getPortfolio(userId), repository.listMissedLessonRecoveries(userId)
     ]);
-    return { home, learning, projects, profile, conversations, schedule, homework, portfolio };
+    return { home, learning, projects, profile, conversations, schedule, homework, portfolio, recoveries };
   });
+  app.get('/api/v1/recoveries', secured, async request => repository.listMissedLessonRecoveries(request.auth.userId));
   app.get('/api/v1/schedule', secured, async request => repository.getSchedule(request.auth.userId));
   app.get('/api/v1/classes/:sessionId', secured, async request => {
     const { sessionId } = z.object({ sessionId: uuid }).parse(request.params);

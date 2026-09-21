@@ -292,9 +292,15 @@ export interface ParentSummaryDto {
   homework: { completed: number; pending: number; overdue: number };
   attendance: { attended: number; missed: number; late: number; excused: number };
   grades: Array<{ homeworkTitle: string; score: number; feedback: string; reviewedAt: string }>;
-  project: null | { title: string; status: string; stage: string; progressPercent: number };
+  project: null | { id:string; title: string; description:string; status: string; stage: string; progressPercent: number; completedTasks:string[]; nextTask:string|null; updatedAt:string; viewUrl:string|null };
   mentoring: null | { startsAt: string; endsAt: string; status: string };
+  recovery: null | { sessionId:string; title:string; startsAt:string; materialsAvailable:boolean };
 }
+
+export type ParentContactCategory='learning'|'homework'|'project'|'attendance'|'mentoring'|'other';
+export interface ParentContactRequestDto { id:string; guardianId:string; guardianName:string; studentId:string; studentName:string; category:ParentContactCategory; message:string; status:'new'|'resolved'; createdAt:string; resolvedAt:string|null }
+export interface NotificationDeliveryDto { id:string; recipientUserId:string; recipientTelegramId:string; type:string; relatedEntityId:string|null; text:string; buttonText:string|null; buttonUrl:string|null; callbackData:string|null; attempts:number }
+export interface MissedLessonRecoveryDto { sessionId:string; lessonId:string|null; lessonTitle:string; title:string; description:string; startsAt:string; materials:ClassMaterialDto[]; homework:null|{id:string;title:string;instructions:string;state:HomeworkState}; recordingUrl:string|null; mentorSlotId:string|null; status:'available'|'in_progress'|'completed' }
 
 export type AttendanceStatus = 'present' | 'late' | 'absent' | 'excused';
 export type TeacherClassStatus = 'scheduled' | 'rescheduled' | 'in_progress' | 'completed' | 'cancelled';
@@ -437,6 +443,7 @@ export interface AdminWorkspaceDto {
   mentorBookings: Array<Record<string,unknown>>;
   reports: Array<Record<string,unknown>>;
   notifications: Array<Record<string,unknown>>;
+  parentRequests?: Array<Record<string,unknown>>;
   activeSessions: Array<Record<string,unknown>>;
   auditEvents: Array<Record<string,unknown>>;
   securityEvents: Array<Record<string,unknown>>;

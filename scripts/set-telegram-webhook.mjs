@@ -11,7 +11,7 @@ async function main(){
   if(!/^\d+:[A-Za-z0-9_-]+$/.test(token))throw new Error('Invalid Telegram bot token format');
   if(!/^[A-Za-z0-9_-]{16,256}$/.test(secret))throw new Error('Webhook secret must contain 16-256 letters, digits, underscores, or hyphens');
   let response;
-  try{response=await fetch(`https://api.telegram.org/bot${token}/setWebhook`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:webhookUrl,secret_token:secret,allowed_updates:['message'],drop_pending_updates:false})})}
+  try{response=await fetch(`https://api.telegram.org/bot${token}/setWebhook`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:webhookUrl,secret_token:secret,allowed_updates:['message','callback_query'],drop_pending_updates:false})})}
   catch{throw new Error('Telegram webhook request failed')}
   const result=await response.json().catch(()=>({ok:false,description:'Invalid Telegram response'}));
   if(!response.ok||!result.ok)throw new Error(result.description||`Telegram returned ${response.status}`);

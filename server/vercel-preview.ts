@@ -9,6 +9,7 @@ import { RedisRestPilotRuntimeStore, type PilotRuntimeStore } from './data/pilot
 import { MockAiProvider } from './services/ai-provider.js';
 import { RedisRestLoginAttemptLimiter, RedisRestSessionStore, type LoginAttemptLimiter, type SessionStore } from './auth/session-store.js';
 import type { TelegramWebhookHandler } from './routes/telegram-webhook.js';
+import type { NotificationSender } from './services/telegram-notification-service.js';
 
 const ROUTE_PARAMETER = '__aiss_path';
 let vercelApp: Promise<FastifyInstance> | undefined;
@@ -103,7 +104,7 @@ export function loadVercelEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
   });
 }
 
-export async function createVercelApp(input: NodeJS.ProcessEnv = process.env, overrides: { sessionStore?: SessionStore; loginLimiter?: LoginAttemptLimiter; mentoringStore?: MentoringStore; runtimeStore?: PilotRuntimeStore; telegramWebhookHandler?: TelegramWebhookHandler } = {}): Promise<FastifyInstance> {
+export async function createVercelApp(input: NodeJS.ProcessEnv = process.env, overrides: { sessionStore?: SessionStore; loginLimiter?: LoginAttemptLimiter; mentoringStore?: MentoringStore; runtimeStore?: PilotRuntimeStore; telegramWebhookHandler?: TelegramWebhookHandler; notificationSender?:NotificationSender } = {}): Promise<FastifyInstance> {
   const env = loadVercelEnv(input);
   const sessionStore = overrides.sessionStore ?? new RedisRestSessionStore(env.UPSTASH_REDIS_REST_URL!, env.UPSTASH_REDIS_REST_TOKEN!, env.SESSION_REDIS_PREFIX);
   const loginLimiter = overrides.loginLimiter ?? new RedisRestLoginAttemptLimiter(env.UPSTASH_REDIS_REST_URL!, env.UPSTASH_REDIS_REST_TOKEN!, env.SESSION_REDIS_PREFIX);
@@ -122,7 +123,8 @@ export async function createVercelApp(input: NodeJS.ProcessEnv = process.env, ov
     jwt: await createJwtService(env),
     aiProvider: new MockAiProvider(),
     loginLimiter,
-    ...(overrides.telegramWebhookHandler ? { telegramWebhookHandler:overrides.telegramWebhookHandler } : {})
+    ...(overrides.telegramWebhookHandler ? { telegramWebhookHandler:overrides.telegramWebhookHandler } : {}),
+    ...(overrides.notificationSender ? { notificationSender:overrides.notificationSender } : {})
   });
   await app.ready();
   return app;
