@@ -5,11 +5,5 @@
       "source": "/api/:path*",
       "destination": "/api/backend?__aiss_path=:path*"
     }
-  ],
-  "crons": [
-    {
-      "path": "/api/v1/notifications/worker",
-      "schedule": "0 * * * *"
-    }
   ]
 }
