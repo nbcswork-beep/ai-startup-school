@@ -2,6 +2,18 @@ import { api } from './api.js';
 
 const tg = window.Telegram?.WebApp;
 
+// Telegram draws its own controls ("Закрити", "⋯") over the WebView in fullscreen mode.
+// safeAreaInset is the device inset, contentSafeAreaInset is Telegram's chrome inside it;
+// the CSS combines them with env(safe-area-inset-*) so nothing depends on a device model.
+function applyTelegramViewport() {
+  const root = document.documentElement.style;
+  const safe = tg.safeAreaInset ?? {};
+  const content = tg.contentSafeAreaInset ?? {};
+  const inset = side => `${Math.max(0, (Number(safe[side]) || 0) + (Number(content[side]) || 0))}px`;
+  root.setProperty('--tg-app-safe-top', inset('top'));
+  root.setProperty('--tg-app-safe-bottom', inset('bottom'));
+}
+
 if (tg) {
   tg.ready();
   tg.expand();
@@ -9,6 +21,10 @@ if (tg) {
     tg.setHeaderColor('#070a2b');
     tg.setBackgroundColor('#070a2b');
   } catch {}
+  applyTelegramViewport();
+  for (const event of ['safeAreaChanged', 'contentSafeAreaChanged', 'fullscreenChanged']) {
+    try { tg.onEvent(event, applyTelegramViewport); } catch {}
+  }
 }
 
 let firstName = 'Творець';
@@ -19,14 +35,17 @@ let aiMessages = [];
 let authError = '';
 let notificationPanelOpen = false;
 let notificationReturnFocus = null;
+// Items that were unread when the panel opened stay highlighted until it closes,
+// even though they are persisted as read right away.
+let notificationFreshIds = new Set();
 
 const icons = {
-  home: '<path d="M4 11.2 12 4l8 7.2v8.3a.5.5 0 0 1-.5.5h-5v-5.5h-5V20h-5a.5.5 0 0 1-.5-.5z"/>',
-  learn: '<path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H20v15H7.5A2.5 2.5 0 0 0 5 20.5z"/><path d="M5 5.5v15A2.5 2.5 0 0 0 7.5 23H20" fill="none" stroke="currentColor" stroke-width="1.8"/>',
-  project: '<path d="M5 19V8l7-4 7 4v11l-7 4z"/><path d="m8.5 13 2.2 2.2 4.8-5" fill="none" stroke="currentColor" stroke-width="2"/>',
-  portfolio: '<path d="M5 7.5h14v12H5z"/><path d="M9 7.5V5h6v2.5M5 12h14M10 12v2h4v-2" fill="none" stroke="currentColor" stroke-width="1.8"/>',
+  home: '<path d="m3.5 10.8 8.5-7.3 8.5 7.3"/><path d="M5.5 9.5v10.8h13V9.5M9.4 20.3v-6.1h5.2v6.1"/>',
+  learn: '<path d="M3.5 5.2A2.2 2.2 0 0 1 5.7 3h4.1a3 3 0 0 1 3 3v15a3 3 0 0 0-3-3H5.7a2.2 2.2 0 0 0-2.2 2.2z"/><path d="M20.5 5.2A2.2 2.2 0 0 0 18.3 3h-4.1a3 3 0 0 0-3 3v15a3 3 0 0 1 3-3h4.1a2.2 2.2 0 0 1 2.2 2.2z"/>',
+  project: '<rect x="3.5" y="4" width="17" height="16" rx="2.5"/><path d="M3.5 9h17M8.5 9V4M8.5 14h3.2M8.5 17h6.7"/>',
+  portfolio: '<rect x="3.5" y="6.5" width="17" height="13" rx="2.5"/><path d="M8.5 6.5V4h7v2.5M3.5 12h17M9.5 12v2h5v-2"/>',
   ai: '<path d="M12 2.7 14.1 8l5.2 2.1-5.2 2.1L12 17.5l-2.1-5.3-5.2-2.1L9.9 8z"/><path d="m18.7 16 .8 2.1 2.1.8-2.1.9-.8 2.1-.9-2.1-2.1-.9 2.1-.8z"/>',
-  profile: '<path d="M12 12.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9M4.5 22a7.5 7.5 0 0 1 15 0z"/>'
+  profile: '<circle cx="12" cy="8" r="4.2"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/>'
 };
 
 const nav = [
@@ -37,7 +56,7 @@ const nav = [
   ['profile', 'Профіль']
 ];
 
-const svgIcon = (name, className = '') => `<svg class="${className}" viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>`;
+const svgIcon = (name, className = '') => `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name]}</svg>`;
 
 function stateIcon(status) {
   if (status === 'done') {
@@ -97,7 +116,7 @@ app.innerHTML = `
     </header>
     <main id="view" class="view"></main>
     <nav class="bottom-nav" aria-label="Головна навігація">
-      ${nav.map(([id, label]) => `<button class="nav-item" data-tab="${id}"><span class="nav-icon">${svgIcon(id)}</span><span class="nav-label">${label}</span></button>`).join('')}
+      ${nav.map(([id, label]) => `<button class="nav-item" data-tab="${id}" aria-label="${label}"><span class="nav-icon">${svgIcon(id)}</span><span class="nav-label">${label}</span></button>`).join('')}
     </nav>
     <button class="notification-backdrop" id="notificationBackdrop" type="button" aria-label="Закрити сповіщення" hidden></button>
     <section class="notification-panel" id="studentNotifications" role="dialog" aria-modal="true" aria-labelledby="notificationPanelTitle" hidden>
@@ -149,20 +168,21 @@ function updateNotificationBell() {
 
 function renderNotificationPanel() {
   const notifications = data?.notifications ?? { items: [], unreadCount: 0 };
-  notificationCount.textContent = `${notifications.unreadCount} непрочитаних`;
+  notificationCount.textContent = notificationFreshIds.size ? `${notificationFreshIds.size} нових` : `${notifications.unreadCount} непрочитаних`;
   markAllNotifications.disabled = notifications.unreadCount < 1;
   notificationList.innerHTML = notifications.items.length ? notifications.items.map(item => {
+    const isNew = !item.readAt || notificationFreshIds.has(item.id);
     const destination = item.destination?.homeworkId ? ` data-homework="${escapeHtml(item.destination.homeworkId)}"` : item.destination?.tab ? ` data-notification-tab="${escapeHtml(item.destination.tab)}"` : '';
-    return `<button class="notification-item${item.readAt ? '' : ' unread'}" type="button" data-notification-id="${escapeHtml(item.id)}"${destination}${item.destination ? '' : ' disabled'}>
+    return `<button class="notification-item${isNew ? ' unread' : ''}" type="button" data-notification-id="${escapeHtml(item.id)}"${destination}${item.destination ? '' : ' disabled'}>
       <span class="notification-type">${notificationTypeIcon(item.type)}</span>
       <span class="notification-copy"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.description)}</small><time datetime="${escapeHtml(item.occurredAt)}">${escapeHtml(formatNotificationTime(item.occurredAt))}</time></span>
-      ${item.readAt ? '' : '<i class="notification-unread" aria-label="Непрочитане"></i>'}
+      ${isNew ? '<i class="notification-unread" aria-label="Нове"></i>' : ''}
     </button>`;
   }).join('') : '<div class="notification-empty"><span aria-hidden="true">✓</span><strong>Нових сповіщень немає</strong></div>';
 
   notificationList.querySelectorAll('[data-notification-id]').forEach(item => item.addEventListener('click', async () => {
     const id = item.dataset.notificationId;
-    if (!item.classList.contains('unread')) return navigateFromNotification(item);
+    if (data.notifications?.items.find(entry => entry.id === id)?.readAt) return navigateFromNotification(item);
     try { data.notifications = await api.markNotificationsRead([id]); updateNotificationBell(); }
     catch {}
     navigateFromNotification(item);
@@ -187,6 +207,7 @@ async function openNotifications() {
   document.querySelector('#closeNotifications').focus();
   try {
     data.notifications = await api.notifications();
+    notificationFreshIds = new Set(data.notifications.items.filter(item => !item.readAt).map(item => item.id));
     renderNotificationPanel();
     const unreadIds = data.notifications.items.filter(item => !item.readAt).map(item => item.id);
     if (unreadIds.length) {
@@ -202,6 +223,7 @@ async function openNotifications() {
 function closeNotifications() {
   if (!notificationPanelOpen) return;
   notificationPanelOpen = false;
+  notificationFreshIds = new Set();
   notificationBell.setAttribute('aria-expanded', 'false');
   notificationBackdrop.hidden = true;
   notificationPanel.hidden = true;
@@ -456,7 +478,7 @@ function profile() {
         ${achievements.map((achievement, index) => { const type = achievement.earned ? achievement.artifactStyleKey : 'locked'; return `<article class="artifact ${type}"><span class="artifact-number">A-${String(index + 1).padStart(2, '0')}</span><div class="artifact-glyph"><i></i>${artifactIcon(type)}</div><span class="artifact-state">${achievement.earned ? 'ЗНАЙДЕНО' : 'НЕ ВІДКРИТО'}</span><strong>${escapeHtml(achievement.title)}</strong><small>${escapeHtml(achievement.description)}</small></article>`; }).join('')}
       </div>
       <div class="profile-links">
-        <button><span class="link-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 8h18c0-1-3-1-3-8M10 21h4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span><strong>Сповіщення</strong><small>Уроки та дедлайни</small></span>${arrowIcon()}</button>
+        <button id="openNotificationsFromProfile" type="button"><span class="link-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 8h18c0-1-3-1-3-8M10 21h4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span><strong>Сповіщення</strong><small>Уроки та дедлайни</small></span>${arrowIcon()}</button>
         <button id="openMentorBooking"><span class="link-icon">1:1</span><span><strong>Допомога ментора</strong><small>${escapeHtml(profileData.mentor?.displayName ?? 'Обери зручний час')}</small></span>${arrowIcon()}</button>
       </div>
       <section class="mentor-booking" id="mentorBooking" hidden><div class="section-head compact-head"><div><span class="section-kicker">MENTOR 1:1</span><h2>Забронювати зустріч</h2></div></div><div class="mentor-slots"><p class="empty-inline">Завантажуємо доступний час…</p></div></section>
@@ -511,8 +533,8 @@ function loadingView(label = 'Завантажуємо твій маршрут')
   view.innerHTML = `<section class="system-state"><div class="state-signal"></div><span>SYNC</span><h1>${escapeHtml(label)}</h1><p>Ще мить — з’єднуємо прогрес, проєкт і AI ментора.</p></section>`;
 }
 
-function errorView(message) {
-  view.innerHTML = `<section class="system-state error-state"><div class="state-signal"></div><span>CONNECTION</span><h1>Не вдалося увійти</h1><p>${escapeHtml(message)}</p><button class="primary-btn" id="retryBoot">Спробувати ще раз</button></section>`;
+function errorView(message, title = 'Не вдалося увійти') {
+  view.innerHTML = `<section class="system-state error-state"><div class="state-signal"></div><span>CONNECTION</span><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p><button class="primary-btn" id="retryBoot">Спробувати ще раз</button></section>`;
   document.querySelector('#retryBoot')?.addEventListener('click', initialize);
 }
 
@@ -529,7 +551,7 @@ async function openLesson(id, updateHistory = true) {
     currentLesson = await api.lesson(id);
     render('lesson', updateHistory);
   } catch (error) {
-    errorView(error.message);
+    errorView(error.message, 'Не вдалося відкрити урок');
   }
 }
 
@@ -561,7 +583,12 @@ function render(tab, updateHistory = true) {
   renderTimer = setTimeout(() => {
     active = next;
     view.innerHTML = templates[active]();
-    document.querySelectorAll('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.tab === active));
+    document.querySelectorAll('.nav-item').forEach(item => {
+      const isActive = item.dataset.tab === active;
+      item.classList.toggle('active', isActive);
+      if (isActive) item.setAttribute('aria-current', 'page');
+      else item.removeAttribute('aria-current');
+    });
     document.querySelector('.app-shell')?.scrollTo({ top: 0, behavior: 'auto' });
     view.classList.remove('leaving');
     wirePage();
@@ -680,6 +707,8 @@ function wirePage() {
       data.homework = await api.homework(); currentHomework = data.homework.find(item=>item.id===homeworkForm.dataset.homeworkId); data.home.homeworkDue = data.homework.find(item=>item.state!=='completed') ?? null; render('homework', false);
     } catch (error) { button.disabled = false; button.textContent = error.message; }
   });
+
+  document.querySelector('#openNotificationsFromProfile')?.addEventListener('click', openNotifications);
 
   document.querySelector('#openMentorBooking')?.addEventListener('click', async () => {
     const panel = document.querySelector('#mentorBooking'); panel.hidden = false;
