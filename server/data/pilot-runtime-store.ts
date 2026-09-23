@@ -87,6 +87,18 @@ export interface PilotNotification {
   idempotencyKey:string;
   safeMetadata:{text:string;buttonText?:string;buttonUrl?:string;callbackData?:string;studentId?:string;weekKey?:string};
   errorCode:string|null;
+  /** When this message should have gone out. */
+  dueAt:string;
+  /** After this instant sending would be misleading rather than merely late. */
+  expiresAt:string;
+  /** Fingerprint of the source entity, so a reschedule invalidates the frozen copy. */
+  entityStamp:string|null;
+}
+
+export interface PilotNotificationRuntime {
+  /** Watermark of the last worker pass; catch-up reaches back to it. */
+  lastRunAt:string|null;
+  lastClaimedCount:number;
 }
 
 export interface PilotParentContactRequest {
@@ -145,6 +157,7 @@ export interface PilotRuntimeState {
   adminAuditEvents: Array<Record<string, unknown>>;
   securityEvents: Array<Record<string, unknown>>;
   notifications: PilotNotification[];
+  notificationRuntime: PilotNotificationRuntime;
   parentContactRequests: PilotParentContactRequest[];
 }
 
@@ -280,6 +293,7 @@ export function createPilotRuntimeState(): PilotRuntimeState {
     adminAuditEvents: [],
     securityEvents: [],
     notifications: [],
+    notificationRuntime: { lastRunAt: null, lastClaimedCount: 0 },
     parentContactRequests: []
   };
 }
@@ -291,6 +305,15 @@ export function migratePilotRuntimeState(input: PilotRuntimeState | (Partial<Pil
   state.telegramBindings=state.telegramBindings??{};
   state.guardianRelations=state.guardianRelations??seed.guardianRelations;
   state.notifications=state.notifications??[];
+  state.notificationRuntime=state.notificationRuntime??{lastRunAt:null,lastClaimedCount:0};
+  // Notifications queued before relevance windows existed keep their original schedule. They carry
+  // no entity stamp, so a reschedulable one cannot be proven current and is withheld at delivery
+  // (STALE_UNVERIFIED) rather than risking a message with a stale time.
+  for(const notification of state.notifications as Array<Partial<PilotNotification>&{scheduledFor:string}>){
+    notification.dueAt??=notification.scheduledFor;
+    notification.expiresAt??=new Date(Date.parse(notification.scheduledFor)+7*86_400_000).toISOString();
+    notification.entityStamp??=null;
+  }
   state.parentContactRequests=state.parentContactRequests??[];
   state.userStatus=state.userStatus??seed.userStatus;
   for(const person of Object.values(state.directory)){
