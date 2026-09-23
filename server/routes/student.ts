@@ -13,6 +13,7 @@ const messageInput = z.object({ content: z.string().trim().min(1).max(4000), cli
 const safeHttpsUrl = z.string().url().refine(value => new URL(value).protocol === 'https:', 'Only HTTPS URLs are allowed');
 const homeworkSubmission = z.object({ contentText: z.string().trim().min(1).max(20_000), contentUrl: safeHttpsUrl.optional(), studentComment: z.string().trim().max(2000).optional() });
 const portfolioInput = z.object({ reflection: z.string().trim().max(3000).optional(), learned: z.string().trim().max(3000).optional() });
+const notificationsReadInput = z.object({ notificationIds: z.array(uuid).max(50).default([]) });
 
 export function registerStudentRoutes(app: FastifyInstance, repository: AppRepository, ai: AiMentorService, authenticate: preHandlerHookHandler): void {
   const secured = { preHandler: [authenticate,requireRole('student')] };
@@ -21,12 +22,17 @@ export function registerStudentRoutes(app: FastifyInstance, repository: AppRepos
   app.get('/api/v1/home', secured, async request => repository.getHome(request.auth.userId));
   app.get('/api/v1/bootstrap', secured, async request => {
     const userId = request.auth.userId;
-    const [home, learning, projects, profile, conversations, schedule, homework, portfolio, recoveries] = await Promise.all([
+    const [home, learning, projects, profile, conversations, schedule, homework, portfolio, recoveries, notifications] = await Promise.all([
       repository.getHome(userId), repository.getLearning(userId), repository.listProjects(userId),
       repository.getProfile(userId), repository.listConversations(userId), repository.getSchedule(userId),
-      repository.listHomework(userId), repository.getPortfolio(userId), repository.listMissedLessonRecoveries(userId)
+      repository.listHomework(userId), repository.getPortfolio(userId), repository.listMissedLessonRecoveries(userId), repository.listStudentNotifications(userId)
     ]);
-    return { home, learning, projects, profile, conversations, schedule, homework, portfolio, recoveries };
+    return { home, learning, projects, profile, conversations, schedule, homework, portfolio, recoveries, notifications };
+  });
+  app.get('/api/v1/notifications', secured, async request => repository.listStudentNotifications(request.auth.userId));
+  app.post('/api/v1/notifications/read', secured, async request => {
+    const {notificationIds}=notificationsReadInput.parse(request.body??{});
+    return repository.markStudentNotificationsRead(request.auth.userId,notificationIds);
   });
   app.get('/api/v1/recoveries', secured, async request => repository.listMissedLessonRecoveries(request.auth.userId));
   app.get('/api/v1/schedule', secured, async request => repository.getSchedule(request.auth.userId));

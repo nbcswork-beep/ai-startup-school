@@ -93,6 +93,8 @@ export interface PilotNotification {
   expiresAt:string;
   /** Fingerprint of the source entity, so a reschedule invalidates the frozen copy. */
   entityStamp:string|null;
+  /** In-app read state. Independent from Telegram delivery status. */
+  readAt:string|null;
 }
 
 export interface PilotNotificationRuntime {
@@ -313,6 +315,7 @@ export function migratePilotRuntimeState(input: PilotRuntimeState | (Partial<Pil
     notification.dueAt??=notification.scheduledFor;
     notification.expiresAt??=new Date(Date.parse(notification.scheduledFor)+7*86_400_000).toISOString();
     notification.entityStamp??=null;
+    notification.readAt??=null;
   }
   state.parentContactRequests=state.parentContactRequests??[];
   state.userStatus=state.userStatus??seed.userStatus;

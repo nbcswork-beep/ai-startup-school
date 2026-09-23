@@ -300,6 +300,16 @@ export interface ParentSummaryDto {
 export type ParentContactCategory='learning'|'homework'|'project'|'attendance'|'mentoring'|'other';
 export interface ParentContactRequestDto { id:string; guardianId:string; guardianName:string; studentId:string; studentName:string; category:ParentContactCategory; message:string; status:'new'|'resolved'; createdAt:string; resolvedAt:string|null }
 export interface NotificationDeliveryDto { id:string; recipientUserId:string; recipientTelegramId:string; type:string; relatedEntityId:string|null; text:string; buttonText:string|null; buttonUrl:string|null; callbackData:string|null; attempts:number }
+export interface StudentNotificationDto {
+  id:string;
+  type:string;
+  title:string;
+  description:string;
+  occurredAt:string;
+  readAt:string|null;
+  destination:{tab:'learn'|'project';homeworkId:string|null}|null;
+}
+export interface StudentNotificationsDto { items:StudentNotificationDto[]; unreadCount:number }
 export interface MissedLessonRecoveryDto { sessionId:string; lessonId:string|null; lessonTitle:string; title:string; description:string; startsAt:string; materials:ClassMaterialDto[]; homework:null|{id:string;title:string;instructions:string;state:HomeworkState}; recordingUrl:string|null; mentorSlotId:string|null; status:'available'|'in_progress'|'completed' }
 
 export type AttendanceStatus = 'present' | 'late' | 'absent' | 'excused';

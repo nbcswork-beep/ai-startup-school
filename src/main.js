@@ -17,6 +17,8 @@ let currentLesson = null;
 let currentHomework = null;
 let aiMessages = [];
 let authError = '';
+let notificationPanelOpen = false;
+let notificationReturnFocus = null;
 
 const icons = {
   home: '<path d="M4 11.2 12 4l8 7.2v8.3a.5.5 0 0 1-.5.5h-5v-5.5h-5V20h-5a.5.5 0 0 1-.5-.5z"/>',
@@ -87,8 +89,8 @@ app.innerHTML = `
         <span class="brand-name">STARTUP <b>SCHOOL</b></span>
       </button>
       <div class="top-actions">
-        <button class="icon-btn notification" aria-label="Сповіщення">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 8h18c0-1-3-1-3-8M10 21h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><i></i>
+        <button class="icon-btn notification" id="notificationBell" type="button" aria-label="Сповіщення" aria-controls="studentNotifications" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 8h18c0-1-3-1-3-8M10 21h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><i class="notification-dot" hidden></i>
         </button>
         <button class="avatar" data-tab="profile" aria-label="Відкрити профіль">${firstName[0]?.toUpperCase() || 'M'}</button>
       </div>
@@ -97,11 +99,135 @@ app.innerHTML = `
     <nav class="bottom-nav" aria-label="Головна навігація">
       ${nav.map(([id, label]) => `<button class="nav-item" data-tab="${id}"><span class="nav-icon">${svgIcon(id)}</span><span class="nav-label">${label}</span></button>`).join('')}
     </nav>
+    <button class="notification-backdrop" id="notificationBackdrop" type="button" aria-label="Закрити сповіщення" hidden></button>
+    <section class="notification-panel" id="studentNotifications" role="dialog" aria-modal="true" aria-labelledby="notificationPanelTitle" hidden>
+      <header class="notification-panel-head">
+        <div><span>STUDENT APP</span><h2 id="notificationPanelTitle">Сповіщення</h2></div>
+        <button class="notification-close" id="closeNotifications" type="button" aria-label="Закрити сповіщення">×</button>
+      </header>
+      <div class="notification-panel-tools"><span id="notificationCount">0 непрочитаних</span><button id="markAllNotifications" type="button">Позначити всі прочитаними</button></div>
+      <div class="notification-list" id="notificationList" aria-live="polite"></div>
+    </section>
   </div>`;
 
 const view = document.querySelector('#view');
+const notificationBell = document.querySelector('#notificationBell');
+const notificationDot = notificationBell.querySelector('.notification-dot');
+const notificationBackdrop = document.querySelector('#notificationBackdrop');
+const notificationPanel = document.querySelector('#studentNotifications');
+const notificationList = document.querySelector('#notificationList');
+const notificationCount = document.querySelector('#notificationCount');
+const markAllNotifications = document.querySelector('#markAllNotifications');
 let active = 'home';
 let renderTimer;
+
+function notificationTypeIcon(type) {
+  if (type.includes('homework_reviewed')) return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 12 4 4 8-9"/><circle cx="12" cy="12" r="9"/></svg>';
+  if (type.includes('homework')) return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h9l3 3V21H6zM9 11h6M9 15h6M15 3.5V7h3"/></svg>';
+  if (type.includes('class')) return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="15" rx="2"/><path d="M7 3v5M17 3v5M3.5 10h17"/></svg>';
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 8h18c0-1-3-1-3-8M10 21h4"/></svg>';
+}
+
+function formatNotificationTime(value) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return '';
+  const minutes = Math.round((timestamp - Date.now()) / 60_000);
+  const relative = new Intl.RelativeTimeFormat('uk-UA', { numeric: 'auto' });
+  if (Math.abs(minutes) < 60) return relative.format(minutes, 'minute');
+  const hours = Math.round(minutes / 60);
+  if (Math.abs(hours) < 24) return relative.format(hours, 'hour');
+  const days = Math.round(hours / 24);
+  if (Math.abs(days) <= 7) return relative.format(days, 'day');
+  return new Intl.DateTimeFormat('uk-UA', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(timestamp));
+}
+
+function updateNotificationBell() {
+  const unread = data?.notifications?.unreadCount ?? 0;
+  notificationDot.hidden = unread < 1;
+  notificationBell.setAttribute('aria-label', unread ? `Сповіщення, непрочитаних: ${unread}` : 'Сповіщення');
+}
+
+function renderNotificationPanel() {
+  const notifications = data?.notifications ?? { items: [], unreadCount: 0 };
+  notificationCount.textContent = `${notifications.unreadCount} непрочитаних`;
+  markAllNotifications.disabled = notifications.unreadCount < 1;
+  notificationList.innerHTML = notifications.items.length ? notifications.items.map(item => {
+    const destination = item.destination?.homeworkId ? ` data-homework="${escapeHtml(item.destination.homeworkId)}"` : item.destination?.tab ? ` data-notification-tab="${escapeHtml(item.destination.tab)}"` : '';
+    return `<button class="notification-item${item.readAt ? '' : ' unread'}" type="button" data-notification-id="${escapeHtml(item.id)}"${destination}${item.destination ? '' : ' disabled'}>
+      <span class="notification-type">${notificationTypeIcon(item.type)}</span>
+      <span class="notification-copy"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.description)}</small><time datetime="${escapeHtml(item.occurredAt)}">${escapeHtml(formatNotificationTime(item.occurredAt))}</time></span>
+      ${item.readAt ? '' : '<i class="notification-unread" aria-label="Непрочитане"></i>'}
+    </button>`;
+  }).join('') : '<div class="notification-empty"><span aria-hidden="true">✓</span><strong>Нових сповіщень немає</strong></div>';
+
+  notificationList.querySelectorAll('[data-notification-id]').forEach(item => item.addEventListener('click', async () => {
+    const id = item.dataset.notificationId;
+    if (!item.classList.contains('unread')) return navigateFromNotification(item);
+    try { data.notifications = await api.markNotificationsRead([id]); updateNotificationBell(); }
+    catch {}
+    navigateFromNotification(item);
+  }));
+}
+
+function navigateFromNotification(item) {
+  closeNotifications();
+  if (item.dataset.homework && data.homework?.some(homework => homework.id === item.dataset.homework)) openHomework(item.dataset.homework);
+  else if (item.dataset.notificationTab) render(item.dataset.notificationTab);
+}
+
+async function openNotifications() {
+  if (notificationPanelOpen) return;
+  notificationPanelOpen = true;
+  notificationReturnFocus = document.activeElement;
+  notificationBell.setAttribute('aria-expanded', 'true');
+  notificationBackdrop.hidden = false;
+  notificationPanel.hidden = false;
+  document.body.classList.add('notifications-open');
+  notificationList.innerHTML = '<div class="notification-loading">Завантажуємо сповіщення…</div>';
+  document.querySelector('#closeNotifications').focus();
+  try {
+    data.notifications = await api.notifications();
+    renderNotificationPanel();
+    const unreadIds = data.notifications.items.filter(item => !item.readAt).map(item => item.id);
+    if (unreadIds.length) {
+      data.notifications = await api.markNotificationsRead(unreadIds);
+      renderNotificationPanel();
+      updateNotificationBell();
+    }
+  } catch (error) {
+    notificationList.innerHTML = `<div class="notification-empty error"><strong>Не вдалося завантажити сповіщення</strong><small>${escapeHtml(error.message)}</small></div>`;
+  }
+}
+
+function closeNotifications() {
+  if (!notificationPanelOpen) return;
+  notificationPanelOpen = false;
+  notificationBell.setAttribute('aria-expanded', 'false');
+  notificationBackdrop.hidden = true;
+  notificationPanel.hidden = true;
+  document.body.classList.remove('notifications-open');
+  notificationReturnFocus?.focus?.();
+}
+
+notificationBell.addEventListener('click', openNotifications);
+notificationBackdrop.addEventListener('click', closeNotifications);
+document.querySelector('#closeNotifications').addEventListener('click', closeNotifications);
+markAllNotifications.addEventListener('click', async () => {
+  markAllNotifications.disabled = true;
+  try { data.notifications = await api.markNotificationsRead(); renderNotificationPanel(); updateNotificationBell(); }
+  catch { markAllNotifications.disabled = false; }
+});
+
+document.addEventListener('keydown', event => {
+  if (!notificationPanelOpen) return;
+  if (event.key === 'Escape') { event.preventDefault(); closeNotifications(); return; }
+  if (event.key !== 'Tab') return;
+  const focusable = [...notificationPanel.querySelectorAll('button:not(:disabled)')];
+  if (!focusable.length) return;
+  const first = focusable[0]; const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
 
 function home() {
   const homeData = data.home;
@@ -394,6 +520,7 @@ async function refreshData() {
   data = await api.bootstrap();
   firstName = data.home.viewer.firstName;
   document.querySelector('.avatar').textContent = firstName[0]?.toUpperCase() || 'A';
+  updateNotificationBell();
 }
 
 async function openLesson(id, updateHistory = true) {

@@ -40,6 +40,8 @@ export const api = {
   addToPortfolio: (projectId, input = {}) => request(`/portfolio/projects/${projectId}`, { method: 'POST', body: JSON.stringify(input) }),
   mentorSlots: () => request('/mentor/availability'),
   bookMentor: availabilityId => request('/mentor/bookings', { method: 'POST', body: JSON.stringify({ availabilityId }) }),
+  notifications: () => request('/notifications'),
+  markNotificationsRead: (notificationIds = []) => request('/notifications/read', { method: 'POST', body: JSON.stringify({ notificationIds }) }),
   createProject: input => request('/projects', { method: 'POST', body: JSON.stringify(input) }),
   updateProject: (id, input) => request(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
   completeTask: (projectId, taskId, idempotencyKey) => request(`/projects/${projectId}/tasks/${taskId}/complete`, { method: 'POST', body: JSON.stringify({ idempotencyKey }) }),

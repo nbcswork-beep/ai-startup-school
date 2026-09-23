@@ -28,6 +28,7 @@ import type {
   ParentContactCategory,
   ParentContactRequestDto,
   NotificationDeliveryDto,
+  StudentNotificationsDto,
   MissedLessonRecoveryDto,
   TeacherGroupDto,
   TeacherStudentDto,
@@ -103,6 +104,8 @@ export interface AppRepository {
   listMissedLessonRecoveries(userId:string):Promise<MissedLessonRecoveryDto[]>;
   prepareNotificationBatch(now:Date,weeklyDay:number,weeklyHour:number,limit:number):Promise<NotificationDeliveryDto[]>;
   completeNotificationDelivery(notificationId:string,sent:boolean,errorCode:string|null,now:Date,retryable?:boolean):Promise<void>;
+  listStudentNotifications(userId:string):Promise<StudentNotificationsDto>;
+  markStudentNotificationsRead(userId:string,notificationIds:string[]):Promise<StudentNotificationsDto>;
 
   getAdminWorkspace(userId: UserId): Promise<AdminWorkspaceDto>;
   searchAdmin(userId: UserId, query: string): Promise<AdminSearchDto>;

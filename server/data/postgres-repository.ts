@@ -8,7 +8,7 @@ import type {
   MentorSlotDto, MissedLessonRecoveryDto, NewSession, NotificationDeliveryDto, ParentContactCategory, ParentContactRequestDto,
   ParentReportDto, ParentSummaryDto, PortfolioDto, ProfileDto, ProjectDto, ProjectTaskDto, RotationResult,
   ScheduleDto, TeacherGroupDto, TeacherStudentDto, TelegramIdentityInput, TeacherWorkspaceDto, TeacherSearchDto,
-  TeacherPrivateNoteDto, TeacherHomeworkDto
+  TeacherPrivateNoteDto, TeacherHomeworkDto, StudentNotificationsDto
 } from '../types/domain.js';
 import { AppError } from '../errors/app-error.js';
 import type { PilotRuntimeState } from './pilot-runtime-store.js';
@@ -430,6 +430,8 @@ export class PostgresRepository implements AppRepository {
   async exportRuntimeState(_userId:string,_correlationId:string):Promise<{state:PilotRuntimeState;namespace:string}>{throw this.peopleDirectoryUnavailable();}
   async prepareNotificationBatch(_now:Date,_limit:number):Promise<NotificationDeliveryDto[]>{throw this.peopleDirectoryUnavailable();}
   async completeNotificationDelivery(_notificationId:string,_sent:boolean,_errorCode:string|null,_completedAt:Date,_retryable=true):Promise<void>{throw this.peopleDirectoryUnavailable();}
+  async listStudentNotifications(_userId:string):Promise<StudentNotificationsDto>{throw this.peopleDirectoryUnavailable();}
+  async markStudentNotificationsRead(_userId:string,_notificationIds:string[]):Promise<StudentNotificationsDto>{throw this.peopleDirectoryUnavailable();}
   async adminCreateStudent(_userId:string,_input:{firstName:string;lastName:string;groupId:string;telegramId?:string;status:'active'|'disabled'},_correlationId:string):Promise<Record<string,unknown>>{throw this.peopleDirectoryUnavailable();}
   async adminUpdateStudent(_userId:string,_studentId:string,_input:{firstName?:string;lastName?:string;groupId?:string;expectedVersion:number},_correlationId:string):Promise<void>{throw this.peopleDirectoryUnavailable();}
   async adminSetTelegramBinding(_userId:string,_targetUserId:string,_telegramId:string|null,_expectedVersion:number,_correlationId:string):Promise<void>{throw this.peopleDirectoryUnavailable();}
