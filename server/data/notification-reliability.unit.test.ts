@@ -22,6 +22,8 @@ class CaptureSender implements NotificationSender {
     return { sent: true as const };
   }
   typesFor(userId: string) { return this.deliveries.filter(item => item.recipientUserId === userId).map(item => item.type); }
+  /** Scoped to one class: the seeded pilot classes start "tomorrow 17:00", so after 17:00 they are due too. */
+  typesForEntity(userId: string, entityId: string) { return this.deliveries.filter(item => item.recipientUserId === userId && item.relatedEntityId === entityId).map(item => item.type); }
 }
 
 /** Upstash REST stand-in so catch-up can be exercised against the production-equivalent CAS store. */
@@ -143,7 +145,7 @@ describe('duplicate worker invocation', () => {
   it('two runs at the same instant never send the same message twice', async () => {
     const { repository, studentId } = await fixture();
     const t0 = new Date();
-    await repository.createClassSession(TEACHER, {
+    const session = await repository.createClassSession(TEACHER, {
       groupId: PILOT.groupId, courseId: COURSE, title: 'Заняття',
       startsAt: new Date(t0.getTime() + DAY).toISOString(), endsAt: new Date(t0.getTime() + DAY + HOUR).toISOString()
     });
@@ -155,7 +157,7 @@ describe('duplicate worker invocation', () => {
     expect(second).toEqual({ claimed: 0, sent: 0, failed: 0 });
     const keys = sender.deliveries.map(item => `${item.type}:${item.relatedEntityId}:${item.recipientUserId}`);
     expect(keys.length).toBe(new Set(keys).size);
-    expect(sender.typesFor(studentId).filter(type => type === 'student_class_24h')).toHaveLength(1);
+    expect(sender.typesForEntity(studentId, session.id).filter(type => type === 'student_class_24h')).toHaveLength(1);
   });
 
   it('two runs interleaved in parallel still claim each message once', async () => {
@@ -218,7 +220,7 @@ describe('rescheduled and cancelled classes', () => {
     expect(reminders).toHaveLength(2);
     const expectedDay = new Intl.DateTimeFormat('uk-UA', { timeZone: 'Europe/Kyiv', day: '2-digit', month: '2-digit' }).format(newStart);
     expect(reminders.at(-1)!.text).toContain(expectedDay);
-    expect(sender.typesFor(studentId).filter(type => type === 'student_class_24h')).toHaveLength(2);
+    expect(sender.typesForEntity(studentId, session.id).filter(type => type === 'student_class_24h')).toHaveLength(2);
   });
 
   it('withholds the ordinary reminder for a cancelled class but still tells the guardian', async () => {
@@ -234,7 +236,7 @@ describe('rescheduled and cancelled classes', () => {
 
     const after = new CaptureSender();
     await new NotificationWorker(repository, after, 0, 19).run(new Date(t0.getTime() + 11 * 60_000));
-    expect(after.typesFor(studentId)).not.toContain('student_class_24h');
+    expect(after.typesForEntity(studentId, session.id)).not.toContain('student_class_24h');
     expect(after.typesFor(guardianId)).toContain('guardian_session_cancelled');
     const skipped = (await runtime.read()).notifications.filter(item => item.type === 'student_class_24h' && item.status === 'skipped');
     expect(skipped.map(item => item.errorCode)).toContain('CLASS_CANCELLED');
