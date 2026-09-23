@@ -6,4 +6,6 @@ coverage
 .DS_Store
 .vercel
 .env*
+# The onboarding template is not a secret and must stay addable (README: copy .env.example .env).
+!.env.example
 backups
