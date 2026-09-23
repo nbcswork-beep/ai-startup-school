@@ -38,6 +38,7 @@ import type {
   TelegramIdentityInput,
   UserId
 } from '../types/domain.js';
+import type { PilotRuntimeState } from './pilot-runtime-store.js';
 
 export interface AppRepository {
   ping(): Promise<void>;
@@ -123,6 +124,8 @@ export interface AppRepository {
   adminUpdateStaff(userId:UserId,staffId:string,input:{firstName?:string|undefined;lastName?:string|undefined;email?:string|undefined;roles?:Array<'teacher'|'mentor'|'admin'>|undefined;expectedVersion:number},correlationId:string):Promise<void>;
   adminResolveParentContactRequest(userId:UserId,requestId:string,correlationId:string):Promise<void>;
   recordSecurityEvent(input: { eventType: string; severity: 'low'|'medium'|'high'|'critical'; actorUserId?: string; targetUserId?: string; metadata?: Record<string,unknown>; correlationId: string }): Promise<void>;
+  /** Admin-only. Returns the durable school state plus the namespace it came from, for backup export. */
+  exportRuntimeState(userId: UserId, correlationId: string): Promise<{ state: PilotRuntimeState; namespace: string }>;
 
   listConversations(userId: UserId): Promise<AiConversationDto[]>;
   createConversation(userId: UserId, title?: string): Promise<AiConversationDto>;

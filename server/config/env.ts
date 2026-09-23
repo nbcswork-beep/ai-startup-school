@@ -14,6 +14,73 @@ const optionalTrimmedString = z.preprocess(value => {
   return trimmed || undefined;
 }, z.string().optional());
 
+export type DeployEnvironment = 'production' | 'preview' | 'development' | 'local';
+
+/**
+ * The deployment environment as declared by the platform. `local` means no platform marker was
+ * present, so this is a developer machine or a test run rather than a Vercel deployment.
+ */
+export function resolveDeployEnvironment(input: NodeJS.ProcessEnv): DeployEnvironment {
+  const value = input.VERCEL_ENV?.trim() || input.VERCEL_TARGET_ENV?.trim();
+  return value === 'production' || value === 'preview' || value === 'development' ? value : 'local';
+}
+
+const PRODUCTION_NAMESPACE_MARKERS = ['production', 'prod', 'live'];
+const NON_PRODUCTION_NAMESPACE_MARKERS = ['preview', 'staging', 'stage', 'sandbox', 'test', 'dev', 'development', 'local', 'ephemeral'];
+
+function namespaceTokens(prefix: string): string[] {
+  return prefix.toLowerCase().split(/[:._\-/]+/).filter(Boolean);
+}
+
+export class RedisNamespaceIsolationError extends Error {
+  constructor(message: string, public readonly fields: string[]) {
+    super(message);
+    this.name = 'RedisNamespaceIsolationError';
+  }
+}
+
+/**
+ * Guarantees Production and Preview can never address the same Redis namespace.
+ *
+ * Production must carry a production marker and no non-production marker; Preview must carry no
+ * production marker. Those two rules are mutually exclusive, so a Production prefix and a Preview
+ * prefix can never be equal — a shared namespace fails closed at boot instead of letting a preview
+ * deployment write into live school data. Local and development runs are not constrained.
+ * Credential values are never read or reported here.
+ */
+export function assertRedisNamespaceIsolation(input: {
+  deployEnvironment: DeployEnvironment;
+  prefixes: Array<{ field: string; value: string }>;
+}): void {
+  if (input.deployEnvironment !== 'production' && input.deployEnvironment !== 'preview') return;
+  const problems: string[] = [];
+  const fields: string[] = [];
+  for (const { field, value } of input.prefixes) {
+    const tokens = namespaceTokens(value);
+    const productionMarker = tokens.find(token => PRODUCTION_NAMESPACE_MARKERS.includes(token));
+    const nonProductionMarker = tokens.find(token => NON_PRODUCTION_NAMESPACE_MARKERS.includes(token));
+    if (input.deployEnvironment === 'production') {
+      if (nonProductionMarker) {
+        problems.push(`${field} is scoped to "${nonProductionMarker}" but this is a production deployment`);
+        fields.push(field);
+      } else if (!productionMarker) {
+        problems.push(`${field} must contain a production namespace segment (one of: ${PRODUCTION_NAMESPACE_MARKERS.join(', ')})`);
+        fields.push(field);
+      }
+    } else if (productionMarker) {
+      problems.push(`${field} is scoped to "${productionMarker}" but this is a preview deployment — preview must never share the production namespace`);
+      fields.push(field);
+    }
+  }
+  if (problems.length) {
+    throw new RedisNamespaceIsolationError(
+      `Unsafe Redis namespace configuration for the ${input.deployEnvironment} deployment — ${problems.join('; ')}. `
+      + 'Scope SESSION_REDIS_PREFIX (and PILOT_RUNTIME_REDIS_PREFIX when set) per environment in the Vercel project settings instead of sharing one value across all environments.',
+      [...new Set(fields)]
+    );
+  }
+}
+
 export function resolveRedisRestCredentials(input: NodeJS.ProcessEnv): { url: string; token: string; urlField: string; tokenField: string } | null {
   const pairs = [
     [input.UPSTASH_REDIS_REST_URL, input.UPSTASH_REDIS_REST_TOKEN, 'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN'],
@@ -60,6 +127,13 @@ const envSchema = z.object({
   UPSTASH_REDIS_REST_URL: optionalString,
   UPSTASH_REDIS_REST_TOKEN: optionalString,
   SESSION_REDIS_PREFIX: z.string().regex(/^[a-zA-Z0-9:_-]{3,80}$/).default('aiss:local:sessions:v1'),
+  PILOT_RUNTIME_REDIS_PREFIX: z.preprocess(value => {
+    if (typeof value !== 'string') return value;
+    return value.trim() || undefined;
+  }, z.string().regex(/^[a-zA-Z0-9:_-]{3,120}$/).optional()),
+  ALLOW_RUNTIME_STATE_BOOTSTRAP: booleanFromEnv.default(false),
+  VERCEL_ENV: optionalTrimmedString,
+  VERCEL_TARGET_ENV: optionalTrimmedString,
   DEV_AUTH_ENABLED: booleanFromEnv.default(false),
   DEV_EPHEMERAL_JWT: booleanFromEnv.default(false),
   DEV_USER_ID: z.string().uuid().default('10000000-0000-4000-8000-000000000001'),
@@ -122,7 +196,15 @@ const envSchema = z.object({
   }
 });
 
-export type AppEnv = z.infer<typeof envSchema> & { origins: string[] };
+export type AppEnv = z.infer<typeof envSchema> & { origins: string[]; deployEnvironment: DeployEnvironment; runtimeRedisPrefix: string };
+
+/**
+ * Namespace that holds the pilot runtime state. Defaults to the historical value derived from
+ * SESSION_REDIS_PREFIX so existing deployments keep addressing their current data.
+ */
+export function resolveRuntimeRedisPrefix(input: { PILOT_RUNTIME_REDIS_PREFIX?: string | undefined; SESSION_REDIS_PREFIX: string }): string {
+  return input.PILOT_RUNTIME_REDIS_PREFIX ?? `${input.SESSION_REDIS_PREFIX}:pilot-runtime:v1`;
+}
 
 export class EnvironmentConfigurationError extends Error {
   readonly fields: string[];
@@ -150,5 +232,19 @@ export function loadEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
     UPSTASH_REDIS_REST_TOKEN:redis.tokenField
   } : {});
   const parsed = result.data;
-  return { ...parsed, origins: parsed.APP_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean) };
+  const deployEnvironment = resolveDeployEnvironment(input);
+  const runtimeRedisPrefix = resolveRuntimeRedisPrefix(parsed);
+  assertRedisNamespaceIsolation({
+    deployEnvironment,
+    prefixes: [
+      { field: 'SESSION_REDIS_PREFIX', value: parsed.SESSION_REDIS_PREFIX },
+      ...(parsed.PILOT_RUNTIME_REDIS_PREFIX ? [{ field: 'PILOT_RUNTIME_REDIS_PREFIX', value: parsed.PILOT_RUNTIME_REDIS_PREFIX }] : [])
+    ]
+  });
+  return {
+    ...parsed,
+    origins: parsed.APP_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean),
+    deployEnvironment,
+    runtimeRedisPrefix
+  };
 }

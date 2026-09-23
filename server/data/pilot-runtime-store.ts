@@ -148,9 +148,48 @@ export interface PilotRuntimeState {
   parentContactRequests: PilotParentContactRequest[];
 }
 
+export interface PilotRuntimeStatus {
+  /** Namespace the state is addressed by. Never contains credentials. */
+  namespace: string;
+  /** False when the backing key does not exist yet. */
+  initialized: boolean;
+  sizeBytes: number | null;
+}
+
 export interface PilotRuntimeStore {
+  /** Namespace this store addresses. Safe to log and to embed in a snapshot. */
+  readonly namespace: string;
   read(): Promise<PilotRuntimeState>;
   mutate<T>(mutation: (state: PilotRuntimeState) => T): Promise<T>;
+  status(): Promise<PilotRuntimeStatus>;
+  /** Overwrites the whole state. Only recovery tooling calls this. */
+  replace(next: PilotRuntimeState): Promise<void>;
+}
+
+/**
+ * Bootstrap behaviour when the backing key is absent.
+ * - `seed` writes the development seed (correct locally and for a fresh preview).
+ * - `require` fails loudly, so a production deployment never presents the demo seed as real
+ *   school data after the state key is lost.
+ */
+export type RuntimeBootstrapPolicy = 'seed' | 'require';
+
+export class RuntimeStateMissingError extends AppError {
+  constructor(namespace: string) {
+    super(
+      'RUNTIME_STATE_MISSING',
+      503,
+      'Стан школи недоступний. Зверніться до адміністратора.',
+      {
+        namespace,
+        operatorMessage:
+          `Pilot runtime state is missing at "${namespace}" and this deployment refuses to seed demo data over it. `
+          + 'Restore the most recent snapshot with "npm run runtime:restore -- --file <snapshot.json> --confirm-restore", '
+          + 'or set ALLOW_RUNTIME_STATE_BOOTSTRAP=true for one deploy to intentionally start a brand new school.'
+      }
+    );
+    this.name = 'RuntimeStateMissingError';
+  }
 }
 
 function relativeIso(days: number, hour: number, minute = 0): string {
@@ -265,9 +304,11 @@ export function migratePilotRuntimeState(input: PilotRuntimeState | (Partial<Pil
 
 export class MemoryPilotRuntimeStore implements PilotRuntimeStore {
   private state: PilotRuntimeState;
+  readonly namespace: string;
 
-  constructor(initialState: PilotRuntimeState = createPilotRuntimeState()) {
+  constructor(initialState: PilotRuntimeState = createPilotRuntimeState(), namespace = 'memory:pilot-runtime') {
     this.state = structuredClone(initialState);
+    this.namespace = namespace;
   }
 
   async read(): Promise<PilotRuntimeState> {
@@ -279,6 +320,14 @@ export class MemoryPilotRuntimeStore implements PilotRuntimeStore {
     const result = mutation(next);
     this.state = next;
     return structuredClone(result);
+  }
+
+  async status(): Promise<PilotRuntimeStatus> {
+    return { namespace: this.namespace, initialized: true, sizeBytes: JSON.stringify(this.state).length };
+  }
+
+  async replace(next: PilotRuntimeState): Promise<void> {
+    this.state = migratePilotRuntimeState(structuredClone(next));
   }
 }
 
@@ -314,18 +363,44 @@ if current ~= ARGV[1] then return 0 end
 redis.call('SET', KEYS[1], ARGV[2])
 return 1`;
 
+export interface RedisRestPilotRuntimeStoreOptions {
+  bootstrapPolicy?: RuntimeBootstrapPolicy;
+  maxRetries?: number;
+}
+
 export class RedisRestPilotRuntimeStore implements PilotRuntimeStore {
   private readonly client: RedisRestClient;
   private readonly key: string;
+  private readonly bootstrapPolicy: RuntimeBootstrapPolicy;
+  private readonly maxRetries: number;
 
-  constructor(url: string, token: string, prefix: string, private readonly maxRetries = 12) {
+  constructor(url: string, token: string, prefix: string, options: RedisRestPilotRuntimeStoreOptions = {}) {
     this.client = new RedisRestClient(url, token);
     this.key = `${prefix}:state`;
+    this.bootstrapPolicy = options.bootstrapPolicy ?? 'seed';
+    this.maxRetries = options.maxRetries ?? 12;
+  }
+
+  get namespace(): string {
+    return this.key;
   }
 
   private async readRaw(): Promise<string> {
+    const existing = await this.client.command<string | null>(['GET', this.key]);
+    if (existing !== null && existing !== undefined) return existing;
+    if (this.bootstrapPolicy === 'require') throw new RuntimeStateMissingError(this.key);
     const initial = JSON.stringify(createPilotRuntimeState());
     return this.client.command<string>(['EVAL', INITIALIZE_SCRIPT, 1, this.key, initial]);
+  }
+
+  async status(): Promise<PilotRuntimeStatus> {
+    const raw = await this.client.command<string | null>(['GET', this.key]);
+    const present = raw !== null && raw !== undefined;
+    return { namespace: this.key, initialized: present, sizeBytes: present ? raw.length : null };
+  }
+
+  async replace(next: PilotRuntimeState): Promise<void> {
+    await this.client.command(['SET', this.key, JSON.stringify(migratePilotRuntimeState(structuredClone(next)))]);
   }
 
   async read(): Promise<PilotRuntimeState> {

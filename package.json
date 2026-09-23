@@ -19,6 +19,8 @@
     "auth:hash-password": "tsx scripts/hash-password.mjs",
     "auth:bootstrap-web": "tsx scripts/bootstrap-web-auth.mjs",
     "bot:set-webhook": "node scripts/set-telegram-webhook.mjs",
+    "runtime:export": "tsx scripts/runtime-state.mjs",
+    "runtime:restore": "tsx scripts/runtime-state.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "server": "node server-dist/server/index.js",
     "bot": "tsx bot/server.js"

@@ -4,3 +4,6 @@ server-dist
 coverage
 .env
 .DS_Store
+.vercel
+.env*
+backups

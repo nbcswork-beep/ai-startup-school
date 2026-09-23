@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AppEnv } from '../config/env.js';
 import type { AppRepository } from '../data/repository.js';
 import { AppError } from '../errors/app-error.js';
+import { createRuntimeSnapshot } from '../data/state-snapshot.js';
 
 const uuid=z.string().uuid();
 const reason=z.string().trim().min(3).max(1000);
@@ -32,6 +33,12 @@ export function registerAdminRoutes(app:FastifyInstance,repository:AppRepository
       monitoring:{status:env.SECURITY_MONITORING_CONFIGURED?'ok':'required',label:env.SECURITY_MONITORING_CONFIGURED?'Security monitoring configured':'Security monitoring required'}
     };
     return result;
+  });
+  app.get('/api/v1/admin/export/runtime-state',secured({config:{rateLimit:{max:3,timeWindow:'10 minutes'}}}),async(request,reply)=>{
+    const {state,namespace}=await repository.exportRuntimeState(request.auth.userId,request.id);
+    const snapshot=createRuntimeSnapshot(state,{environment:env.deployEnvironment,namespace});
+    const filename=`aiss-runtime-${snapshot.environment}-${snapshot.generatedAt.replace(/[:.]/g,'-')}.json`;
+    return reply.header('content-disposition',`attachment; filename="${filename}"`).send(snapshot);
   });
   app.get('/api/v1/admin/search',secured({...readLimit,config:{rateLimit:{max:30,timeWindow:'1 minute'}}}),async request=>{const {q}=z.object({q:z.string().trim().min(2).max(80)}).parse(request.query);return repository.searchAdmin(request.auth.userId,q);});
   app.get('/api/v1/admin/explorer/:entity',secured(readLimit),async request=>{const {entity:selected}=z.object({entity}).parse(request.params);const input=z.object({page:z.coerce.number().int().min(1).max(100000).default(1),pageSize:z.coerce.number().int().min(1).max(100).default(25),sort:z.string().regex(/^[A-Za-z][A-Za-z0-9]*$/).max(40).default('id'),direction:z.enum(['asc','desc']).default('asc'),q:z.string().trim().max(80).optional()}).parse(request.query);return repository.exploreAdmin(request.auth.userId,{entity:selected,page:input.page,pageSize:input.pageSize,sort:input.sort,direction:input.direction,...(input.q?{query:input.q}:{})});});

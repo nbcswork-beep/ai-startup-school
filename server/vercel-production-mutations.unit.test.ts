@@ -55,9 +55,11 @@ class UpstashRestEmulator {
   }
 }
 
+// This suite starts against an empty Redis, i.e. a brand new production school. Production
+// otherwise refuses to seed over a missing runtime state key, so the bootstrap flag is explicit here.
 async function productionEnvironment():Promise<NodeJS.ProcessEnv>{
   const pair=await generateKeyPair('ES256',{extractable:true});
-  return{LOG_LEVEL:'silent',VERCEL_ENV:'production',VERCEL_PROJECT_PRODUCTION_URL:'ai-startup-school.vercel.app',TELEGRAM_BOT_TOKEN:BOT_TOKEN,TELEGRAM_WEBHOOK_SECRET:'production_mutation_webhook_secret',TELEGRAM_STUDENT_BINDINGS_JSON:JSON.stringify({illia:'987654321',ivan:'987654322'}),CRON_SECRET:'production-notification-cron-secret',SESSION_TOKEN_PEPPER:'production-mutation-test-pepper-with-entropy',APP_JWT_PRIVATE_KEY_BASE64:Buffer.from(await exportPKCS8(pair.privateKey)).toString('base64'),APP_JWT_PUBLIC_KEY_BASE64:Buffer.from(await exportSPKI(pair.publicKey)).toString('base64'),WEB_AUTH_ACCOUNTS_JSON:JSON.stringify([{userId:'12000000-0000-4000-8000-000000000001',email:TEACHER_EMAIL,passwordHash:await hashPassword(TEACHER_PASSWORD)}]),UPSTASH_REDIS_REST_KV_REST_API_URL:'https://production-upstash.test',UPSTASH_REDIS_REST_KV_REST_API_TOKEN:'production-write-token',SESSION_REDIS_PREFIX:'aiss:production:sessions:v1',MINI_APP_URL:'https://ai-startup-school.vercel.app'};
+  return{LOG_LEVEL:'silent',VERCEL_ENV:'production',VERCEL_PROJECT_PRODUCTION_URL:'ai-startup-school.vercel.app',TELEGRAM_BOT_TOKEN:BOT_TOKEN,TELEGRAM_WEBHOOK_SECRET:'production_mutation_webhook_secret',TELEGRAM_STUDENT_BINDINGS_JSON:JSON.stringify({illia:'987654321',ivan:'987654322'}),CRON_SECRET:'production-notification-cron-secret',ALLOW_RUNTIME_STATE_BOOTSTRAP:'true',SESSION_TOKEN_PEPPER:'production-mutation-test-pepper-with-entropy',APP_JWT_PRIVATE_KEY_BASE64:Buffer.from(await exportPKCS8(pair.privateKey)).toString('base64'),APP_JWT_PUBLIC_KEY_BASE64:Buffer.from(await exportSPKI(pair.publicKey)).toString('base64'),WEB_AUTH_ACCOUNTS_JSON:JSON.stringify([{userId:'12000000-0000-4000-8000-000000000001',email:TEACHER_EMAIL,passwordHash:await hashPassword(TEACHER_PASSWORD)}]),UPSTASH_REDIS_REST_KV_REST_API_URL:'https://production-upstash.test',UPSTASH_REDIS_REST_KV_REST_API_TOKEN:'production-write-token',SESSION_REDIS_PREFIX:'aiss:production:sessions:v1',MINI_APP_URL:'https://ai-startup-school.vercel.app'};
 }
 
 function signedInitData(telegramId:number):string{

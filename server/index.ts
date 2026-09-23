@@ -13,7 +13,9 @@ const redisSessionStore = env.UPSTASH_REDIS_REST_URL && env.UPSTASH_REDIS_REST_T
   ? new RedisRestSessionStore(env.UPSTASH_REDIS_REST_URL, env.UPSTASH_REDIS_REST_TOKEN, env.SESSION_REDIS_PREFIX)
   : undefined;
 const redisRuntimeStore = env.UPSTASH_REDIS_REST_URL && env.UPSTASH_REDIS_REST_TOKEN
-  ? new RedisRestPilotRuntimeStore(env.UPSTASH_REDIS_REST_URL, env.UPSTASH_REDIS_REST_TOKEN, `${env.SESSION_REDIS_PREFIX}:pilot-runtime:v1`)
+  ? new RedisRestPilotRuntimeStore(env.UPSTASH_REDIS_REST_URL, env.UPSTASH_REDIS_REST_TOKEN, env.runtimeRedisPrefix, {
+    bootstrapPolicy: env.deployEnvironment === 'production' && !env.ALLOW_RUNTIME_STATE_BOOTSTRAP ? 'require' : 'seed'
+  })
   : undefined;
 const repository = env.DATA_BACKEND === 'postgres'
   ? new PostgresRepository(env.DATABASE_URL!, env.DATABASE_SSL, env.WORKSPACE_URL, env.NODE_ENV === 'production')

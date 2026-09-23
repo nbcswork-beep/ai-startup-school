@@ -11,6 +11,7 @@ import type {
   TeacherPrivateNoteDto, TeacherHomeworkDto
 } from '../types/domain.js';
 import { AppError } from '../errors/app-error.js';
+import type { PilotRuntimeState } from './pilot-runtime-store.js';
 
 type Db = Pick<PoolClient, 'query'>;
 
@@ -426,6 +427,7 @@ export class PostgresRepository implements AppRepository {
   async getGuardianSummaryByTelegram(_telegramId:string,_studentId?:string):Promise<{students:TeacherStudentDto[];selected:ParentSummaryDto|null}>{throw this.peopleDirectoryUnavailable();}
   async createParentContactRequestByTelegram(_telegramId:string,_studentId:string,_category:ParentContactCategory,_message:string):Promise<ParentContactRequestDto>{throw this.peopleDirectoryUnavailable();}
   async listMissedLessonRecoveries(_userId:string):Promise<MissedLessonRecoveryDto[]>{throw this.peopleDirectoryUnavailable();}
+  async exportRuntimeState(_userId:string,_correlationId:string):Promise<{state:PilotRuntimeState;namespace:string}>{throw this.peopleDirectoryUnavailable();}
   async prepareNotificationBatch(_now:Date,_limit:number):Promise<NotificationDeliveryDto[]>{throw this.peopleDirectoryUnavailable();}
   async completeNotificationDelivery(_notificationId:string,_sent:boolean,_errorCode:string|null,_completedAt:Date,_retryable=true):Promise<void>{throw this.peopleDirectoryUnavailable();}
   async adminCreateStudent(_userId:string,_input:{firstName:string;lastName:string;groupId:string;telegramId?:string;status:'active'|'disabled'},_correlationId:string):Promise<Record<string,unknown>>{throw this.peopleDirectoryUnavailable();}

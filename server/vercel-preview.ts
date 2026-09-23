@@ -109,7 +109,14 @@ export async function createVercelApp(input: NodeJS.ProcessEnv = process.env, ov
   const sessionStore = overrides.sessionStore ?? new RedisRestSessionStore(env.UPSTASH_REDIS_REST_URL!, env.UPSTASH_REDIS_REST_TOKEN!, env.SESSION_REDIS_PREFIX);
   const loginLimiter = overrides.loginLimiter ?? new RedisRestLoginAttemptLimiter(env.UPSTASH_REDIS_REST_URL!, env.UPSTASH_REDIS_REST_TOKEN!, env.SESSION_REDIS_PREFIX);
   const mentoringStore = overrides.mentoringStore ?? new RedisRestMentoringStore(env.UPSTASH_REDIS_REST_URL!, env.UPSTASH_REDIS_REST_TOKEN!, `${env.SESSION_REDIS_PREFIX}:mentoring`);
-  const runtimeStore = overrides.runtimeStore ?? new RedisRestPilotRuntimeStore(env.UPSTASH_REDIS_REST_URL!, env.UPSTASH_REDIS_REST_TOKEN!, `${env.SESSION_REDIS_PREFIX}:pilot-runtime:v1`);
+  // Production refuses to seed demo data over a missing state key: losing the key must surface as a
+  // loud failure, not as a school that silently reopened with four seeded students.
+  const runtimeStore = overrides.runtimeStore ?? new RedisRestPilotRuntimeStore(
+    env.UPSTASH_REDIS_REST_URL!,
+    env.UPSTASH_REDIS_REST_TOKEN!,
+    env.runtimeRedisPrefix,
+    { bootstrapPolicy: env.deployEnvironment === 'production' && !env.ALLOW_RUNTIME_STATE_BOOTSTRAP ? 'require' : 'seed' }
+  );
   const app = await buildApp({
     env,
     repository: new MemoryRepository(env.WORKSPACE_URL, {
