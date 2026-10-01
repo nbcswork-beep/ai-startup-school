@@ -2,6 +2,24 @@ import { api } from './api.js';
 
 const tg = window.Telegram?.WebApp;
 
+function updateViewportLayout() {
+  const width = window.innerWidth;
+  document.documentElement.dataset.viewportLayout = width < 700 ? 'mobile' : width < 1100 ? 'tablet' : 'desktop';
+}
+
+let viewportFrame;
+function scheduleViewportLayout() {
+  cancelAnimationFrame(viewportFrame);
+  viewportFrame = requestAnimationFrame(() => {
+    updateViewportLayout();
+    // Telegram may apply the new WebView dimensions after dispatching its event.
+    requestAnimationFrame(updateViewportLayout);
+  });
+}
+
+updateViewportLayout();
+window.addEventListener('resize', scheduleViewportLayout);
+
 // Telegram draws its own controls ("Закрити", "⋯") over the WebView in fullscreen mode.
 // safeAreaInset is the device inset, contentSafeAreaInset is Telegram's chrome inside it;
 // the CSS combines them with env(safe-area-inset-*) so nothing depends on a device model.
@@ -12,6 +30,7 @@ function applyTelegramViewport() {
   const inset = side => `${Math.max(0, (Number(safe[side]) || 0) + (Number(content[side]) || 0))}px`;
   root.setProperty('--tg-app-safe-top', inset('top'));
   root.setProperty('--tg-app-safe-bottom', inset('bottom'));
+  scheduleViewportLayout();
 }
 
 if (tg) {
@@ -22,8 +41,12 @@ if (tg) {
     tg.setBackgroundColor('#070a2b');
   } catch {}
   applyTelegramViewport();
-  for (const event of ['safeAreaChanged', 'contentSafeAreaChanged', 'fullscreenChanged']) {
+  for (const event of ['safeAreaChanged', 'contentSafeAreaChanged', 'viewportChanged', 'fullscreenChanged', 'fullscreenFailed']) {
     try { tg.onEvent(event, applyTelegramViewport); } catch {}
+  }
+  if (typeof tg.requestFullscreen === 'function') {
+    try { Promise.resolve(tg.requestFullscreen()).catch(() => {}).finally(scheduleViewportLayout); }
+    catch { scheduleViewportLayout(); }
   }
 }
 
@@ -259,7 +282,7 @@ function home() {
   const nextClass = homeData.nextClass ?? data.schedule?.nextClass;
   const joinUrl = safeHttpsUrl(nextClass?.meetingUrl);
   return `
-    <section class="page home-page">
+    <section class="page home-page${nextClass ? ' has-next-class' : ''}${homeData.homeworkDue ? ' has-homework' : ''}">
       <div class="eyebrow">ДОБРОГО ДНЯ, ${firstName.toUpperCase()} <span></span></div>
       <section class="home-hero">
         <div class="hero-copy">
