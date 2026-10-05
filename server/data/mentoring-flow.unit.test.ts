@@ -1,3 +1,4 @@
+import {createAssignedRepository} from './assigned-pilot.test-fixture.js';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../app.js';
@@ -33,7 +34,7 @@ async function appFor(userId: string, sessions: MemorySessionStore, mentoring: M
   });
   const app = await buildApp({
     env,
-    repository: new MemoryRepository(undefined, { sessionStore: sessions, mentoringStore: mentoring }),
+    repository: createAssignedRepository(undefined, { sessionStore: sessions, mentoringStore: mentoring }),
     jwt,
     aiProvider: new MockAiProvider()
   });

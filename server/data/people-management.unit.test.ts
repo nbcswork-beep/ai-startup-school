@@ -1,3 +1,4 @@
+import {createAssignedRepository,createAssignedPilotState} from './assigned-pilot.test-fixture.js';
 import { describe, expect, it } from 'vitest';
 import { MemoryRepository } from './memory-repository.js';
 import { MemoryPilotRuntimeStore } from './pilot-runtime-store.js';
@@ -12,11 +13,11 @@ import { MockAiProvider } from '../services/ai-provider.js';
 const ADMIN='14000000-0000-4000-8000-000000000001';
 
 function isolatedPair(){
-  const runtime=new MemoryPilotRuntimeStore();
+  const runtime=new MemoryPilotRuntimeStore(createAssignedPilotState());
   return {
     runtime,
-    first:new MemoryRepository(undefined,{runtimeStore:runtime,sessionStore:new MemorySessionStore(),requireSeededTelegramIdentity:true}),
-    second:new MemoryRepository(undefined,{runtimeStore:runtime,sessionStore:new MemorySessionStore(),requireSeededTelegramIdentity:true})
+    first:createAssignedRepository(undefined,{runtimeStore:runtime,sessionStore:new MemorySessionStore(),requireSeededTelegramIdentity:true}),
+    second:createAssignedRepository(undefined,{runtimeStore:runtime,sessionStore:new MemorySessionStore(),requireSeededTelegramIdentity:true})
   };
 }
 
@@ -90,7 +91,7 @@ describe('persistent People Management lifecycle',()=>{
   it('runs the three complete API lifecycles through auth and RBAC',async()=>{
     const botToken='123456789:people-lifecycle-test';
     const env=loadEnv({NODE_ENV:'test',DATA_BACKEND:'memory',DEV_AUTH_ENABLED:'true',DEV_EPHEMERAL_JWT:'true',DEV_USER_ID:ADMIN,SESSION_TOKEN_PEPPER:'people-api-test-pepper',TELEGRAM_BOT_TOKEN:botToken});
-    const repository=new MemoryRepository(undefined,{requireSeededTelegramIdentity:true});
+    const repository=createAssignedRepository(undefined,{requireSeededTelegramIdentity:true});
     const app=await buildApp({env,repository,jwt:await createJwtService(env),aiProvider:new MockAiProvider()});
     await app.ready();
     try{

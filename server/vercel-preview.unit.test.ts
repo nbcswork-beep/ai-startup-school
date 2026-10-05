@@ -1,3 +1,4 @@
+import {createAssignedPilotState} from './data/assigned-pilot.test-fixture.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -34,7 +35,7 @@ async function previewVariables(): Promise<NodeJS.ProcessEnv> {
 }
 
 async function createTestApp(input: NodeJS.ProcessEnv, telegramWebhookHandler?:Parameters<typeof createVercelApp>[1]['telegramWebhookHandler']): Promise<FastifyInstance> {
-  return createVercelApp(input, { sessionStore:new MemorySessionStore(), loginLimiter:new MemoryLoginAttemptLimiter(), mentoringStore:new MemoryMentoringStore(), runtimeStore:new MemoryPilotRuntimeStore(), ...(telegramWebhookHandler?{telegramWebhookHandler}:{}) });
+  return createVercelApp(input, { sessionStore:new MemorySessionStore(), loginLimiter:new MemoryLoginAttemptLimiter(), mentoringStore:new MemoryMentoringStore(), runtimeStore:new MemoryPilotRuntimeStore(createAssignedPilotState()), ...(telegramWebhookHandler?{telegramWebhookHandler}:{}) });
 }
 
 function signedInitData(telegramId = 987654321, nowSeconds = Math.floor(Date.now() / 1000)): string {
@@ -218,7 +219,7 @@ describe('Vercel Telegram deployment adapter', () => {
 
   it('persists an Admin-created student across isolated Vercel adapters and authenticates its Telegram binding',async()=>{
     const variables=await previewVariables();
-    const runtime=new MemoryPilotRuntimeStore(),sessions=new MemorySessionStore();
+    const runtime=new MemoryPilotRuntimeStore(createAssignedPilotState()),sessions=new MemorySessionStore();
     const overrides={sessionStore:sessions,loginLimiter:new MemoryLoginAttemptLimiter(),mentoringStore:new MemoryMentoringStore(),runtimeStore:runtime};
     const first=await createVercelApp(variables,overrides),second=await createVercelApp(variables,overrides);apps.push(first,second);
     const login=await request(first,'v1/auth/web',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:'admin@example.test',password:'correct horse battery staple',target:'admin'})});

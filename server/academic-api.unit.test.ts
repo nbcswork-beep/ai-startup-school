@@ -1,3 +1,4 @@
+import {createAssignedRepository} from './data/assigned-pilot.test-fixture.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from './app.js';
@@ -12,7 +13,7 @@ const TEACHER='12000000-0000-4000-8000-000000000002';
 const apps:FastifyInstance[]=[];
 async function fixture(userId:string){
   const env=loadEnv({NODE_ENV:'test',DATA_BACKEND:'memory',DEV_AUTH_ENABLED:'true',DEV_EPHEMERAL_JWT:'true',SESSION_TOKEN_PEPPER:'academic-test-only',DEV_USER_ID:userId});
-  const repository=new MemoryRepository(),jwt=await createJwtService(env);
+  const repository=createAssignedRepository(),jwt=await createJwtService(env);
   const app=await buildApp({env,repository,jwt,aiProvider:new MockAiProvider()});apps.push(app);
   const login=await app.inject({method:'POST',url:'/api/v1/auth/development'});
   const token=login.json().accessToken as string,principal=await jwt.verify(token);

@@ -1,3 +1,4 @@
+import {createAssignedRepository,createAssignedPilotState} from './assigned-pilot.test-fixture.js';
 import { describe, expect, it } from 'vitest';
 import { MemoryRepository } from './memory-repository.js';
 import { createPilotRuntimeState, MemoryPilotRuntimeStore, migratePilotRuntimeState, type PilotNotification } from './pilot-runtime-store.js';
@@ -11,12 +12,12 @@ const OTHER=PILOT_TEACHERS[0]!.id;
 const STUDENT=DEV_IDS.user;
 const SECOND='10000000-0000-4000-8000-000000000002';
 const input:GroupInput={name:'Пілот 2027',academicYear:2027,startsOn:'2027-03-22',lessonCount:8,weekdays:[1,4],time:'17:00',teacherId:TEACHER,status:'active'};
-function pair(){const runtime=new MemoryPilotRuntimeStore();return{runtime,first:new MemoryRepository(undefined,{runtimeStore:runtime}),second:new MemoryRepository(undefined,{runtimeStore:runtime})};}
+function pair(){const runtime=new MemoryPilotRuntimeStore(createAssignedPilotState());return{runtime,first:createAssignedRepository(undefined,{runtimeStore:runtime}),second:createAssignedRepository(undefined,{runtimeStore:runtime})};}
 async function add(repository:MemoryRepository,runtime:MemoryPilotRuntimeStore,groupId:string,studentId=STUDENT){await repository.setGroupStudent(ADMIN,groupId,studentId,true,(await runtime.read()).directory[studentId]!.version,'add');}
 
 describe('shared academic state and group ownership',()=>{
   it('checks live lesson, homework and group membership before delivering queued reminders',()=>{
-    const state=createPilotRuntimeState(),now=new Date('2026-10-05T12:00:00.000Z');
+    const state=createAssignedPilotState(),now=new Date('2026-10-05T12:00:00.000Z');
     state.directory[STUDENT]!.telegramId='synthetic-test-chat';
     const notification:PilotNotification={id:'queued-test',recipientUserId:STUDENT,recipientTelegramId:'synthetic-test-chat',type:'student_class_1h',relatedEntityId:state.classSessions[0]!.id,scheduledFor:now.toISOString(),sentAt:null,status:'pending',attempts:0,lastAttemptAt:null,nextAttemptAt:null,idempotencyKey:'queued-test',safeMetadata:{text:'Synthetic reminder'},errorCode:null,dueAt:now.toISOString(),expiresAt:new Date(now.getTime()+86400000).toISOString(),entityStamp:null,readAt:null};
     state.classSessions[0]!.status='archived';
@@ -76,7 +77,7 @@ describe('shared academic state and group ownership',()=>{
       await first.updateTeacherClass(TEACHER,newClass.id,{status:'scheduled'});
       expect((await second.getSchedule(STUDENT)).upcoming.some(s=>s.id===newClass.id)).toBe(true);
     }
-    const restarted=new MemoryRepository(undefined,{runtimeStore:new MemoryPilotRuntimeStore(await runtime.read())});
+    const restarted=createAssignedRepository(undefined,{runtimeStore:new MemoryPilotRuntimeStore(await runtime.read())});
     expect(await restarted.getSchedule(STUDENT)).toEqual(await second.getSchedule(STUDENT));
   });
 
@@ -116,11 +117,11 @@ describe('shared academic state and group ownership',()=>{
   });
 
   it('migrates the original persisted state without reseeding or duplicating manual sessions',async()=>{
-    const old=createPilotRuntimeState();delete (old as Partial<typeof old>).groups;
+    const old=createAssignedPilotState();delete (old as Partial<typeof old>).groups;
     old.classSessions.forEach(s=>{delete s.number;delete s.scheduleManaged});old.classSessions[0]!.status='cancelled';
     const migrated=migratePilotRuntimeState(old);
     expect(migrated.classSessions[0]!.status).toBe('cancelled');expect(migrated.classSessions.map(s=>s.number)).toEqual([1,2,3,4,5,6,7,8]);
-    const repository=new MemoryRepository(undefined,{runtimeStore:new MemoryPilotRuntimeStore(migrated)});
+    const repository=createAssignedRepository(undefined,{runtimeStore:new MemoryPilotRuntimeStore(migrated)});
     const group=migrated.groups[0]!;
     await repository.updateGroup(ADMIN,PILOT.groupId,{...input,name:group.name,teacherId:group.teacherId,startsOn:'2027-01-01',expectedVersion:1},'edit-legacy');
     expect((await repository.getTeacherWorkspace(OTHER)).sessions).toHaveLength(8);
@@ -154,7 +155,7 @@ describe('homework lifecycle preserves submitted work',()=>{
     expect((await runtime.read()).submissions.find(s=>s.id===submission.id)).toMatchObject({contentText:'Учнівська відповідь',review:{score:9,feedback:'Збережений відгук'}});
     await first.updateHomework(TEACHER,created.id,{expectedVersion:4,status:'draft'},'restore');
     await first.publishHomework(TEACHER,created.id,new Date().toISOString());
-    const restarted=new MemoryRepository(undefined,{runtimeStore:new MemoryPilotRuntimeStore(await runtime.read())});
+    const restarted=createAssignedRepository(undefined,{runtimeStore:new MemoryPilotRuntimeStore(await runtime.read())});
     expect((await restarted.listHomework(STUDENT)).find(h=>h.id===created.id)).toMatchObject({title:'Edited',latestSubmission:{id:submission.id}});
     await expect(first.updateHomework(TEACHER,created.id,{expectedVersion:1,title:'Stale'},'stale')).rejects.toMatchObject({statusCode:409});
   });

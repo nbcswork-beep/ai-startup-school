@@ -1,3 +1,4 @@
+import {createAssignedRepository,createAssignedPilotState} from './assigned-pilot.test-fixture.js';
 import { describe, expect, it } from 'vitest';
 import { MemorySessionStore } from '../auth/session-store.js';
 import { NotificationWorker, type NotificationSender } from '../services/telegram-notification-service.js';
@@ -16,8 +17,8 @@ class CaptureSender implements NotificationSender {
 }
 
 async function fixture(){
-  const runtime=new MemoryPilotRuntimeStore();
-  const repository=new MemoryRepository(undefined,{runtimeStore:runtime,sessionStore:new MemorySessionStore(),requireSeededTelegramIdentity:true});
+  const runtime=new MemoryPilotRuntimeStore(createAssignedPilotState());
+  const repository=createAssignedRepository(undefined,{runtimeStore:runtime,sessionStore:new MemorySessionStore(),requireSeededTelegramIdentity:true});
   const student=await repository.adminCreateStudent(ADMIN,{firstName:'Нотифікаційний',lastName:'Учень',groupId:PILOT.groupId,telegramId:'777778001',status:'active'},'student');
   const guardian=await repository.adminCreateGuardian(ADMIN,{firstName:'Тестова',lastName:'Мама',telegramId:'777778002',studentIds:[String(student.id)],status:'active'},'guardian');
   return{runtime,repository,studentId:String(student.id),guardianId:String(guardian.id)};

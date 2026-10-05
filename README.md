@@ -44,3 +44,5 @@ Never commit the bot token or API keys.
 ## Current pilot management
 
 The deployed pilot uses the existing Redis-backed runtime state. Group management, shared lesson/homework status, archives, Admin session extension and test steps are documented in [docs/ACADEMIC-MANAGEMENT.md](docs/ACADEMIC-MANAGEMENT.md). The separate PostgreSQL foundation is not automatically enabled by these features.
+
+Students see only actual sessions and published homework assigned to their active group. Fresh runtime initialization does not invent assignments. Legacy template cleanup, preserved historical data and verification are documented in [docs/STUDENT-REAL-CONTENT.md](docs/STUDENT-REAL-CONTENT.md).

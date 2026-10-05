@@ -1,3 +1,4 @@
+import {createAssignedRepository} from './assigned-pilot.test-fixture.js';
 import { afterEach,describe,expect,it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../app.js';
@@ -13,7 +14,7 @@ const GUARDIAN='13000000-0000-4000-8000-000000000001';
 const STUDENT=DEV_IDS.user;
 let apps:FastifyInstance[]=[];
 
-async function session(userId:string){const env=loadEnv({NODE_ENV:'test',DATA_BACKEND:'memory',DEV_AUTH_ENABLED:'true',DEV_EPHEMERAL_JWT:'true',SESSION_TOKEN_PEPPER:'admin-test-pepper',DEV_USER_ID:userId});const repository=new MemoryRepository();const jwt=await createJwtService(env);const app=await buildApp({env,repository,jwt,aiProvider:new MockAiProvider()});apps.push(app);const login=await app.inject({method:'POST',url:'/api/v1/auth/development'});const accessToken=login.json().accessToken as string;const cookie=String(login.headers['set-cookie']).split(';')[0];return{app,repository,jwt,accessToken,cookie,headers:{authorization:`Bearer ${accessToken}`}};}
+async function session(userId:string){const env=loadEnv({NODE_ENV:'test',DATA_BACKEND:'memory',DEV_AUTH_ENABLED:'true',DEV_EPHEMERAL_JWT:'true',SESSION_TOKEN_PEPPER:'admin-test-pepper',DEV_USER_ID:userId});const repository=createAssignedRepository();const jwt=await createJwtService(env);const app=await buildApp({env,repository,jwt,aiProvider:new MockAiProvider()});apps.push(app);const login=await app.inject({method:'POST',url:'/api/v1/auth/development'});const accessToken=login.json().accessToken as string;const cookie=String(login.headers['set-cookie']).split(';')[0];return{app,repository,jwt,accessToken,cookie,headers:{authorization:`Bearer ${accessToken}`}};}
 afterEach(async()=>{await Promise.all(apps.map(app=>app.close()));apps=[]});
 
 describe('Admin Control Center authorization and security',()=>{

@@ -142,6 +142,7 @@ export interface PilotAttendanceRecord {
 
 export interface PilotRuntimeState {
   schemaVersion: 3;
+  seededContentCleanupApplied?: boolean;
   groups: SchoolGroup[];
   directory: Record<string, PilotDirectoryPerson>;
   telegramBindings: Record<string, string>;
@@ -219,7 +220,7 @@ function relativeIso(days: number, hour: number, minute = 0): string {
   return date.toISOString();
 }
 
-export function createPilotRuntimeState(): PilotRuntimeState {
+export function createPilotRuntimeState(options: { includeDemoContent?: boolean } = {}): PilotRuntimeState {
   const timestamp = '2026-09-21T00:00:00.000Z';
   const nameParts = (value: string) => { const parts=value.trim().split(/\s+/); return { lastName:parts.shift()??'', firstName:parts.join(' ') }; };
   const directory: Record<string, PilotDirectoryPerson> = {};
@@ -281,6 +282,7 @@ export function createPilotRuntimeState(): PilotRuntimeState {
   }));
   return {
     schemaVersion: 3,
+    seededContentCleanupApplied: true,
     groups: [legacyGroup()],
     directory,
     telegramBindings: {},
@@ -288,13 +290,13 @@ export function createPilotRuntimeState(): PilotRuntimeState {
     userStatus,
     xp: studentRecord(() => 0),
     streak: studentRecord(() => 0),
-    lessonProgress: studentRecord(() => ({ [SEEDED_LESSONS[0]!.id]: { progressPercent: 0, completedAt: null } })),
+    lessonProgress: studentRecord(() => options.includeDemoContent ? ({ [SEEDED_LESSONS[0]!.id]: { progressPercent: 0, completedAt: null } }) : {}),
     projects: studentRecord(() => []),
     achievements: studentRecord(() => []),
     idempotencyKeys: [],
-    classSessions,
+    classSessions: options.includeDemoContent ? classSessions : [],
     attendance: [],
-    homework,
+    homework: options.includeDemoContent ? homework : [],
     submissions: [],
     portfolioProjects: studentRecord(() => []),
     portfolioVisibility: Object.fromEntries(PILOT_STUDENTS.map(student => [PILOT_PORTFOLIO_IDS[student.id]!, 'private'])),
@@ -311,6 +313,33 @@ export function createPilotRuntimeState(): PilotRuntimeState {
 export function migratePilotRuntimeState(input: PilotRuntimeState | (Partial<PilotRuntimeState> & { schemaVersion?: number })): PilotRuntimeState {
   const seed=createPilotRuntimeState();
   const state=input as PilotRuntimeState;
+  // Retire only recognizable, untouched automatic templates. Preserve every
+  // record, submission, review and progress entry; run the cleanup only once.
+  if (!state.seededContentCleanupApplied) {
+    const untouchedHomeworkIds=new Set<string>();
+    for (const homework of state.homework ?? []) {
+      const match=/^73000000-0000-4000-8000-0{11}([1-7])$/.exec(homework.id);
+      const index=match ? Number(match[1])-1 : -1;
+      if (index>=0 && homework.groupId===PILOT.groupId && (homework.version??1)===1 &&
+          homework.title===`Домашнє завдання · заняття ${index+1}` && homework.instructions===SEEDED_HOMEWORK[index] &&
+          homework.classSessionId===`71000000-0000-4000-8000-${String(index+1).padStart(12,'0')}` &&
+          homework.xpReward===SEEDED_LESSONS[index]!.xp && !homework.resources?.length && homework.status==='published') {
+        untouchedHomeworkIds.add(homework.id);
+        homework.status='unpublished';homework.version=2;
+      }
+    }
+    for (const session of state.classSessions ?? []) {
+      const match=/^71000000-0000-4000-8000-0{11}([1-8])$/.exec(session.id);
+      const lesson=match ? SEEDED_LESSONS[Number(match[1])-1] : undefined;
+      if (lesson && session.groupId===PILOT.groupId && session.title===lesson.title && session.lessonId===lesson.id &&
+          session.status==='scheduled' && session.scheduleManaged!==false && !session.changedAt &&
+          session.description==='Живе групове заняття з практикою та роботою над проєктом.' &&
+          session.meetingUrl===PILOT.meetingUrl && !session.teacherNotes && !session.materials.length &&
+          !(state.attendance??[]).some(a=>a.sessionId===session.id) &&
+          !(state.homework??[]).some(h=>h.classSessionId===session.id&&!untouchedHomeworkIds.has(h.id))) session.status='archived';
+    }
+    state.seededContentCleanupApplied=true;
+  }
   if (!state.groups) state.groups = [legacyGroup()];
   // Only the eight original pilot sessions acquire managed schedule numbers. Manually
   // added sessions remain independent, so a later group edit cannot duplicate them.
@@ -322,6 +351,12 @@ export function migratePilotRuntimeState(input: PilotRuntimeState | (Partial<Pil
     }
   }
   state.directory={...seed.directory,...(state.directory??{})};
+  for(const session of state.classSessions??[]){
+    if(!/^71000000-0000-4000-8000-0{11}[1-8]$/.test(session.id)||!session.lessonId)continue;
+    for(const [studentId,progress] of Object.entries(state.lessonProgress??{})){
+      if(state.directory[studentId]?.groupId===session.groupId&&progress[session.lessonId]&&!progress[session.id])progress[session.id]={...progress[session.lessonId]!};
+    }
+  }
   state.telegramBindings=state.telegramBindings??{};
   state.guardianRelations=state.guardianRelations??seed.guardianRelations;
   for(const homework of state.homework??[]){homework.version??=1;if((homework.status as string)==='closed')homework.status='unpublished';}

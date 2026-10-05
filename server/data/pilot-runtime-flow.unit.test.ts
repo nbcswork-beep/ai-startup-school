@@ -1,3 +1,4 @@
+import {createAssignedRepository,createAssignedPilotState} from './assigned-pilot.test-fixture.js';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../app.js';
@@ -22,7 +23,7 @@ afterEach(async()=>{await Promise.all(apps.splice(0).map(app=>app.close()));});
 
 async function appFor(userId:string,runtime:MemoryPilotRuntimeStore,sessions:MemorySessionStore,mentoring=new MemoryMentoringStore()){
   const env=loadEnv({NODE_ENV:'test',DATA_BACKEND:'memory',DEV_AUTH_ENABLED:'true',DEV_USER_ID:userId,DEV_EPHEMERAL_JWT:'true',SESSION_TOKEN_PEPPER:'pilot-runtime-flow-pepper'});
-  const app=await buildApp({env,repository:new MemoryRepository(undefined,{runtimeStore:runtime,sessionStore:sessions,mentoringStore:mentoring}),jwt,aiProvider:new MockAiProvider()});
+  const app=await buildApp({env,repository:createAssignedRepository(undefined,{runtimeStore:runtime,sessionStore:sessions,mentoringStore:mentoring}),jwt,aiProvider:new MockAiProvider()});
   apps.push(app);
   const login=await app.inject({method:'POST',url:'/api/v1/auth/development'});
   return{app,login,headers:login.statusCode===200?{authorization:`Bearer ${login.json().accessToken as string}`}:{authorization:''}};
@@ -30,7 +31,7 @@ async function appFor(userId:string,runtime:MemoryPilotRuntimeStore,sessions:Mem
 
 describe('persistent pilot runtime flow',()=>{
   it('shares the complete homework publish, submission and review flow across isolated instances',async()=>{
-    const runtime=new MemoryPilotRuntimeStore(),sessions=new MemorySessionStore();
+    const runtime=new MemoryPilotRuntimeStore(createAssignedPilotState()),sessions=new MemorySessionStore();
     const teacher=await appFor(ADMIN_ID,runtime,sessions);
     const created=await teacher.app.inject({method:'POST',url:'/api/v1/teacher/homework',headers:teacher.headers,payload:{groupId:PILOT.groupId,courseId:DEV_IDS.course,classSessionId:'71000000-0000-4000-8000-000000000001',title:'Pilot persistence homework',instructions:'Create and submit a result.',dueAt:'2030-10-20T18:00:00.000Z',xpReward:80,status:'draft'}});
     expect(created.statusCode).toBe(201);const homeworkId=created.json().id as string;
@@ -54,7 +55,7 @@ describe('persistent pilot runtime flow',()=>{
   });
 
   it('preserves lesson completion and exposes actual progress to Teacher OS',async()=>{
-    const runtime=new MemoryPilotRuntimeStore(),sessions=new MemorySessionStore();const student=await appFor(DEV_IDS.user,runtime,sessions);
+    const runtime=new MemoryPilotRuntimeStore(createAssignedPilotState()),sessions=new MemorySessionStore();const student=await appFor(DEV_IDS.user,runtime,sessions);
     const completed=await student.app.inject({method:'POST',url:`/api/v1/lessons/${SEEDED_LESSONS[0]!.id}/complete`,headers:student.headers,payload:{idempotencyKey:'lesson-persistence-001'}});
     expect(completed.statusCode).toBe(200);expect(completed.json().awardedXp).toBe(SEEDED_LESSONS[0]!.xp);
     const coldStudent=await appFor(DEV_IDS.user,runtime,sessions);const learning=await coldStudent.app.inject({method:'GET',url:'/api/v1/learning',headers:coldStudent.headers});
@@ -64,7 +65,7 @@ describe('persistent pilot runtime flow',()=>{
   });
 
   it('shares student project and portfolio mutations with Teacher and Admin',async()=>{
-    const runtime=new MemoryPilotRuntimeStore(),sessions=new MemorySessionStore();const student=await appFor(DEV_IDS.user,runtime,sessions);
+    const runtime=new MemoryPilotRuntimeStore(createAssignedPilotState()),sessions=new MemorySessionStore();const student=await appFor(DEV_IDS.user,runtime,sessions);
     const created=await student.app.inject({method:'POST',url:'/api/v1/projects',headers:student.headers,payload:{title:'Pilot product',summary:'Initial'}});expect(created.statusCode).toBe(201);const projectId=created.json().id as string;
     expect((await student.app.inject({method:'PATCH',url:`/api/v1/projects/${projectId}`,headers:student.headers,payload:{title:'Persistent pilot product',summary:'Updated'}})).statusCode).toBe(200);
     expect((await student.app.inject({method:'POST',url:`/api/v1/portfolio/projects/${projectId}`,headers:student.headers,payload:{reflection:'Learned persistence'}})).statusCode).toBe(201);
@@ -77,7 +78,7 @@ describe('persistent pilot runtime flow',()=>{
   });
 
   it('shares class creation and rescheduling with the Student schedule',async()=>{
-    const runtime=new MemoryPilotRuntimeStore(),sessions=new MemorySessionStore();const teacher=await appFor(ADMIN_ID,runtime,sessions);
+    const runtime=new MemoryPilotRuntimeStore(createAssignedPilotState()),sessions=new MemorySessionStore();const teacher=await appFor(ADMIN_ID,runtime,sessions);
     const created=await teacher.app.inject({method:'POST',url:'/api/v1/teacher/sessions',headers:teacher.headers,payload:{groupId:PILOT.groupId,courseId:DEV_IDS.course,title:'Persistent live class',startsAt:'2030-11-01T15:00:00.000Z',endsAt:'2030-11-01T16:00:00.000Z',meetingUrl:PILOT.meetingUrl,meetingProvider:'Google Meet'}});expect(created.statusCode).toBe(201);const sessionId=created.json().id as string;
     expect((await teacher.app.inject({method:'POST',url:`/api/v1/teacher/sessions/${sessionId}/reschedule`,headers:teacher.headers,payload:{startsAt:'2030-11-02T16:00:00.000Z',endsAt:'2030-11-02T17:00:00.000Z'}})).statusCode).toBe(204);
     const student=await appFor(DEV_IDS.user,runtime,sessions);const schedule=(await student.app.inject({method:'GET',url:'/api/v1/schedule',headers:student.headers})).json();
@@ -85,7 +86,7 @@ describe('persistent pilot runtime flow',()=>{
   });
 
   it('shares attendance and portfolio visibility with isolated Teacher, Student and Admin instances',async()=>{
-    const runtime=new MemoryPilotRuntimeStore(),sessions=new MemorySessionStore();const teacher=await appFor(ADMIN_ID,runtime,sessions);const sessionId='71000000-0000-4000-8000-000000000001';
+    const runtime=new MemoryPilotRuntimeStore(createAssignedPilotState()),sessions=new MemorySessionStore();const teacher=await appFor(ADMIN_ID,runtime,sessions);const sessionId='71000000-0000-4000-8000-000000000001';
     expect((await teacher.app.inject({method:'PUT',url:`/api/v1/teacher/sessions/${sessionId}/attendance/${DEV_IDS.user}`,headers:teacher.headers,payload:{status:'late',note:'Joined after start'}})).statusCode).toBe(204);
     const coldTeacher=await appFor(ADMIN_ID,runtime,sessions);const teacherData=(await coldTeacher.app.inject({method:'GET',url:'/api/v1/teacher/bootstrap',headers:coldTeacher.headers})).json();
     expect(teacherData.sessions.find((item:{id:string})=>item.id===sessionId).attendance).toContainEqual(expect.objectContaining({studentId:DEV_IDS.user,status:'late',note:'Joined after start'}));
@@ -98,7 +99,7 @@ describe('persistent pilot runtime flow',()=>{
   });
 
   it('keeps account disablement effective after an isolated instance starts',async()=>{
-    const runtime=new MemoryPilotRuntimeStore(),sessions=new MemorySessionStore();const student=await appFor(DEV_IDS.user,runtime,sessions);expect(student.login.statusCode).toBe(200);
+    const runtime=new MemoryPilotRuntimeStore(createAssignedPilotState()),sessions=new MemorySessionStore();const student=await appFor(DEV_IDS.user,runtime,sessions);expect(student.login.statusCode).toBe(200);
     const admin=await appFor(ADMIN_ID,runtime,sessions);expect((await admin.app.inject({method:'PATCH',url:`/api/v1/admin/users/${DEV_IDS.user}/status`,headers:admin.headers,payload:{status:'disabled',reason:'Pilot security check'}})).statusCode).toBe(204);
     expect((await student.app.inject({method:'GET',url:'/api/v1/bootstrap',headers:student.headers})).statusCode).toBe(401);
     const coldStudent=await appFor(DEV_IDS.user,runtime,sessions);expect(coldStudent.login.statusCode).toBe(403);

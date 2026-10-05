@@ -34,6 +34,7 @@ export const api = {
   authenticate,
   revision:()=>request('/academic-revision'),
   bootstrap: () => request('/bootstrap'),
+  learning: () => request('/learning'),
   lesson: id => request(`/lessons/${id}`),
   completeLesson: (id, idempotencyKey) => request(`/lessons/${id}/complete`, { method: 'POST', body: JSON.stringify({ idempotencyKey }) }),
   schedule: () => request('/schedule'),

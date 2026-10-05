@@ -1,3 +1,4 @@
+import {createAssignedRepository,createAssignedPilotState} from './data/assigned-pilot.test-fixture.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from './app.js';
@@ -27,14 +28,14 @@ describe('student notifications',()=>{
   afterEach(async()=>app?.close());
 
   it('returns only the current student notifications and persists read state without touching Telegram delivery',async()=>{
-    const state=createPilotRuntimeState();
+    const state=createAssignedPilotState();
     const firstHomework=state.homework[0]!;
     const own=notification({relatedEntityId:firstHomework.id});
     const other=notification({id:'90000000-0000-4000-8000-000000000002',recipientUserId:PILOT_STUDENTS[1]!.id,idempotencyKey:'homework:other'});
     const guardian=notification({id:'90000000-0000-4000-8000-000000000003',type:'guardian_weekly_digest',recipientUserId:'13000000-0000-4000-8000-000000000001',idempotencyKey:'guardian:test'});
     state.notifications.push(own,other,guardian);
     const runtimeStore=new MemoryPilotRuntimeStore(state);
-    const repository=new MemoryRepository(undefined,{runtimeStore});
+    const repository=createAssignedRepository(undefined,{runtimeStore});
 
     const initial=await repository.listStudentNotifications(DEV_IDS.user);
     expect(initial.unreadCount).toBe(1);
@@ -43,7 +44,7 @@ describe('student notifications',()=>{
 
     const afterRead=await repository.markStudentNotificationsRead(DEV_IDS.user,[own.id,other.id]);
     expect(afterRead.unreadCount).toBe(0);
-    const persisted=await new MemoryRepository(undefined,{runtimeStore}).listStudentNotifications(DEV_IDS.user);
+    const persisted=await createAssignedRepository(undefined,{runtimeStore}).listStudentNotifications(DEV_IDS.user);
     expect(persisted.items[0]?.readAt).not.toBeNull();
 
     const stored=await runtimeStore.read();
@@ -52,12 +53,12 @@ describe('student notifications',()=>{
   });
 
   it('returns the empty state model and only valid Student App destinations',async()=>{
-    const state=createPilotRuntimeState();
+    const state=createAssignedPilotState();
     state.notifications.push(
       notification({type:'student_class_1h',relatedEntityId:state.classSessions[0]!.id}),
       notification({id:'90000000-0000-4000-8000-000000000004',type:'student_project_updated',relatedEntityId:null,idempotencyKey:'project:test'})
     );
-    const repository=new MemoryRepository(undefined,{runtimeStore:new MemoryPilotRuntimeStore(state)});
+    const repository=createAssignedRepository(undefined,{runtimeStore:new MemoryPilotRuntimeStore(state)});
     const result=await repository.listStudentNotifications(DEV_IDS.user);
     expect(result.items.map(item=>item.destination?.tab)).toEqual(['learn','project']);
     expect(result.items.every(item=>!item.destination||['learn','project'].includes(item.destination.tab))).toBe(true);
@@ -65,8 +66,8 @@ describe('student notifications',()=>{
   });
 
   it.each(['disabled','archived'] as const)('rejects a %s student at the authenticated API boundary',async status=>{
-    const runtimeStore=new MemoryPilotRuntimeStore();
-    const repository=new MemoryRepository(undefined,{runtimeStore});
+    const runtimeStore=new MemoryPilotRuntimeStore(createAssignedPilotState());
+    const repository=createAssignedRepository(undefined,{runtimeStore});
     const env=loadEnv({NODE_ENV:'test',DATA_BACKEND:'memory',DEV_AUTH_ENABLED:'true',DEV_EPHEMERAL_JWT:'true',SESSION_TOKEN_PEPPER:'test-pepper'});
     app=await buildApp({env,repository,jwt:await createJwtService(env),aiProvider:new MockAiProvider()});
     const login=await app.inject({method:'POST',url:'/api/v1/auth/development'});

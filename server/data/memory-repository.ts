@@ -160,7 +160,7 @@ export class MemoryRepository implements AppRepository {
       state.userStatus[user.id] = 'active';
       state.xp[user.id] = 0;
       state.streak[user.id] = 0;
-      state.lessonProgress[user.id] = { [SEEDED_LESSONS[0]!.id]: { progressPercent: 0, completedAt: null } };
+      state.lessonProgress[user.id] = {};
       state.projects[user.id] = [];
       state.achievements[user.id] = [];
       state.portfolioProjects[user.id] = [];
@@ -278,77 +278,49 @@ export class MemoryRepository implements AppRepository {
 
   async getLearning(userId: string): Promise<LearningDto> {
     this.requireUser(userId);
-    const runtime = await this.runtimeStore.read();
-    const state = runtime.lessonProgress[userId] ?? {};
-    const firstIncompleteIndex = SEEDED_LESSONS.findIndex(lesson => (state[lesson.id]?.progressPercent ?? 0) < 100);
-    const lessons: LessonSummaryDto[] = SEEDED_LESSONS.map((lesson, index) => {
-      const progress = state[lesson.id]?.progressPercent ?? 0;
-      const lessonState: LessonSummaryDto['state'] = progress === 100
-        ? 'completed'
-        : index === (firstIncompleteIndex < 0 ? SEEDED_LESSONS.length - 1 : firstIncompleteIndex)
-          ? (progress > 0 ? 'current' : 'available')
-          : 'locked';
-      return {
-        id: lesson.id,
-        number: String(index + 1).padStart(2, '0'),
-        title: lesson.title,
-        summary: lesson.summary,
-        estimatedMinutes: lesson.minutes,
-        xpReward: lesson.xp,
-        state: lessonState,
-        progressPercent: progress
-      };
+    return this.learningFromState(await this.runtimeStore.read(),userId);
+  }
+
+  private learningFromState(runtime:PilotRuntimeState,userId:string):LearningDto {
+    const progress=runtime.lessonProgress[userId]??{};
+    const sessions=this.studentLearningSessions(runtime,userId),group=runtime.groups.find(g=>g.id===runtime.directory[userId]?.groupId);
+    const firstIncomplete=sessions.findIndex(session=>(progress[session.id]?.progressPercent??0)<100);
+    const lessons:LessonSummaryDto[]=sessions.map((session,index)=>{
+      const value=progress[session.id]?.progressPercent??0,catalog=SEEDED_LESSONS.find(item=>item.id===session.lessonId);
+      return{id:session.id,number:String(session.number??index+1).padStart(2,'0'),title:session.title,summary:session.description,estimatedMinutes:session.durationMinutes,xpReward:catalog?.xp??0,
+        state:value===100?'completed':index===firstIncomplete?(value>0?'current':'available'):'locked',progressPercent:value};
     });
-    const totalProgress = lessons.reduce((sum, lesson) => sum + lesson.progressPercent, 0);
-    return {
-      course: {
-        id: DEV_IDS.course,
-        title: PILOT.courseTitle,
-        description: PILOT.courseDescription,
-        progressPercent: Math.round(totalProgress / lessons.length),
-        completedLessons: lessons.filter(lesson => lesson.state === 'completed').length,
-        totalLessons: lessons.length
-      },
-      modules: [{
-        id: DEV_IDS.module,
-        number: '01',
-        title: PILOT.moduleTitle,
-        description: PILOT.moduleDescription,
-        lessons
-      }]
-    };
+    return{course:{id:DEV_IDS.course,title:PILOT.courseTitle,description:PILOT.courseDescription,progressPercent:lessons.length?Math.round(lessons.reduce((sum,item)=>sum+item.progressPercent,0)/lessons.length):0,completedLessons:lessons.filter(item=>item.state==='completed').length,totalLessons:lessons.length},
+      modules:lessons.length?[{id:DEV_IDS.module,number:'01',title:group?.name??sessions[0]!.moduleTitle??'',description:'',lessons}]:[]};
   }
 
   async getLesson(userId: string, lessonId: string): Promise<LessonDto | null> {
-    const learning = await this.getLearning(userId);
-    const summary = learning.modules[0]?.lessons.find(lesson => lesson.id === lessonId);
-    const sourceIndex = SEEDED_LESSONS.findIndex(lesson => lesson.id === lessonId);
-    if (!summary || sourceIndex < 0) return null;
-    if (summary.state === 'locked') throw new AppError('LESSON_LOCKED', 403, 'Цей урок ще не відкрито');
-    const source = SEEDED_LESSONS[sourceIndex];
-    if (!source) return null;
-    return {
-      ...summary,
-      moduleTitle: PILOT.moduleTitle,
-      content: JSON.parse(JSON.stringify(source.content)) as LessonDto['content'],
-      nextLessonId: SEEDED_LESSONS[sourceIndex + 1]?.id ?? null
-    };
+    this.requireUser(userId);
+    const runtime=await this.runtimeStore.read(),learning=this.learningFromState(runtime,userId);
+    const sessions=this.studentLearningSessions(runtime,userId),session=sessions.find(item=>item.id===lessonId||item.lessonId===lessonId);
+    const summary=learning.modules[0]?.lessons.find(item=>item.id===session?.id);
+    if(!session||!summary)return null;
+    if(summary.state==='locked')throw new AppError('LESSON_LOCKED',403,'Цей урок ще не відкрито');
+    const catalog=SEEDED_LESSONS.find(item=>item.id===session.lessonId),homework=runtime.homework.find(item=>item.classSessionId===session.id&&item.status==='published');
+    return{...summary,moduleTitle:learning.modules[0]!.title,
+      content:catalog?JSON.parse(JSON.stringify(catalog.content)) as LessonDto['content']:{explanation:session.description,examples:[],task:{prompt:homework?.instructions??'',hint:''},conceptName:session.title,nextStep:''},
+      nextLessonId:sessions[sessions.findIndex(item=>item.id===session.id)+1]?.id??null};
   }
 
   async completeLesson(userId: string, lessonId: string, idempotencyKey: string): Promise<{ awardedXp: number; home: HomeDto }> {
-    const lesson = await this.getLesson(userId, lessonId);
-    if (!lesson) throw new AppError('LESSON_NOT_FOUND', 404, 'Урок не знайдено');
-    const rewardKey = `lesson:${userId}:${lessonId}:${idempotencyKey}`;
-    const completedAt=nowIso();
-    const awardedXp = await this.runtimeStore.mutate(state => {
+    const lesson=await this.getLesson(userId,lessonId);
+    if(!lesson)throw new AppError('LESSON_NOT_FOUND',404,'Урок не знайдено');
+    const rewardKey=`lesson:${userId}:${lesson.id}:${idempotencyKey}`,completedAt=nowIso();
+    const awardedXp=await this.runtimeStore.mutate(state=>{
+      if(!this.studentLearningSessions(state,userId).some(session=>session.id===lesson.id))throw new AppError('LESSON_NOT_FOUND',404,'Урок не знайдено');
       const progress=state.lessonProgress[userId]??(state.lessonProgress[userId]={});
-      if(state.idempotencyKeys.includes(rewardKey)||progress[lessonId]?.progressPercent===100)return 0;
-      progress[lessonId]={progressPercent:100,completedAt}; state.idempotencyKeys.push(rewardKey);
-      state.xp[userId]=(state.xp[userId]??0)+lesson.xpReward; state.streak[userId]=Math.max(1,state.streak[userId]??0);
-      const achievements=state.achievements[userId]??(state.achievements[userId]=[]); if(!achievements.includes('first-spark'))achievements.push('first-spark');
+      if(state.idempotencyKeys.includes(rewardKey)||progress[lesson.id]?.progressPercent===100)return 0;
+      progress[lesson.id]={progressPercent:100,completedAt};state.idempotencyKeys.push(rewardKey);
+      state.xp[userId]=(state.xp[userId]??0)+lesson.xpReward;state.streak[userId]=Math.max(1,state.streak[userId]??0);
+      const achievements=state.achievements[userId]??(state.achievements[userId]=[]);if(!achievements.includes('first-spark'))achievements.push('first-spark');
       return lesson.xpReward;
     });
-    return { awardedXp, home: await this.getHome(userId) };
+    return{awardedXp,home:await this.getHome(userId)};
   }
 
   async listProjects(userId: string): Promise<ProjectDto[]> {
@@ -490,6 +462,7 @@ export class MemoryRepository implements AppRepository {
       groups,sessions,homework,
       state.attendance.filter(a=>sessionIds.has(a.sessionId)&&(staff||a.studentId===userId)),
       state.submissions.filter(s=>homeworkIds.has(s.homeworkId)&&(staff||s.studentId===userId)),
+      Object.entries(state.lessonProgress).filter(([id])=>staff ? ids.has(state.directory[id]?.groupId??'') : id===userId),
       Object.values(state.directory).filter(p=>p.groupId&&ids.has(p.groupId)).map(p=>[p.id,p.status,p.groupId,p.version])
     ])).digest('hex')};
   }
@@ -821,7 +794,7 @@ export class MemoryRepository implements AppRepository {
   }
   async adminRevokeUserSession(userId:string,sessionId:string,reason:string,correlationId:string):Promise<void>{this.requireRole(userId,'admin');const session=await this.sessionStore.revokeById(sessionId,new Date());if(!session)throw new AppError('SESSION_NOT_FOUND',404,'Сесію не знайдено');const createdAt=nowIso(),id=randomUUID();await this.runtimeStore.mutate(state=>{this.addAudit(state,userId,'session.revoked','auth_session',sessionId,{subjectUserId:session.userId,reason},correlationId);state.securityEvents.unshift({id,type:'forced_session_revocation',severity:'medium',actorId:userId,targetId:session.userId,createdAt,correlationId});});}
 
-  async adminCreateStudent(userId:string,input:{firstName:string;lastName:string;groupId:string;telegramId?:string;status:'active'|'disabled'},correlationId:string):Promise<Record<string,unknown>>{this.requireRole(userId,'admin');const id=randomUUID(),timestamp=nowIso(),telegramId=input.telegramId?this.normalizeTelegramId(input.telegramId):null;await this.runtimeStore.mutate(state=>{if(!state.groups.some(g=>g.id===input.groupId&&g.status==='active'))throw new AppError('GROUP_NOT_FOUND',404,'Групу не знайдено');if(telegramId)this.assertTelegramAvailable(state,telegramId);const person=this.newPerson(id,input.firstName,input.lastName,['student'],input.status,{groupId:input.groupId,telegramId},timestamp);state.directory[id]=person;state.userStatus[id]=input.status;if(telegramId)state.telegramBindings[telegramId]=id;state.xp[id]=0;state.streak[id]=0;state.lessonProgress[id]={[SEEDED_LESSONS[0]!.id]:{progressPercent:0,completedAt:null}};state.projects[id]=[];state.achievements[id]=[];state.portfolioProjects[id]=[];state.portfolioVisibility[`portfolio:${id}`]='private';this.addAudit(state,userId,'student.created','student',id,{groupId:input.groupId,telegramLinked:Boolean(telegramId),status:input.status},correlationId);});return{id,version:1};}
+  async adminCreateStudent(userId:string,input:{firstName:string;lastName:string;groupId:string;telegramId?:string;status:'active'|'disabled'},correlationId:string):Promise<Record<string,unknown>>{this.requireRole(userId,'admin');const id=randomUUID(),timestamp=nowIso(),telegramId=input.telegramId?this.normalizeTelegramId(input.telegramId):null;await this.runtimeStore.mutate(state=>{if(!state.groups.some(g=>g.id===input.groupId&&g.status==='active'))throw new AppError('GROUP_NOT_FOUND',404,'Групу не знайдено');if(telegramId)this.assertTelegramAvailable(state,telegramId);const person=this.newPerson(id,input.firstName,input.lastName,['student'],input.status,{groupId:input.groupId,telegramId},timestamp);state.directory[id]=person;state.userStatus[id]=input.status;if(telegramId)state.telegramBindings[telegramId]=id;state.xp[id]=0;state.streak[id]=0;state.lessonProgress[id]={};state.projects[id]=[];state.achievements[id]=[];state.portfolioProjects[id]=[];state.portfolioVisibility[`portfolio:${id}`]='private';this.addAudit(state,userId,'student.created','student',id,{groupId:input.groupId,telegramLinked:Boolean(telegramId),status:input.status},correlationId);});return{id,version:1};}
   async adminUpdateStudent(userId:string,studentId:string,input:{firstName?:string;lastName?:string;groupId?:string;expectedVersion:number},correlationId:string):Promise<void>{this.requireRole(userId,'admin');await this.runtimeStore.mutate(state=>{const person=this.expectPerson(state,studentId,'student');this.assertVersion(person,input.expectedVersion);if(input.groupId!==undefined&&!state.groups.some(g=>g.id===input.groupId&&g.status==='active'))throw new AppError('GROUP_NOT_FOUND',404,'Групу не знайдено');if(input.firstName!==undefined)person.firstName=input.firstName;if(input.lastName!==undefined)person.lastName=input.lastName;if(input.groupId!==undefined)person.groupId=input.groupId;this.touchPerson(person);this.addAudit(state,userId,'student.edited','student',studentId,{groupId:person.groupId},correlationId);});}
   async adminSetTelegramBinding(userId:string,targetUserId:string,telegramId:string|null,expectedVersion:number,correlationId:string):Promise<void>{this.requireRole(userId,'admin');let revoke=false;await this.runtimeStore.mutate(state=>{const person=state.directory[targetUserId];if(!person||!person.roles.some(role=>role==='student'||role==='guardian'))throw new AppError('USER_NOT_FOUND',404,'Користувача не знайдено');this.assertVersion(person,expectedVersion);const normalized=telegramId===null?null:this.normalizeTelegramId(telegramId);if(normalized)this.assertTelegramAvailable(state,normalized,targetUserId);const previous=person.telegramId;revoke=Boolean(previous&&previous!==normalized);if(previous)delete state.telegramBindings[previous];person.telegramId=normalized;if(normalized)state.telegramBindings[normalized]=targetUserId;this.touchPerson(person);this.addAudit(state,userId,normalized?'telegram.bound':'telegram.unbound','user',targetUserId,{changed:Boolean(previous&&normalized)},correlationId);});if(revoke)await this.sessionStore.revokeUser(targetUserId,new Date());}
   async adminCreateGuardian(userId:string,input:{firstName:string;lastName:string;telegramId?:string;phone?:string;email?:string;studentIds:string[];status:'active'|'disabled'},correlationId:string):Promise<Record<string,unknown>>{this.requireRole(userId,'admin');const id=randomUUID(),timestamp=nowIso(),telegramId=input.telegramId?this.normalizeTelegramId(input.telegramId):null,email=input.email?normalizeEmail(input.email):null;await this.runtimeStore.mutate(state=>{if(telegramId)this.assertTelegramAvailable(state,telegramId);if(email&&Object.values(state.directory).some(item=>item.email===email))throw new AppError('EMAIL_CONFLICT',409,'Ця електронна адреса вже використовується');for(const studentId of input.studentIds)this.expectPerson(state,studentId,'student');const person=this.newPerson(id,input.firstName,input.lastName,['guardian'],input.status,{telegramId,email,phone:input.phone?.trim()||null},timestamp);state.directory[id]=person;state.userStatus[id]=input.status;if(telegramId)state.telegramBindings[telegramId]=id;for(const studentId of [...new Set(input.studentIds)])state.guardianRelations.push({id:randomUUID(),guardianId:id,studentId,status:'active',createdAt:timestamp,updatedAt:timestamp});this.addAudit(state,userId,'guardian.created','guardian',id,{studentCount:input.studentIds.length,telegramLinked:Boolean(telegramId)},correlationId);});return{id,version:1};}
@@ -980,7 +953,7 @@ export class MemoryRepository implements AppRepository {
   private requireGuardianStudent(state:PilotRuntimeState,guardianId:string,studentId:string):void{this.syncDirectory(state);this.requireRole(guardianId,'guardian');const guardian=state.directory[guardianId],student=state.directory[studentId];if(!guardian||guardian.status!=='active'||!student||student.status==='archived'||!state.guardianRelations.some(link=>link.guardianId===guardianId&&link.studentId===studentId&&link.status==='active'))throw new AppError('STUDENT_FORBIDDEN',403,'Учень недоступний');}
 
   private async parentSummary(state:PilotRuntimeState,studentId:string):Promise<ParentSummaryDto>{
-    const student=this.expectPerson(state,studentId,'student');const progress=this.progressPercent(state,studentId);const completedLessons=Object.values(state.lessonProgress[studentId]??{}).filter(item=>item.progressPercent===100).length;const attempts=state.submissions.filter(item=>item.studentId===studentId);const latestByHomework=new Map<string,PilotRuntimeState['submissions'][number]>();for(const attempt of attempts){const current=latestByHomework.get(attempt.homeworkId);if(!current||attempt.attemptNumber>current.attemptNumber)latestByHomework.set(attempt.homeworkId,attempt);}const group=state.groups.find(g=>g.id===student.groupId);const published=state.homework.filter(item=>item.groupId===student.groupId&&group?.status==='active'&&item.status==='published');const now=Date.now();const attendance=state.attendance.filter(item=>item.studentId===studentId);const project=(state.projects[studentId]??[]).find(item=>item.status==='active')??state.projects[studentId]?.[0]??null;const nextClass=state.classSessions.filter(item=>group?.status==='active'&&item.groupId===student.groupId&&isUpcomingSession(item,now)).sort((a,b)=>Date.parse(a.startsAt)-Date.parse(b.startsAt))[0]??null;const bookings=(await this.mentoringStore.listBookings(PILOT.mentorId)).filter(item=>item.studentId===studentId&&['reserved','confirmed','rescheduled'].includes(item.status)&&Date.parse(item.endsAt)>=now).sort((a,b)=>Date.parse(a.startsAt)-Date.parse(b.startsAt)),lastAbsence=attendance.filter(item=>item.status==='absent').sort((a,b)=>Date.parse(b.confirmedAt)-Date.parse(a.confirmedAt))[0],missedSession=lastAbsence?state.classSessions.find(item=>item.id===lastAbsence.sessionId):undefined,portfolioId=PILOT_PORTFOLIO_IDS[studentId]??`portfolio:${studentId}`,projectShared=project&&state.portfolioProjects[studentId]?.some(item=>item.projectId===project.id)&&['shareable','public'].includes(state.portfolioVisibility[portfolioId]??'private'),viewUrl=projectShared&&project.workspaceUrl?.startsWith('https://')?project.workspaceUrl:null;return{student:{id:student.id,name:student.displayName,groupName:group?.name??'Без групи'},nextClass:nextClass?{id:nextClass.id,title:nextClass.title,startsAt:nextClass.startsAt,endsAt:nextClass.endsAt}:null,progress:{percent:progress,completedLessons,totalLessons:SEEDED_LESSONS.length},homework:{completed:[...latestByHomework.values()].filter(item=>item.status==='completed').length,pending:published.filter(item=>!['completed'].includes(latestByHomework.get(item.id)?.status??'')).filter(item=>!item.dueAt||Date.parse(item.dueAt)>=now).length,overdue:published.filter(item=>item.dueAt&&Date.parse(item.dueAt)<now&&!['completed'].includes(latestByHomework.get(item.id)?.status??'')).length},attendance:{attended:attendance.filter(item=>['present','late'].includes(item.status)).length,missed:attendance.filter(item=>item.status==='absent').length,late:attendance.filter(item=>item.status==='late').length,excused:attendance.filter(item=>item.status==='excused').length},grades:attempts.filter(item=>item.review).sort((a,b)=>Date.parse(b.review!.reviewedAt)-Date.parse(a.review!.reviewedAt)).slice(0,5).map(item=>({homeworkTitle:state.homework.find(homework=>homework.id===item.homeworkId)?.title??'Домашнє завдання',score:item.review!.score,feedback:item.review!.feedback,reviewedAt:item.review!.reviewedAt})),project:project?{id:project.id,title:project.title,description:project.summary,status:project.status,stage:project.stageTitle,progressPercent:project.tasks.filter(item=>item.status==='completed').reduce((sum,item)=>sum+item.weight,0),completedTasks:project.tasks.filter(item=>item.status==='completed').map(item=>item.title),nextTask:project.tasks.find(item=>['available','in_progress'].includes(item.status))?.title??null,updatedAt:project.updatedAt,viewUrl}:null,mentoring:bookings[0]?{startsAt:bookings[0].startsAt,endsAt:bookings[0].endsAt,status:bookings[0].status}:null,recovery:missedSession?{sessionId:missedSession.id,title:missedSession.title,startsAt:missedSession.startsAt,materialsAvailable:missedSession.materials.length>0||state.homework.some(item=>item.classSessionId===missedSession.id)}:null};
+    const student=this.expectPerson(state,studentId,'student');const progress=this.progressPercent(state,studentId);const learningSessions=this.studentLearningSessions(state,studentId);const completedLessons=learningSessions.filter(item=>state.lessonProgress[studentId]?.[item.id]?.progressPercent===100).length;const attempts=state.submissions.filter(item=>item.studentId===studentId);const latestByHomework=new Map<string,PilotRuntimeState['submissions'][number]>();for(const attempt of attempts){const current=latestByHomework.get(attempt.homeworkId);if(!current||attempt.attemptNumber>current.attemptNumber)latestByHomework.set(attempt.homeworkId,attempt);}const group=state.groups.find(g=>g.id===student.groupId);const published=state.homework.filter(item=>item.groupId===student.groupId&&group?.status==='active'&&item.status==='published');const now=Date.now();const attendance=state.attendance.filter(item=>item.studentId===studentId);const project=(state.projects[studentId]??[]).find(item=>item.status==='active')??state.projects[studentId]?.[0]??null;const nextClass=state.classSessions.filter(item=>group?.status==='active'&&item.groupId===student.groupId&&isUpcomingSession(item,now)).sort((a,b)=>Date.parse(a.startsAt)-Date.parse(b.startsAt))[0]??null;const bookings=(await this.mentoringStore.listBookings(PILOT.mentorId)).filter(item=>item.studentId===studentId&&['reserved','confirmed','rescheduled'].includes(item.status)&&Date.parse(item.endsAt)>=now).sort((a,b)=>Date.parse(a.startsAt)-Date.parse(b.startsAt)),lastAbsence=attendance.filter(item=>item.status==='absent').sort((a,b)=>Date.parse(b.confirmedAt)-Date.parse(a.confirmedAt))[0],missedSession=lastAbsence?state.classSessions.find(item=>item.id===lastAbsence.sessionId):undefined,portfolioId=PILOT_PORTFOLIO_IDS[studentId]??`portfolio:${studentId}`,projectShared=project&&state.portfolioProjects[studentId]?.some(item=>item.projectId===project.id)&&['shareable','public'].includes(state.portfolioVisibility[portfolioId]??'private'),viewUrl=projectShared&&project.workspaceUrl?.startsWith('https://')?project.workspaceUrl:null;return{student:{id:student.id,name:student.displayName,groupName:group?.name??'Без групи'},nextClass:nextClass?{id:nextClass.id,title:nextClass.title,startsAt:nextClass.startsAt,endsAt:nextClass.endsAt}:null,progress:{percent:progress,completedLessons,totalLessons:learningSessions.length},homework:{completed:[...latestByHomework.values()].filter(item=>item.status==='completed').length,pending:published.filter(item=>!['completed'].includes(latestByHomework.get(item.id)?.status??'')).filter(item=>!item.dueAt||Date.parse(item.dueAt)>=now).length,overdue:published.filter(item=>item.dueAt&&Date.parse(item.dueAt)<now&&!['completed'].includes(latestByHomework.get(item.id)?.status??'')).length},attendance:{attended:attendance.filter(item=>['present','late'].includes(item.status)).length,missed:attendance.filter(item=>item.status==='absent').length,late:attendance.filter(item=>item.status==='late').length,excused:attendance.filter(item=>item.status==='excused').length},grades:attempts.filter(item=>item.review).sort((a,b)=>Date.parse(b.review!.reviewedAt)-Date.parse(a.review!.reviewedAt)).slice(0,5).map(item=>({homeworkTitle:state.homework.find(homework=>homework.id===item.homeworkId)?.title??'Домашнє завдання',score:item.review!.score,feedback:item.review!.feedback,reviewedAt:item.review!.reviewedAt})),project:project?{id:project.id,title:project.title,description:project.summary,status:project.status,stage:project.stageTitle,progressPercent:project.tasks.filter(item=>item.status==='completed').reduce((sum,item)=>sum+item.weight,0),completedTasks:project.tasks.filter(item=>item.status==='completed').map(item=>item.title),nextTask:project.tasks.find(item=>['available','in_progress'].includes(item.status))?.title??null,updatedAt:project.updatedAt,viewUrl}:null,mentoring:bookings[0]?{startsAt:bookings[0].startsAt,endsAt:bookings[0].endsAt,status:bookings[0].status}:null,recovery:missedSession?{sessionId:missedSession.id,title:missedSession.title,startsAt:missedSession.startsAt,materialsAvailable:missedSession.materials.length>0||state.homework.some(item=>item.classSessionId===missedSession.id)}:null};
   }
 
   private studentNotificationsDto(state:PilotRuntimeState,userId:string):StudentNotificationsDto{
@@ -1061,7 +1034,12 @@ export class MemoryRepository implements AppRepository {
 
   private progressPercent(state:PilotRuntimeState,userId:string):number {
     const progress=state.lessonProgress[userId]??{};
-    return Math.round(SEEDED_LESSONS.reduce((sum,lesson)=>sum+(progress[lesson.id]?.progressPercent??0),0)/SEEDED_LESSONS.length);
+    const sessions=this.studentLearningSessions(state,userId);return sessions.length?Math.round(sessions.reduce((sum,session)=>sum+(progress[session.id]?.progressPercent??0),0)/sessions.length):0;
+  }
+
+  private studentLearningSessions(state:PilotRuntimeState,userId:string):PilotRuntimeState['classSessions'] {
+    const group=state.groups.find(item=>item.id===state.directory[userId]?.groupId);
+    return state.classSessions.filter(session=>group?.status==='active'&&session.groupId===group.id&&['scheduled','rescheduled','in_progress','completed'].includes(session.status)).sort((a,b)=>Date.parse(a.startsAt)-Date.parse(b.startsAt));
   }
 
   private portfolioFromState(state:PilotRuntimeState,userId:string):PortfolioDto {

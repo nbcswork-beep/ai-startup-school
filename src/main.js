@@ -304,7 +304,7 @@ function home() {
 
       <section class="next-step" ${lesson ? `data-lesson="${lesson.id}"` : 'data-tab="learn"'}>
         <div class="step-index"><small>УРОК</small><strong>${lesson?.number ?? '—'}</strong></div>
-        <div class="step-copy"><span>НАСТУПНИЙ КРОК</span><h2>${escapeHtml(lesson?.title ?? 'Маршрут завершено')}</h2><p>${escapeHtml(lesson?.summary ?? 'Переглянь свої досягнення та обери наступну ціль.')}</p></div>
+        <div class="step-copy"><span>НАСТУПНИЙ КРОК</span><h2>${escapeHtml(lesson?.title ?? (homeData.course.totalLessons ? 'Маршрут завершено' : 'Занять ще немає'))}</h2><p>${escapeHtml(lesson?.summary ?? (homeData.course.totalLessons ? 'Переглянь свої досягнення та обери наступну ціль.' : 'Викладач ще не додав заняття для вашої групи.'))}</p></div>
         <button class="round-arrow" aria-label="Відкрити урок">${arrowIcon()}</button>
       </section>
 
@@ -349,11 +349,11 @@ function learn() {
           <div class="recovery-actions">${item.homework ? `<button class="recovery-homework" data-homework="${item.homework.id}">Відкрити домашнє завдання ${arrowIcon()}</button>` : ''}${item.mentorSlotId ? `<button class="recovery-mentor" data-recovery-mentor="${item.mentorSlotId}">Записатися до ментора</button>` : ''}</div>
         </article>`).join('')}
       </section>` : ''}
-      <section class="module-overview">
+      ${lessonRows.length ? `<section class="module-overview">
         <div class="module-number">01</div>
         <div><span>ПОТОЧНИЙ МОДУЛЬ</span><h2>${escapeHtml(module?.title ?? learning.course.title)}</h2><p>${escapeHtml(module?.description ?? learning.course.description)}</p></div>
         <div class="module-progress"><strong>${learning.course.progressPercent}%</strong><span><i style="height:${learning.course.progressPercent}%"></i></span></div>
-      </section>
+      </section>` : '<p class="empty-inline">Викладач ще не додав заняття для вашої групи.</p>'}
       <div class="journey-label"><span>ТВОЯ ТРАЄКТОРІЯ</span><b>${learning.course.completedLessons} / ${learning.course.totalLessons} уроків</b></div>
       <div class="lesson-journey">
         ${lessonRows.map(lesson => {
@@ -515,9 +515,9 @@ function lessonPage() {
   return `<section class="page lesson-page">
     <button class="lesson-back" data-tab="learn">← Маршрут</button>
     <div class="page-title"><span class="section-kicker">УРОК ${lesson.number} · ${escapeHtml(lesson.moduleTitle)}</span><span class="zone-code">${lesson.estimatedMinutes} ХВ · +${lesson.xpReward} XP</span><h1>${escapeHtml(lesson.title)}</h1><p>${escapeHtml(lesson.summary)}</p></div>
-    <section class="lesson-console"><span>КЛЮЧОВА ІДЕЯ</span><h2>${escapeHtml(lesson.content.conceptName)}</h2><p>${escapeHtml(lesson.content.explanation)}</p></section>
-    <section class="lesson-section"><span class="section-kicker">ПРИКЛАДИ</span>${lesson.content.examples.map(example => `<article><i></i><p>${escapeHtml(example)}</p></article>`).join('')}</section>
-    <section class="lesson-task"><span class="section-kicker">ТВІЙ ХІД</span><h2>${escapeHtml(lesson.content.task.prompt)}</h2><p>${escapeHtml(lesson.content.task.hint)}</p></section>
+    ${lesson.content.explanation ? `<section class="lesson-console"><span>КЛЮЧОВА ІДЕЯ</span><h2>${escapeHtml(lesson.content.conceptName)}</h2><p>${escapeHtml(lesson.content.explanation)}</p></section>` : ''}
+    ${lesson.content.examples.length ? `<section class="lesson-section"><span class="section-kicker">ПРИКЛАДИ</span>${lesson.content.examples.map(example => `<article><i></i><p>${escapeHtml(example)}</p></article>`).join('')}</section>` : ''}
+    ${lesson.content.task.prompt ? `<section class="lesson-task"><span class="section-kicker">ТВІЙ ХІД</span><h2>${escapeHtml(lesson.content.task.prompt)}</h2><p>${escapeHtml(lesson.content.task.hint)}</p></section>` : ''}
     <section class="lesson-next"><div><span>ДАЛІ</span><p>${escapeHtml(lesson.content.nextStep)}</p></div>${lesson.state === 'completed' ? `<button class="primary-btn" data-tab="learn">Повернутися</button>` : `<button class="primary-btn" id="completeLesson" data-lesson="${lesson.id}">Завершити · +${lesson.xpReward} XP ${arrowIcon()}</button>`}</section>
   </section>`;
 }
@@ -784,8 +784,15 @@ async function initialize() {
 initialize();
 
 startAcademicSync({revision:api.revision,canApply:()=>Boolean(data)&&!notificationPanelOpen,refresh:async()=>{
-  const [schedule,homework]=await Promise.all([api.schedule(),api.homework()]);
+  const [schedule,homework,learning]=await Promise.all([api.schedule(),api.homework(),api.learning()]);
   data.schedule=schedule;data.home.nextClass=schedule.nextClass;data.homework=homework;data.home.homeworkDue=homework.find(h=>h.state!=='completed')??null;
+  data.learning=learning;data.home.course=learning.course;data.home.currentLesson=learning.modules.flatMap(module=>module.lessons).find(lesson=>lesson.state==='current'||lesson.state==='available')??null;
+  if(active==='lesson'&&currentLesson){
+    const lessonId=currentLesson.id;
+    const visible=learning.modules.some(module=>module.lessons.some(lesson=>lesson.id===lessonId));
+    const refreshed=visible?await api.lesson(lessonId):null;
+    if(active==='lesson'&&currentLesson?.id===lessonId){currentLesson=refreshed;render('lesson',false);}
+  }
   if(active==='home'||active==='learn')render(active,false);
   if(active==='homework'&&currentHomework&&homework.some(h=>h.id===currentHomework.id)){const form=document.querySelector('#homeworkSubmit');if(form?.querySelector('.withdrawn-homework')){form.querySelector('.withdrawn-homework').remove();form.querySelectorAll('input,textarea,button').forEach(el=>el.disabled=false);}}
   if(active==='homework'&&currentHomework&&!homework.some(h=>h.id===currentHomework.id)){

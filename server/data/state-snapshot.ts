@@ -101,6 +101,7 @@ const lessonProgressSchema = z.object({
 
 const stateSchema = z.object({
   schemaVersion: z.number().int().positive(),
+  seededContentCleanupApplied: z.boolean().optional(),
   directory: record(directoryPersonSchema),
   telegramBindings: record(z.string().min(1)),
   guardianRelations: z.array(guardianRelationSchema),

@@ -1,3 +1,4 @@
+import {createAssignedRepository} from './assigned-pilot.test-fixture.js';
 import { describe, expect, it } from 'vitest';
 import { MemoryRepository } from './memory-repository.js';
 import { DEV_IDS } from './seed.js';
@@ -9,7 +10,7 @@ const session='71000000-0000-4000-8000-000000000001';
 
 describe('Teacher OS operations and boundaries',()=>{
   it('returns only assigned workspace data and rejects unrelated identifiers',async()=>{
-    const repository=new MemoryRepository();
+    const repository=createAssignedRepository();
     const workspace=await repository.getTeacherWorkspace(teacher);
     expect(workspace.groups.map(item=>item.id)).toEqual([group]);
     expect(workspace.students.map(item=>item.id)).toContain(DEV_IDS.user);
@@ -19,7 +20,7 @@ describe('Teacher OS operations and boundaries',()=>{
   });
 
   it('supports authoritative bulk attendance with exceptions',async()=>{
-    const repository=new MemoryRepository();
+    const repository=createAssignedRepository();
     await repository.bulkConfirmAttendance(teacher,session,[
       {studentId:DEV_IDS.user,status:'present'},
       {studentId:'10000000-0000-4000-8000-000000000002',status:'late',note:'Приєдналася о 17:08'}
@@ -30,7 +31,7 @@ describe('Teacher OS operations and boundaries',()=>{
   });
 
   it('keeps draft publishing explicit and validates mentor overlap',async()=>{
-    const repository=new MemoryRepository();
+    const repository=createAssignedRepository();
     const created=await repository.createHomework(teacher,{groupId:group,courseId:DEV_IDS.course,title:'Чернетка',instructions:'Завдання',dueAt:'2026-10-20T18:00:00.000Z',xpReward:50,status:'draft',resources:[{kind:'link',title:'Матеріал',url:'https://example.com/material'}]});
     const draft=(await repository.getTeacherWorkspace(teacher)).homework.find(item=>item.id===created.id);
     expect(draft?.status).toBe('draft');
@@ -43,7 +44,7 @@ describe('Teacher OS operations and boundaries',()=>{
   });
 
   it('separates grading from XP and preserves private-note isolation',async()=>{
-    const repository=new MemoryRepository();
+    const repository=createAssignedRepository();
     const before=(await repository.getHome(DEV_IDS.user)).viewer.xp;
     const submission=await repository.submitHomework(DEV_IDS.user,'73000000-0000-4000-8000-000000000002',{contentText:'Чернетка'});
     await repository.reviewHomework(teacher,submission.id,{score:3,effort:'needs_attention',status:'needs_revision',feedback:'Додай перевірку.'});
@@ -58,7 +59,7 @@ describe('Teacher OS operations and boundaries',()=>{
   });
 
   it('requires a reviewed human comment before report approval',async()=>{
-    const repository=new MemoryRepository();
+    const repository=createAssignedRepository();
     await repository.generateTeacherReports(teacher,group,'2026-09-01','2026-09-07');
     const report=(await repository.getTeacherWorkspace(teacher)).reports[0]!;
     await repository.saveTeacherReport(teacher,report.id,{teacherComment:'',status:'draft'});
