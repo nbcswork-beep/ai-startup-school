@@ -1,3 +1,4 @@
+import { registerGroupRoutes } from './groups.js';
 import type { FastifyInstance, FastifyRequest, preHandlerHookHandler } from 'fastify';
 import { z } from 'zod';
 import type { AppEnv } from '../config/env.js';
@@ -18,6 +19,7 @@ const staffRoles=z.array(z.enum(['teacher','mentor','admin'])).min(1).max(3);
 export function registerAdminRoutes(app:FastifyInstance,repository:AppRepository,authenticate:preHandlerHookHandler,env:AppEnv):void{
   const authorize=async(request:FastifyRequest)=>{if(!request.access.roles.includes('admin')){await repository.recordSecurityEvent({eventType:'unauthorized_admin_endpoint_attempt',severity:'high',actorUserId:request.auth.userId,metadata:{method:request.method,path:request.routeOptions.url},correlationId:request.id});throw new AppError('ADMIN_REQUIRED',403,'Потрібні права адміністратора');}};
   const secured=(limits:typeof readLimit)=>({preHandler:[authenticate,authorize],...limits});
+  registerGroupRoutes(app,repository,'/api/v1/admin',[authenticate,authorize]);
 
   app.get('/api/v1/admin/bootstrap',secured(readLimit),async request=>{
     const result=await repository.getAdminWorkspace(request.auth.userId);
@@ -48,6 +50,7 @@ export function registerAdminRoutes(app:FastifyInstance,repository:AppRepository
   app.patch('/api/v1/admin/portfolios/:portfolioId/visibility',secured(mutationLimit),async(request,reply)=>{const {portfolioId}=z.object({portfolioId:uuid}).parse(request.params);const input=z.object({visibility:z.enum(['private','shareable','public']),reason}).strict().parse(request.body);await repository.adminSetPortfolioVisibility(request.auth.userId,portfolioId,input.visibility,input.reason,request.id);return reply.status(204).send();});
   app.post('/api/v1/admin/guardian-links/:linkId/revoke',secured(mutationLimit),async(request,reply)=>{const {linkId}=z.object({linkId:uuid}).parse(request.params);const input=z.object({reason}).strict().parse(request.body);await repository.adminRevokeGuardianLink(request.auth.userId,linkId,input.reason,request.id);return reply.status(204).send();});
   app.post('/api/v1/admin/reports/:reportId/resend',secured({...mutationLimit,config:{rateLimit:{max:5,timeWindow:'10 minutes'}}}),async(request,reply)=>{const {reportId}=z.object({reportId:uuid}).parse(request.params);z.object({confirm:z.literal(true)}).strict().parse(request.body);await repository.adminResendReport(request.auth.userId,reportId,request.id);return reply.status(202).send();});
+  app.post('/api/v1/admin/sessions/:sessionId/extend',secured(mutationLimit),async(request,reply)=>{const {sessionId}=z.object({sessionId:uuid}).parse(request.params);const {expectedExpiresAt}=z.object({expectedExpiresAt:z.string().datetime()}).strict().parse(request.body);return reply.send(await repository.adminExtendUserSession(request.auth.userId,sessionId,expectedExpiresAt,request.id));});
   app.post('/api/v1/admin/sessions/:sessionId/revoke',secured(mutationLimit),async(request,reply)=>{const {sessionId}=z.object({sessionId:uuid}).parse(request.params);const input=z.object({reason}).strict().parse(request.body);await repository.adminRevokeUserSession(request.auth.userId,sessionId,input.reason,request.id);return reply.status(204).send();});
   app.post('/api/v1/admin/parent-requests/:requestId/resolve',secured(mutationLimit),async(request,reply)=>{const {requestId}=z.object({requestId:uuid}).parse(request.params);z.object({confirm:z.literal(true)}).strict().parse(request.body);await repository.adminResolveParentContactRequest(request.auth.userId,requestId,request.id);return reply.status(204).send();});
 

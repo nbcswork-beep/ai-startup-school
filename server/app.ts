@@ -43,6 +43,7 @@ export async function buildApp(deps: { env: AppEnv; repository: AppRepository; j
   const auth = new AuthService(deps.repository, deps.jwt, deps.env, new WebCredentialDirectory(deps.env.WEB_AUTH_ACCOUNTS_JSON), deps.loginLimiter ?? new MemoryLoginAttemptLimiter());
   registerAuthRoutes(app, auth, deps.env);
   const authenticate=createAuthenticate(deps.jwt,deps.repository);
+  app.get('/api/v1/academic-revision',{preHandler:[authenticate]},request=>deps.repository.academicRevision(request.auth.userId));
   registerStudentRoutes(app, deps.repository, new AiMentorService(deps.repository, deps.aiProvider), authenticate);
   registerTeacherRoutes(app,deps.repository,authenticate);
   registerGuardianRoutes(app,deps.repository,authenticate);

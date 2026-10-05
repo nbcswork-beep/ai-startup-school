@@ -13,6 +13,7 @@ export interface AuthResult {
   accessToken: string;
   expiresIn: number;
   refreshToken: string;
+  refreshExpiresAt: Date;
   user: { id: string; displayName: string };
 }
 
@@ -84,7 +85,7 @@ export class AuthService {
     }
     const provider = result.session.provider;
     const accessToken = await this.jwt.sign({ userId: result.user.id, sessionId: result.session.id, provider });
-    return { accessToken, expiresIn: this.env.ACCESS_TOKEN_TTL_SECONDS, refreshToken: token, user: { id: result.user.id, displayName: result.user.displayName } };
+    return { accessToken, expiresIn: this.env.ACCESS_TOKEN_TTL_SECONDS, refreshToken: token, refreshExpiresAt: result.session.expiresAt, user: { id: result.user.id, displayName: result.user.displayName } };
   }
 
   async logout(rawRefreshToken: string | undefined): Promise<void> {
@@ -103,7 +104,7 @@ export class AuthService {
     };
     await this.repository.createSession(session);
     const accessToken = await this.jwt.sign({ userId: user.id, sessionId: session.id, provider });
-    return { accessToken, expiresIn: this.env.ACCESS_TOKEN_TTL_SECONDS, refreshToken, user: { id: user.id, displayName: user.displayName } };
+    return { accessToken, expiresIn: this.env.ACCESS_TOKEN_TTL_SECONDS, refreshToken, refreshExpiresAt: session.expiresAt, user: { id: user.id, displayName: user.displayName } };
   }
 
   private pepper(): string {

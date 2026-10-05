@@ -10,6 +10,7 @@ import type {
 } from '../types/domain.js';
 import { PILOT, PILOT_STUDENTS, PILOT_TEACHERS, SEEDED_HOMEWORK, SEEDED_LESSONS } from './seed.js';
 import { AppError } from '../errors/app-error.js';
+import { legacyGroup, type SchoolGroup } from './group-model.js';
 
 export type PilotDirectoryRole = 'student' | 'guardian' | 'teacher' | 'mentor' | 'admin';
 export interface PilotDirectoryPerson {
@@ -115,6 +116,9 @@ export interface PilotParentContactRequest {
 }
 
 export interface PilotClassSession extends ClassSessionDto {
+  number?: number;
+  scheduleManaged?: boolean;
+  archivedByCount?: boolean;
   groupId: string;
   groupName: string;
   lessonId: string | null;
@@ -138,6 +142,7 @@ export interface PilotAttendanceRecord {
 
 export interface PilotRuntimeState {
   schemaVersion: 3;
+  groups: SchoolGroup[];
   directory: Record<string, PilotDirectoryPerson>;
   telegramBindings: Record<string, string>;
   guardianRelations: PilotGuardianRelation[];
@@ -240,6 +245,8 @@ export function createPilotRuntimeState(): PilotRuntimeState {
     id: `71000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
     groupId: PILOT.groupId,
     groupName: PILOT.groupName,
+    number: index + 1,
+    scheduleManaged: true,
     lessonId: lesson.id,
     title: lesson.title,
     description: 'Живе групове заняття з практикою та роботою над проєктом.',
@@ -274,6 +281,7 @@ export function createPilotRuntimeState(): PilotRuntimeState {
   }));
   return {
     schemaVersion: 3,
+    groups: [legacyGroup()],
     directory,
     telegramBindings: {},
     guardianRelations: [{id:'92000000-0000-4000-8000-000000000001',guardianId:'13000000-0000-4000-8000-000000000001',studentId:PILOT_STUDENTS[0]!.id,status:'active',createdAt:timestamp,updatedAt:timestamp}],
@@ -303,9 +311,20 @@ export function createPilotRuntimeState(): PilotRuntimeState {
 export function migratePilotRuntimeState(input: PilotRuntimeState | (Partial<PilotRuntimeState> & { schemaVersion?: number })): PilotRuntimeState {
   const seed=createPilotRuntimeState();
   const state=input as PilotRuntimeState;
+  if (!state.groups) state.groups = [legacyGroup()];
+  // Only the eight original pilot sessions acquire managed schedule numbers. Manually
+  // added sessions remain independent, so a later group edit cannot duplicate them.
+  for (const session of state.classSessions ?? []) {
+    const match = /^71000000-0000-4000-8000-0{11}([1-8])$/.exec(session.id);
+    if (session.groupId === PILOT.groupId && match) {
+      session.number ??= Number(match[1]);
+      session.scheduleManaged ??= true;
+    }
+  }
   state.directory={...seed.directory,...(state.directory??{})};
   state.telegramBindings=state.telegramBindings??{};
   state.guardianRelations=state.guardianRelations??seed.guardianRelations;
+  for(const homework of state.homework??[]){homework.version??=1;if((homework.status as string)==='closed')homework.status='unpublished';}
   state.notifications=state.notifications??[];
   state.notificationRuntime=state.notificationRuntime??{lastRunAt:null,lastClaimedCount:0};
   // Notifications queued before relevance windows existed keep their original schedule. They carry

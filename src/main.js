@@ -1,3 +1,4 @@
+import {startAcademicSync} from './academic-sync.js';
 import { api } from './api.js';
 
 const tg = window.Telegram?.WebApp;
@@ -781,3 +782,13 @@ async function initialize() {
 }
 
 initialize();
+
+startAcademicSync({revision:api.revision,canApply:()=>Boolean(data)&&!notificationPanelOpen,refresh:async()=>{
+  const [schedule,homework]=await Promise.all([api.schedule(),api.homework()]);
+  data.schedule=schedule;data.home.nextClass=schedule.nextClass;data.homework=homework;data.home.homeworkDue=homework.find(h=>h.state!=='completed')??null;
+  if(active==='home'||active==='learn')render(active,false);
+  if(active==='homework'&&currentHomework&&homework.some(h=>h.id===currentHomework.id)){const form=document.querySelector('#homeworkSubmit');if(form?.querySelector('.withdrawn-homework')){form.querySelector('.withdrawn-homework').remove();form.querySelectorAll('input,textarea,button').forEach(el=>el.disabled=false);}}
+  if(active==='homework'&&currentHomework&&!homework.some(h=>h.id===currentHomework.id)){
+    const form=document.querySelector('#homeworkSubmit');if(form){form.querySelectorAll('input,textarea,button').forEach(el=>el.disabled=true);if(!form.querySelector('.withdrawn-homework'))form.insertAdjacentHTML('afterbegin','<p class="withdrawn-homework" role="status">Викладач зняв це завдання з активних. Введений текст збережено на цій сторінці.</p>');}
+  }
+}});

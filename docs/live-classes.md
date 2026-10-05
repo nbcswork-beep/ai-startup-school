@@ -1,5 +1,7 @@
 # Live classes and attendance
 
+The current pilot uses the shared Redis runtime and also supports `archived`. Student visibility and automatic refresh use the same backend state as Teacher/Admin. See [ACADEMIC-MANAGEMENT.md](ACADEMIC-MANAGEMENT.md); SQL details below describe the PostgreSQL foundation.
+
 `class_sessions` is the source of truth for the Student App and Telegram notifications. A session belongs to a group and course, may reference a module/lesson, records its teacher, `timestamptz` range, provider-neutral HTTPS meeting URL, status, notes, and materials.
 
 Statuses: `scheduled`, `rescheduled`, `in_progress`, `completed`, `cancelled`. `reschedule_class` locks the session, rejects terminal sessions, records the old/new ranges and actor in `class_session_reschedules`, then updates the session.

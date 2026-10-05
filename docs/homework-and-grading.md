@@ -1,5 +1,7 @@
 # Homework, submissions, and grading
 
+The current pilot lifecycle supports `draft`, `published`, `unpublished`, `archived`, versioned edits, archive/restore and server-enforced deletion restrictions. See [ACADEMIC-MANAGEMENT.md](ACADEMIC-MANAGEMENT.md) for actual Redis storage and current UI behavior. SQL details below describe the separate PostgreSQL foundation.
+
 Homework belongs to a group/course and may reference a module, lesson, and class session. Drafts are invisible to students; published rows require `publish_at`. Resources use HTTPS links or private file metadata.
 
 Each resubmission inserts a new `homework_submissions` row with an increasing attempt number. Historical attempts are never updated into a replacement attempt. Supported content is text, comment, HTTPS URL, and authorized image/file metadata.

@@ -8,6 +8,9 @@ export type NotificationSkipReason =
   | 'REMINDER_WINDOW_EXPIRED'
   | 'CLASS_CANCELLED'
   | 'CLASS_RESCHEDULED'
+  | 'CLASS_INACTIVE'
+  | 'HOMEWORK_INACTIVE'
+  | 'GROUP_MEMBERSHIP_CHANGED'
   | 'HOMEWORK_ALREADY_SUBMITTED'
   | 'HOMEWORK_ALREADY_REVIEWED'
   | 'HOMEWORK_RESCHEDULED'
@@ -167,6 +170,24 @@ export function evaluateDelivery(state: PilotRuntimeState, notification: PilotNo
   const recipient = state.directory[notification.recipientUserId];
   if (!recipient || recipient.status !== 'active') return skip('RECIPIENT_INACTIVE');
   if (!recipient.telegramId) return skip('TELEGRAM_BINDING_MISSING');
+
+  // The queue is a delivery plan, never a second source of academic state.
+  // Check live status/membership again even if the notification was queued earlier.
+  if (notification.type.startsWith('student_class_')) {
+    const session = state.classSessions.find(item => item.id === notification.relatedEntityId);
+    if (!session) return skip('ENTITY_MISSING');
+    if (session.status === 'cancelled') return skip('CLASS_CANCELLED');
+    if (!['scheduled', 'rescheduled', 'in_progress'].includes(session.status) ||
+        state.groups.find(group => group.id === session.groupId)?.status !== 'active') return skip('CLASS_INACTIVE');
+    if (recipient.groupId !== session.groupId) return skip('GROUP_MEMBERSHIP_CHANGED');
+  }
+  if (['student_homework_assigned', 'student_homework_deadline', 'student_homework_overdue'].includes(notification.type)) {
+    const homework = state.homework.find(item => item.id === notification.relatedEntityId);
+    if (!homework) return skip('ENTITY_MISSING');
+    if (homework.status !== 'published' ||
+        state.groups.find(group => group.id === homework.groupId)?.status !== 'active') return skip('HOMEWORK_INACTIVE');
+    if (recipient.groupId !== homework.groupId) return skip('GROUP_MEMBERSHIP_CHANGED');
+  }
 
   const studentId = notification.safeMetadata.studentId;
   if (studentId) {

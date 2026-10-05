@@ -1,3 +1,4 @@
+import type { SchoolGroup } from '../data/group-model.js';
 export type UserId = string;
 export type AppRole = 'student' | 'guardian' | 'teacher' | 'admin';
 export type DirectoryRole = AppRole | 'mentor';
@@ -161,7 +162,7 @@ export interface ClassSessionDto {
   startsAt: string;
   endsAt: string;
   durationMinutes: number;
-  status: 'scheduled' | 'rescheduled' | 'in_progress' | 'completed' | 'cancelled';
+  status: 'scheduled' | 'rescheduled' | 'in_progress' | 'completed' | 'cancelled' | 'archived';
   meetingProvider: string | null;
   meetingUrl: string | null;
   courseTitle: string;
@@ -343,7 +344,8 @@ export interface TeacherHomeworkDto {
   publishAt: string | null;
   dueAt: string | null;
   xpReward: number;
-  status: 'draft' | 'published' | 'closed' | 'archived';
+  status: 'draft' | 'published' | 'unpublished' | 'archived';
+  version?: number;
   submissionCount: number;
   reviewCount: number;
   needsRevisionCount: number;
@@ -419,7 +421,7 @@ export interface TeacherReportDto extends ParentReportDto {
 export interface TeacherWorkspaceDto {
   teacher: { id: string; name: string; title: string; timezone: string };
   metrics: { todayClasses: number; awaitingReview: number; resubmitted: number; mentorToday: number; reportsPending: number };
-  groups: Array<TeacherGroupDto & { courseId: string; scheduleLabel: string; progressPercent: number; attendanceRate: number; recentHomework: string | null }>;
+  groups: Array<TeacherGroupDto & Partial<SchoolGroup> & { courseId: string; scheduleLabel: string; progressPercent: number; attendanceRate: number; recentHomework: string | null; teacherName?: string }>;
   sessions: TeacherSessionDto[];
   homework: TeacherHomeworkDto[];
   submissions: TeacherSubmissionDto[];

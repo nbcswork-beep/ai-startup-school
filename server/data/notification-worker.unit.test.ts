@@ -4,7 +4,7 @@ import { NotificationWorker, type NotificationSender } from '../services/telegra
 import type { NotificationDeliveryDto } from '../types/domain.js';
 import { MemoryRepository } from './memory-repository.js';
 import { MemoryPilotRuntimeStore } from './pilot-runtime-store.js';
-import { PILOT, PILOT_TEACHERS, SEEDED_LESSONS } from './seed.js';
+import { DEV_IDS, PILOT, PILOT_TEACHERS, SEEDED_LESSONS } from './seed.js';
 
 const ADMIN='14000000-0000-4000-8000-000000000001';
 const TEACHER=PILOT_TEACHERS[0]!.id;
@@ -26,21 +26,21 @@ async function fixture(){
 describe('persistent Telegram notification worker',()=>{
   it('delivers class and homework reminders exactly once across worker runs',async()=>{
     const {repository,runtime,studentId,guardianId}=await fixture(),now=new Date('2026-09-22T09:00:00.000Z');
-    await repository.createClassSession(TEACHER,{groupId:PILOT.groupId,courseId:'course',lessonId:SEEDED_LESSONS[0]!.id,title:'Notification class',startsAt:new Date(now.getTime()+24*60*60*1000).toISOString(),endsAt:new Date(now.getTime()+25*60*60*1000).toISOString(),meetingUrl:'https://meet.example.test/class'});
-    await repository.createHomework(TEACHER,{groupId:PILOT.groupId,courseId:'course',title:'Notification homework',instructions:'Complete the task',publishAt:now.toISOString(),dueAt:new Date(now.getTime()+24*60*60*1000).toISOString(),xpReward:20,status:'published'});
+    await repository.createClassSession(TEACHER,{groupId:PILOT.groupId,courseId:DEV_IDS.course,lessonId:SEEDED_LESSONS[0]!.id,title:'Notification class',startsAt:new Date(now.getTime()+24*60*60*1000).toISOString(),endsAt:new Date(now.getTime()+25*60*60*1000).toISOString(),meetingUrl:'https://meet.example.test/class'});
+    await repository.createHomework(TEACHER,{groupId:PILOT.groupId,courseId:DEV_IDS.course,title:'Notification homework',instructions:'Complete the task',publishAt:now.toISOString(),dueAt:new Date(now.getTime()+24*60*60*1000).toISOString(),xpReward:20,status:'published'});
     const sender=new CaptureSender(),worker=new NotificationWorker(repository,sender,0,19);
     expect((await worker.run(now)).sent).toBe(3);
     expect(sender.deliveries.filter(item=>item.recipientUserId===studentId).map(item=>item.type)).toEqual(expect.arrayContaining(['student_class_24h','student_homework_assigned','student_homework_deadline']));
     expect(await worker.run(now)).toEqual({claimed:0,sent:0,failed:0});
     expect(sender.deliveries).toHaveLength(3);
 
-    const oneHour=await repository.createClassSession(TEACHER,{groupId:PILOT.groupId,courseId:'course',title:'One hour class',startsAt:new Date(now.getTime()+60*60*1000).toISOString(),endsAt:new Date(now.getTime()+2*60*60*1000).toISOString(),meetingUrl:'https://meet.example.test/hour'});
-    const overdue=await repository.createHomework(TEACHER,{groupId:PILOT.groupId,courseId:'course',title:'Overdue homework',instructions:'Finish it',publishAt:new Date(now.getTime()-3*60*60*1000).toISOString(),dueAt:new Date(now.getTime()-60*60*1000).toISOString(),xpReward:20,status:'published'});
-    const reviewedHomework=await repository.createHomework(TEACHER,{groupId:PILOT.groupId,courseId:'course',title:'Reviewed homework',instructions:'Submit it',publishAt:new Date(now.getTime()-3*60*60*1000).toISOString(),dueAt:new Date(now.getTime()+3*86_400_000).toISOString(),xpReward:20,status:'published'});
+    const oneHour=await repository.createClassSession(TEACHER,{groupId:PILOT.groupId,courseId:DEV_IDS.course,title:'One hour class',startsAt:new Date(now.getTime()+60*60*1000).toISOString(),endsAt:new Date(now.getTime()+2*60*60*1000).toISOString(),meetingUrl:'https://meet.example.test/hour'});
+    const overdue=await repository.createHomework(TEACHER,{groupId:PILOT.groupId,courseId:DEV_IDS.course,title:'Overdue homework',instructions:'Finish it',publishAt:new Date(now.getTime()-3*60*60*1000).toISOString(),dueAt:new Date(now.getTime()-60*60*1000).toISOString(),xpReward:20,status:'published'});
+    const reviewedHomework=await repository.createHomework(TEACHER,{groupId:PILOT.groupId,courseId:DEV_IDS.course,title:'Reviewed homework',instructions:'Submit it',publishAt:new Date(now.getTime()-3*60*60*1000).toISOString(),dueAt:new Date(now.getTime()+3*86_400_000).toISOString(),xpReward:20,status:'published'});
     const submission=await repository.submitHomework(studentId,reviewedHomework.id,{contentText:'Done'});await repository.reviewHomework(TEACHER,submission.id,{score:9,effort:'high_effort',status:'completed',feedback:'Сильна й самостійна робота'});
-    const rescheduled=await repository.createClassSession(TEACHER,{groupId:PILOT.groupId,courseId:'course',title:'Rescheduled class',startsAt:new Date(now.getTime()+3*86_400_000).toISOString(),endsAt:new Date(now.getTime()+3*86_400_000+60*60*1000).toISOString()});
+    const rescheduled=await repository.createClassSession(TEACHER,{groupId:PILOT.groupId,courseId:DEV_IDS.course,title:'Rescheduled class',startsAt:new Date(now.getTime()+3*86_400_000).toISOString(),endsAt:new Date(now.getTime()+3*86_400_000+60*60*1000).toISOString()});
     await repository.rescheduleClass(TEACHER,rescheduled.id,{startsAt:new Date(now.getTime()+4*86_400_000).toISOString(),endsAt:new Date(now.getTime()+4*86_400_000+60*60*1000).toISOString()});
-    const cancelled=await repository.createClassSession(TEACHER,{groupId:PILOT.groupId,courseId:'course',title:'Cancelled class',startsAt:new Date(now.getTime()+5*86_400_000).toISOString(),endsAt:new Date(now.getTime()+5*86_400_000+60*60*1000).toISOString()});
+    const cancelled=await repository.createClassSession(TEACHER,{groupId:PILOT.groupId,courseId:DEV_IDS.course,title:'Cancelled class',startsAt:new Date(now.getTime()+5*86_400_000).toISOString(),endsAt:new Date(now.getTime()+5*86_400_000+60*60*1000).toISOString()});
     await repository.updateTeacherClass(TEACHER,cancelled.id,{status:'cancelled'});
     await runtime.mutate(state=>{const reviewed=state.submissions.find(item=>item.id===submission.id);if(reviewed?.review)reviewed.review.reviewedAt=now.toISOString();for(const id of [rescheduled.id,cancelled.id]){const session=state.classSessions.find(item=>item.id===id);if(session)session.changedAt=now.toISOString();}});
     const expanded=await worker.run(now);expect(expanded.sent).toBeGreaterThanOrEqual(5);
@@ -54,9 +54,9 @@ describe('persistent Telegram notification worker',()=>{
   it('alerts an authorized guardian about absence and stops after unlink',async()=>{
     const {repository,studentId,guardianId}=await fixture();
     const startsAt=new Date(Date.now()-60*60*1000).toISOString(),endsAt=new Date(Date.now()+30*60*1000).toISOString();
-    const session=await repository.createClassSession(TEACHER,{groupId:PILOT.groupId,courseId:'course',lessonId:SEEDED_LESSONS[0]!.id,title:'Recovery class',description:'Lesson recovery',startsAt,endsAt});
+    const session=await repository.createClassSession(TEACHER,{groupId:PILOT.groupId,courseId:DEV_IDS.course,lessonId:SEEDED_LESSONS[0]!.id,title:'Recovery class',description:'Lesson recovery',startsAt,endsAt});
     await repository.addClassMaterial(TEACHER,session.id,{kind:'document',title:'Конспект',url:'https://school.example.test/material'});
-    const homework=await repository.createHomework(TEACHER,{groupId:PILOT.groupId,courseId:'course',classSessionId:session.id,title:'Recovery homework',instructions:'Try again',xpReward:10,status:'published'});
+    const homework=await repository.createHomework(TEACHER,{groupId:PILOT.groupId,courseId:DEV_IDS.course,classSessionId:session.id,title:'Recovery homework',instructions:'Try again',xpReward:10,status:'published'});
     await repository.confirmAttendance(TEACHER,session.id,studentId,'absent');
     const recoveries=await repository.listMissedLessonRecoveries(studentId);
     expect(recoveries[0]).toMatchObject({sessionId:session.id,recordingUrl:null,homework:{id:homework.id},materials:[{title:'Конспект'}]});
@@ -75,7 +75,7 @@ describe('persistent Telegram notification worker',()=>{
 
   it('does not notify a deactivated student',async()=>{
     const {repository,studentId}=await fixture(),now=new Date();
-    await repository.createClassSession(TEACHER,{groupId:PILOT.groupId,courseId:'course',title:'Disabled student class',startsAt:new Date(now.getTime()+24*60*60*1000).toISOString(),endsAt:new Date(now.getTime()+25*60*60*1000).toISOString()});
+    await repository.createClassSession(TEACHER,{groupId:PILOT.groupId,courseId:DEV_IDS.course,title:'Disabled student class',startsAt:new Date(now.getTime()+24*60*60*1000).toISOString(),endsAt:new Date(now.getTime()+25*60*60*1000).toISOString()});
     await repository.adminSetAccountStatus(ADMIN,studentId,'disabled','Notification security test','disable-student');
     const sender=new CaptureSender(),worker=new NotificationWorker(repository,sender,0,19);
     await worker.run(now);

@@ -1,10 +1,11 @@
+import {announceAcademicChange} from './academic-sync.js';
 let accessToken = '';
 
 async function request(path, options = {}, retry = true) {
   const headers = new Headers(options.headers);
   if (options.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
   if (accessToken) headers.set('authorization', `Bearer ${accessToken}`);
-  const response = await fetch(`/api/v1${path}`, { ...options, headers, credentials: 'include' });
+  const response = await fetch(`/api/v1${path}`, { ...options, headers, credentials: 'include', cache:'no-store' });
   if (response.status === 401 && retry && !path.startsWith('/auth/')) {
     const refreshed = await fetch('/api/v1/auth/refresh', { method: 'POST', credentials: 'include' });
     if (refreshed.ok) {
@@ -16,6 +17,7 @@ async function request(path, options = {}, retry = true) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.error?.message || 'Не вдалося завантажити дані');
   }
+  if(options.method&&!path.startsWith('/auth/'))announceAcademicChange();
   return response.status === 204 ? null : response.json();
 }
 
@@ -30,6 +32,7 @@ async function authenticate() {
 
 export const api = {
   authenticate,
+  revision:()=>request('/academic-revision'),
   bootstrap: () => request('/bootstrap'),
   lesson: id => request(`/lessons/${id}`),
   completeLesson: (id, idempotencyKey) => request(`/lessons/${id}/complete`, { method: 'POST', body: JSON.stringify({ idempotencyKey }) }),
