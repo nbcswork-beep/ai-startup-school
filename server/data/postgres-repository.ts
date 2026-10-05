@@ -214,10 +214,12 @@ export class PostgresRepository implements AppRepository {
     });
   }
 
-  async completeLesson(userId: string, lessonId: string, idempotencyKey: string) {
-    const awardedXp = await this.withUser(userId, async db => Number((await db.query(`select awarded_xp from public.complete_lesson($1,$2)`, [lessonId, idempotencyKey])).rows[0]?.awarded_xp ?? 0));
-    return { awardedXp, home: await this.getHome(userId) };
-  }
+  async completeLesson(..._args:Parameters<AppRepository['completeLesson']>):ReturnType<AppRepository['completeLesson']>{throw this.groupManagementUnavailable();}
+  async reviewLessonCompletion(..._args:Parameters<AppRepository['reviewLessonCompletion']>):ReturnType<AppRepository['reviewLessonCompletion']>{throw this.groupManagementUnavailable();}
+  async addProjectNote(..._args:Parameters<AppRepository['addProjectNote']>):ReturnType<AppRepository['addProjectNote']>{throw this.groupManagementUnavailable();}
+  async replyProjectNote(..._args:Parameters<AppRepository['replyProjectNote']>):ReturnType<AppRepository['replyProjectNote']>{throw this.groupManagementUnavailable();}
+  async submitProjectTask(..._args:Parameters<AppRepository['submitProjectTask']>):ReturnType<AppRepository['submitProjectTask']>{throw this.groupManagementUnavailable();}
+  async reviewProjectTask(..._args:Parameters<AppRepository['reviewProjectTask']>):ReturnType<AppRepository['reviewProjectTask']>{throw this.groupManagementUnavailable();}
 
   async listProjects(userId: string): Promise<ProjectDto[]> {
     return this.withUser(userId, async db => {
@@ -249,12 +251,7 @@ export class PostgresRepository implements AppRepository {
     return (await this.listProjects(userId)).find(p=>p.id===projectId) ?? null;
   }
 
-  async completeProjectTask(userId: string, projectId: string, taskId: string, idempotencyKey: string) {
-    const result = await this.withUser(userId, db => db.query(`select * from public.complete_project_task($1,$2,$3)`, [projectId,taskId,idempotencyKey]));
-    if (!result.rows[0]) return null;
-    const project = (await this.listProjects(userId)).find(p=>p.id===projectId);
-    return project ? { awardedXp: Number(result.rows[0].awarded_xp), project } : null;
-  }
+  async completeProjectTask(..._args:Parameters<AppRepository['completeProjectTask']>):ReturnType<AppRepository['completeProjectTask']>{throw this.groupManagementUnavailable();}
 
   async getProfile(userId: string): Promise<ProfileDto> {
     const [viewer, learning, projects, achievements, mentor] = await Promise.all([this.getViewer(userId),this.getLearning(userId),this.listProjects(userId),this.listAchievements(userId),this.getMentor(userId)]);

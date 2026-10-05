@@ -46,3 +46,7 @@ Never commit the bot token or API keys.
 The deployed pilot uses the existing Redis-backed runtime state. Group management, shared lesson/homework status, archives, Admin session extension and test steps are documented in [docs/ACADEMIC-MANAGEMENT.md](docs/ACADEMIC-MANAGEMENT.md). The separate PostgreSQL foundation is not automatically enabled by these features.
 
 Students see only actual sessions and published homework assigned to their active group. Fresh runtime initialization does not invent assignments. Legacy template cleanup, preserved historical data and verification are documented in [docs/STUDENT-REAL-CONTENT.md](docs/STUDENT-REAL-CONTENT.md).
+
+Group membership, attendance and automatic cross-device refresh are documented in [docs/GROUP-SYNCHRONIZATION.md](docs/GROUP-SYNCHRONIZATION.md). Creating or editing a group never generates lessons; schedule each real lesson explicitly.
+
+Lesson credit and project stages require Teacher approval. Students submit written stage responses, project notes and HTTPS links; Teachers can return work with feedback or approve the next stage. See [docs/TEACHER-APPROVAL.md](docs/TEACHER-APPROVAL.md) for APIs, migration and test steps.

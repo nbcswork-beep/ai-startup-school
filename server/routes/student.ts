@@ -98,6 +98,17 @@ export function registerStudentRoutes(app: FastifyInstance, repository: AppRepos
     if (!project) throw new AppError('PROJECT_NOT_FOUND', 404, 'Проєкт не знайдено');
     return project;
   });
+  app.post('/api/v1/projects/:projectId/notes',{...secured,config:{rateLimit:{max:30,timeWindow:'1 minute'}}},async request=>{
+    const {projectId}=z.object({projectId:uuid}).parse(request.params);
+    const body=z.object({contentText:z.string().trim().max(20000).default(''),contentUrl:safeHttpsUrl.max(2048).optional(),clientRequestId:uuid}).strict().refine(v=>Boolean(v.contentText||v.contentUrl),'Note or link required').parse(request.body);
+    const input:Parameters<AppRepository['addProjectNote']>[2]={contentText:body.contentText,clientRequestId:body.clientRequestId};if(body.contentUrl!==undefined)input.contentUrl=body.contentUrl;
+    return repository.addProjectNote(request.auth.userId,projectId,input);
+  });
+  app.post('/api/v1/projects/:projectId/tasks/:taskId/submit',secured,async request=>{
+    const {projectId,taskId}=z.object({projectId:uuid,taskId:uuid}).strict().parse(request.params);
+    const body=z.object({contentText:z.string().trim().min(1).max(20000),expectedVersion:z.number().int().positive()}).strict().parse(request.body);
+    return repository.submitProjectTask(request.auth.userId,projectId,taskId,body);
+  });
   app.post('/api/v1/projects/:projectId/tasks/:taskId/complete', secured, async request => {
     const { projectId, taskId } = z.object({ projectId: uuid, taskId: uuid }).parse(request.params);
     const result = await repository.completeProjectTask(request.auth.userId, projectId, taskId, idempotency.parse(request.body).idempotencyKey);

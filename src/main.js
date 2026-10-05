@@ -287,7 +287,7 @@ function home() {
       <div class="eyebrow">ДОБРОГО ДНЯ, ${firstName.toUpperCase()} <span></span></div>
       <section class="home-hero">
         <div class="hero-copy">
-          <span class="coordinate">ТВІЙ ШЛЯХ · ${String(homeData.course.completedLessons + 1).padStart(2, '0')}/${String(homeData.course.totalLessons).padStart(2, '0')}</span>
+          <span class="coordinate">ТВІЙ ШЛЯХ · ${String(Math.min(homeData.course.completedLessons + 1, homeData.course.totalLessons)).padStart(2, '0')}/${String(homeData.course.totalLessons).padStart(2, '0')}</span>
           <h1>Твоя ідея<br><em>стає проєктом.</em></h1>
           <p>Крок за кроком: від першої думки до продукту, який працює.</p>
           <button class="primary-btn" data-tab="learn">Продовжити навчання ${arrowIcon()}</button>
@@ -381,6 +381,7 @@ function project() {
   const projectData = data.projects.find(item => item.status === 'active') ?? data.projects[0];
   if (!projectData) return projectEmpty();
   const tasks = projectData.tasks;
+  const currentTask=tasks.find(t=>t.status!=='completed');
   return `
     <section class="page project-page">
       <div class="page-title"><span class="section-kicker">STARTUP LAB</span><span class="zone-code">ZONE 03 · LAB</span><h1>Мій проєкт</h1><p>Тут ідея перетворюється на продукт.</p></div>
@@ -394,25 +395,27 @@ function project() {
       <div class="section-head"><div><span class="section-kicker">СПРИНТ 01</span><h2>Збираємо основу</h2></div><button class="tiny-badge" id="editProject">РЕДАГУВАТИ</button></div>
       <div class="build-path">
         ${tasks.map(task => {
-          const status = task.status === 'completed' ? 'done' : task.status === 'in_progress' || task.status === 'available' ? 'current' : 'locked';
+          const status = task.status === 'completed' ? 'done' : ['in_progress','available','pending_review','needs_revision'].includes(task.status) ? 'current' : 'locked';
           return `
-          <article class="build-step ${status}" ${status === 'current' ? `data-task="${task.id}" data-project="${projectData.id}"` : ''}>
+          <article class="build-step ${status}" >
             <span class="build-marker">${status === 'done' ? stateIcon('done') : task.number}</span>
-            <div><strong>${escapeHtml(task.title)}</strong><small>${status === 'done' ? 'Готово' : status === 'current' ? `Твій крок · +${task.xpReward} XP` : 'Далі'}</small></div>
+            <div><strong>${escapeHtml(task.title)}</strong><small>${status === 'done' ? 'Підтверджено викладачем' : task.status==='pending_review'?'На перевірці':task.status==='needs_revision'?'На доопрацювання':status === 'current' ? `Напиши відповідь · +${task.xpReward} XP після перевірки` : 'Відкриється після підтвердження попереднього етапу'}</small>${task.feedback?`<small>Коментар: ${escapeHtml(task.feedback)}</small>`:''}</div>
             <span class="build-reward">${status === 'done' ? `+${task.xpReward} XP` : status === 'current' ? arrowIcon() : stateIcon('locked')}</span>
           </article>`}).join('')}
       </div>
+      ${currentTask?`<form class="project-editor" id="projectStageSubmit" data-project-id="${projectData.id}" data-task-id="${currentTask.id}" data-version="${currentTask.version??1}"><h3>Етап ${currentTask.number}: ${escapeHtml(currentTask.title)}</h3><p>${escapeHtml(currentTask.description)}</p>${currentTask.feedback?`<p class="stage-feedback">Коментар викладача: ${escapeHtml(currentTask.feedback)}</p>`:''}<label>Твоя відповідь<textarea name="contentText" maxlength="20000" required ${currentTask.status==='pending_review'?'disabled':''}>${escapeHtml(currentTask.contentText??'')}</textarea></label><p class="stage-review-status">${currentTask.status==='pending_review'?'Відповідь на перевірці. Наступний етап відкриє викладач.':'Наступний етап відкриється після підтвердження викладачем.'}</p><button class="primary-btn compact" ${currentTask.status==='pending_review'?'disabled':''}>${currentTask.status==='pending_review'?'На перевірці':'Надіслати на перевірку'}</button></form>`:''}
+      <section class="project-notes"><h2>Нотатки й посилання проєкту</h2><p>Тут можна зберігати ідеї, результати й посилання та отримувати коментарі викладача.</p>${(projectData.notes??[]).map(note=>`<article class="project-editor"><p>${escapeHtml(note.contentText)}</p>${note.contentUrl?`<a href="${escapeHtml(note.contentUrl)}" target="_blank" rel="noopener noreferrer">Відкрити посилання проєкту ↗</a>`:''}${note.replies.map(reply=>`<blockquote><strong>${escapeHtml(reply.teacherName)}</strong><p>${escapeHtml(reply.contentText)}</p></blockquote>`).join('')}</article>`).join('')}<form class="project-editor" id="projectNoteForm" data-project-id="${projectData.id}" data-version="${projectData.notes?.length??0}"><label>Нотатка<textarea name="contentText" maxlength="20000" placeholder="Ідея, результат чи питання до викладача…"></textarea></label><label>Посилання HTTPS<input type="url" name="contentUrl" maxlength="2048" placeholder="https://…"></label><button class="primary-btn compact">Зберегти нотатку</button></form></section>
       <section class="workspace-dock">
         <div class="workspace-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 8-4 4 4 4M15 8l4 4-4 4M14 5l-4 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
         <div><span>CODE WORKSPACE</span><h3>Продовжити збірку</h3><p>Повна web-версія з кодом і preview.</p></div>
         <button class="primary-btn compact" id="openCode" ${projectData.workspaceUrl ? '' : 'disabled'}>Відкрити ${externalIcon()}</button>
       </section>
-      <form class="project-editor" id="projectEditor" hidden><label>Назва<input name="title" value="${escapeHtml(projectData.title)}" maxlength="120" required></label><label>Короткий опис<textarea name="summary" maxlength="1000">${escapeHtml(projectData.summary)}</textarea></label><button class="primary-btn compact">Зберегти</button></form>
+      <form class="project-editor" id="projectEditor" data-project-id="${projectData.id}" hidden><label>Назва<input name="title" value="${escapeHtml(projectData.title)}" maxlength="120" required></label><label>Короткий опис<textarea name="summary" maxlength="1000">${escapeHtml(projectData.summary)}</textarea></label><button class="primary-btn compact">Зберегти</button></form>
     </section>`;
 }
 
 function projectEmpty() {
-  return `<section class="page project-page"><div class="page-title"><span class="section-kicker">STARTUP LAB</span><span class="zone-code">ZONE 03 · LAB</span><h1>Мій проєкт</h1><p>Тут ідея перетворюється на продукт.</p></div><section class="project-empty">${portalMarkup('medium lab-engine','01','START')}<h2>Запусти перший проєкт</h2><p>Опиши одну проблему та ідею рішення. Маршрут з’явиться автоматично.</p><form id="createProject"><label>Назва<input name="title" maxlength="120" required></label><label>Короткий опис<textarea name="summary" maxlength="1000"></textarea></label><button class="primary-btn">Створити проєкт ${arrowIcon()}</button></form></section></section>`;
+  return `<section class="page project-page"><div class="page-title"><span class="section-kicker">STARTUP LAB</span><span class="zone-code">ZONE 03 · LAB</span><h1>Мій проєкт</h1><p>Тут ідея перетворюється на продукт.</p></div><section class="project-empty">${portalMarkup('medium lab-engine','01','START')}<h2>Запусти перший проєкт</h2><p>Опиши одну проблему та ідею рішення. Перший етап надішлеш викладачу; наступні відкриються після перевірки.</p><form id="createProject"><label>Назва<input name="title" maxlength="120" required></label><label>Короткий опис<textarea name="summary" maxlength="1000"></textarea></label><button class="primary-btn">Створити проєкт ${arrowIcon()}</button></form></section></section>`;
 }
 
 function portfolio() {
@@ -442,6 +445,7 @@ function homeworkPage() {
   if (!homework) return `<section class="page homework-page"><button class="lesson-back" data-tab="learn">← Навчання</button><div class="page-title"><h1>Домашніх завдань поки немає</h1></div></section>`;
   const submission = homework.latestSubmission;
   const review = submission?.review;
+  const disabled=homework.withdrawn?'disabled':'';
   const canSubmit = !submission || submission.status === 'needs_revision' || submission.status === 'in_progress';
   return `<section class="page homework-page">
     <button class="lesson-back" data-tab="learn">← Навчання</button>
@@ -449,7 +453,8 @@ function homeworkPage() {
     <section class="homework-brief"><div><span>ДЕДЛАЙН</span><strong>${homework.dueAt ? escapeHtml(formatClassTime(homework.dueAt,data.schedule.timezone)) : 'Без дедлайну'}</strong></div><div><span>ПОВ’ЯЗАНЕ ЗАНЯТТЯ</span><strong>${escapeHtml(homework.classTitle ?? 'Самостійна практика')}</strong></div></section>
     ${review ? `<section class="teacher-feedback ${review.status}"><div class="feedback-score"><strong>${review.score}</strong><small>/10</small></div><div><span>ВІДГУК ВИКЛАДАЧА</span><h2>${escapeHtml(effortLabel(review.effort))}</h2><p>${escapeHtml(review.feedback)}</p></div></section>` : ''}
     ${submission ? `<section class="attempt-history"><span>СПРОБА ${submission.attemptNumber}</span><strong>${homeworkStateLabel(submission.status)}</strong><p>${escapeHtml(submission.studentComment || submission.contentText)}</p></section>` : ''}
-    ${canSubmit ? `<form class="homework-submit" id="homeworkSubmit" data-homework-id="${homework.id}"><span class="section-kicker">${submission?.status==='needs_revision'?'ДОПРАЦЮЙ І НАДІШЛИ ЩЕ РАЗ':'ТВОЯ РОБОТА'}</span><label>Результат<textarea name="contentText" maxlength="20000" required placeholder="Опиши, що зробив…"></textarea></label><label>Посилання HTTPS — за потреби<input name="contentUrl" type="url" inputmode="url" placeholder="https://…"></label><label>Коментар викладачу<textarea name="studentComment" maxlength="2000" placeholder="Що було складно або цікаво?"></textarea></label><button class="primary-btn">Надіслати роботу ${arrowIcon()}</button></form>` : '<p class="submission-confirmation">Роботу надіслано. Історія спроб збережена.</p>'}
+    ${homework.withdrawn?'<p class="withdrawn-homework" role="status">Завдання більше не активне для вашої групи. Введений текст збережено на цій сторінці.</p>':''}
+    ${canSubmit ? `<form class="homework-submit" id="homeworkSubmit" data-homework-id="${homework.id}"><span class="section-kicker">${submission?.status==='needs_revision'?'ДОПРАЦЮЙ І НАДІШЛИ ЩЕ РАЗ':'ТВОЯ РОБОТА'}</span><label>Результат<textarea name="contentText" ${disabled} maxlength="20000" required placeholder="Опиши, що зробив…"></textarea></label><label>Посилання HTTPS — за потреби<input name="contentUrl" ${disabled} type="url" inputmode="url" placeholder="https://…"></label><label>Коментар викладачу<textarea name="studentComment" ${disabled} maxlength="2000" placeholder="Що було складно або цікаво?"></textarea></label><button class="primary-btn" ${disabled}>Надіслати роботу ${arrowIcon()}</button></form>` : '<p class="submission-confirmation">Роботу надіслано. Історія спроб збережена.</p>'}
   </section>`;
 }
 
@@ -491,6 +496,7 @@ function profile() {
       <div class="profile-head">
         <div class="profile-orbit"><div class="big-avatar">${firstName[0]?.toUpperCase() || 'M'}</div><i></i><b></b></div>
         <span class="profile-level">${escapeHtml(viewer.level.title.toUpperCase())} · LEVEL ${viewer.level.number}</span><h1>${escapeHtml(firstName)}</h1><p>Будуєш ідеї, які працюють.</p>
+        <p>${viewer.group ? `Група: ${escapeHtml(viewer.group.name)}${viewer.group.status==='archived'?' · Архів':''}` : 'Без групи'}</p>
       </div>
       <section class="level-track">
         <div><span>НАСТУПНИЙ РІВЕНЬ</span><strong>${escapeHtml(viewer.level.title)}${viewer.level.nextTitle ? ` → ${escapeHtml(viewer.level.nextTitle)}` : ''}</strong></div><b>${viewer.xp} <small>${viewer.level.nextMinXp ? `/ ${viewer.level.nextMinXp} XP` : 'XP'}</small></b>
@@ -518,7 +524,8 @@ function lessonPage() {
     ${lesson.content.explanation ? `<section class="lesson-console"><span>КЛЮЧОВА ІДЕЯ</span><h2>${escapeHtml(lesson.content.conceptName)}</h2><p>${escapeHtml(lesson.content.explanation)}</p></section>` : ''}
     ${lesson.content.examples.length ? `<section class="lesson-section"><span class="section-kicker">ПРИКЛАДИ</span>${lesson.content.examples.map(example => `<article><i></i><p>${escapeHtml(example)}</p></article>`).join('')}</section>` : ''}
     ${lesson.content.task.prompt ? `<section class="lesson-task"><span class="section-kicker">ТВІЙ ХІД</span><h2>${escapeHtml(lesson.content.task.prompt)}</h2><p>${escapeHtml(lesson.content.task.hint)}</p></section>` : ''}
-    <section class="lesson-next"><div><span>ДАЛІ</span><p>${escapeHtml(lesson.content.nextStep)}</p></div>${lesson.state === 'completed' ? `<button class="primary-btn" data-tab="learn">Повернутися</button>` : `<button class="primary-btn" id="completeLesson" data-lesson="${lesson.id}">Завершити · +${lesson.xpReward} XP ${arrowIcon()}</button>`}</section>
+    ${lesson.completionReview?.feedback?`<p class="lesson-review-feedback">Коментар викладача: ${escapeHtml(lesson.completionReview.feedback)}</p>`:''}
+    <section class="lesson-next"><div><span>ДАЛІ</span><p>${escapeHtml(lesson.content.nextStep)}</p></div>${lesson.state === 'completed' ? `<button class="primary-btn" data-tab="learn">Повернутися</button>` : `<button class="primary-btn" id="completeLesson" data-lesson="${lesson.id}" ${lesson.completionReview?.status==='pending_review'?'disabled':''}>${lesson.completionReview?.status==='pending_review'?'Очікує підтвердження викладача':'Надіслати на підтвердження'} ${arrowIcon()}</button>`}</section>
   </section>`;
 }
 
@@ -605,6 +612,7 @@ function render(tab, updateHistory = true) {
   view.classList.add('leaving');
 
   renderTimer = setTimeout(() => {
+    const drafts=active===next?[...view.querySelectorAll('#homeworkSubmit,#projectStageSubmit,#projectEditor,#createProject,#projectNoteForm')].map(form=>({formId:form.id,key:form.dataset.homeworkId??form.dataset.taskId??form.dataset.projectId??'',version:form.dataset.version??'',requestId:form.dataset.requestId,hidden:form.hidden,fields:[...form.querySelectorAll('input[name],textarea[name]')].map(field=>({name:field.name,value:field.value,focused:document.activeElement===field,start:field.selectionStart,end:field.selectionEnd}))})):[];
     active = next;
     view.innerHTML = templates[active]();
     document.querySelectorAll('.nav-item').forEach(item => {
@@ -616,6 +624,7 @@ function render(tab, updateHistory = true) {
     document.querySelector('.app-shell')?.scrollTo({ top: 0, behavior: 'auto' });
     view.classList.remove('leaving');
     wirePage();
+    for(const draft of drafts){const nextForm=view.querySelector('#'+draft.formId);if(!nextForm)continue;const key=nextForm.dataset.homeworkId??nextForm.dataset.taskId??nextForm.dataset.projectId??'';if(key!==draft.key||(['projectStageSubmit','projectNoteForm'].includes(draft.formId)&&nextForm.dataset.version!==draft.version))continue;if(draft.requestId)nextForm.dataset.requestId=draft.requestId;nextForm.hidden=draft.hidden;for(const item of draft.fields){const field=nextForm.elements.namedItem(item.name);if(field){field.value=item.value;if(item.focused&&!field.disabled){field.focus();if(item.start!==null)field.setSelectionRange(item.start,item.end);}}}}
 
     const targetHash = active === 'lesson' && currentLesson ? `#lesson=${currentLesson.id}` : active === 'homework' && currentHomework ? `#homework=${currentHomework.id}` : `#${active}`;
     if (updateHistory && location.hash !== targetHash) history.pushState({ tab: active }, '', targetHash);
@@ -702,10 +711,18 @@ function wirePage() {
     try { await api.updateProject(projectData.id, { title: values.get('title'), summary: values.get('summary') }); await refreshData(); render('project', false); }
     catch (error) { editor.querySelector('button').textContent = error.message; }
   });
-  view.querySelectorAll('[data-task]').forEach(element => element.onclick = async () => {
-    element.style.pointerEvents = 'none';
-    try { await api.completeTask(element.dataset.project, element.dataset.task, crypto.randomUUID()); await refreshData(); render('project', false); }
-    catch (error) { element.style.pointerEvents = ''; element.querySelector('small').textContent = error.message; }
+  const noteForm=view.querySelector('#projectNoteForm');
+  noteForm?.addEventListener('submit',async event=>{
+    event.preventDefault();const button=noteForm.querySelector('button'),fields=new FormData(noteForm);button.disabled=true;
+    const input={contentText:fields.get('contentText'),clientRequestId:noteForm.dataset.requestId??(noteForm.dataset.requestId=crypto.randomUUID())};if(fields.get('contentUrl'))input.contentUrl=fields.get('contentUrl');
+    try{await api.addProjectNote(noteForm.dataset.projectId,input);await refreshData();render('project',false);}
+    catch(error){button.disabled=false;button.textContent=error.message;}
+  });
+  const stageForm=view.querySelector('#projectStageSubmit');
+  stageForm?.addEventListener('submit',async event=>{
+    event.preventDefault();const button=stageForm.querySelector('button'),contentText=stageForm.querySelector('textarea').value;button.disabled=true;stageForm.querySelector('textarea').disabled=true;
+    try{await api.submitProjectTask(stageForm.dataset.projectId,stageForm.dataset.taskId,{contentText,expectedVersion:Number(stageForm.dataset.version)});await refreshData();render('project',false);}
+    catch(error){button.disabled=false;stageForm.querySelector('textarea').disabled=false;button.textContent=error.message;}
   });
 
   document.querySelector('#openCode')?.addEventListener('click', () => {
@@ -784,18 +801,17 @@ async function initialize() {
 initialize();
 
 startAcademicSync({revision:api.revision,canApply:()=>Boolean(data)&&!notificationPanelOpen,refresh:async()=>{
-  const [schedule,homework,learning]=await Promise.all([api.schedule(),api.homework(),api.learning()]);
+  const [schedule,homework,learning,home,projects,recoveries]=await Promise.all([api.schedule(),api.homework(),api.learning(),api.home(),api.projects(),api.recoveries()]);
   data.schedule=schedule;data.home.nextClass=schedule.nextClass;data.homework=homework;data.home.homeworkDue=homework.find(h=>h.state!=='completed')??null;
   data.learning=learning;data.home.course=learning.course;data.home.currentLesson=learning.modules.flatMap(module=>module.lessons).find(lesson=>lesson.state==='current'||lesson.state==='available')??null;
+  data.recoveries=recoveries;data.projects=projects;data.home.currentProject=home.currentProject;data.home.projectCount=projects.length;data.profile.projectCount=projects.length;
+  data.home.viewer=home.viewer;data.profile.viewer=home.viewer;firstName=home.viewer.firstName;
   if(active==='lesson'&&currentLesson){
     const lessonId=currentLesson.id;
     const visible=learning.modules.some(module=>module.lessons.some(lesson=>lesson.id===lessonId));
     const refreshed=visible?await api.lesson(lessonId):null;
     if(active==='lesson'&&currentLesson?.id===lessonId){currentLesson=refreshed;render('lesson',false);}
   }
-  if(active==='home'||active==='learn')render(active,false);
-  if(active==='homework'&&currentHomework&&homework.some(h=>h.id===currentHomework.id)){const form=document.querySelector('#homeworkSubmit');if(form?.querySelector('.withdrawn-homework')){form.querySelector('.withdrawn-homework').remove();form.querySelectorAll('input,textarea,button').forEach(el=>el.disabled=false);}}
-  if(active==='homework'&&currentHomework&&!homework.some(h=>h.id===currentHomework.id)){
-    const form=document.querySelector('#homeworkSubmit');if(form){form.querySelectorAll('input,textarea,button').forEach(el=>el.disabled=true);if(!form.querySelector('.withdrawn-homework'))form.insertAdjacentHTML('afterbegin','<p class="withdrawn-homework" role="status">Викладач зняв це завдання з активних. Введений текст збережено на цій сторінці.</p>');}
-  }
+  if(active==='home'||active==='learn'||active==='profile'||active==='project')render(active,false);
+  if(active==='homework'&&currentHomework){currentHomework=homework.find(h=>h.id===currentHomework.id)??{...currentHomework,withdrawn:true};render('homework',false);}
 }});

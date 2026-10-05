@@ -10,7 +10,7 @@ import type {
 } from '../types/domain.js';
 import { PILOT, PILOT_STUDENTS, PILOT_TEACHERS, SEEDED_HOMEWORK, SEEDED_LESSONS } from './seed.js';
 import { AppError } from '../errors/app-error.js';
-import { legacyGroup, type SchoolGroup } from './group-model.js';
+import { legacyGroup, PILOT_SESSION_TITLES, type SchoolGroup } from './group-model.js';
 
 export type PilotDirectoryRole = 'student' | 'guardian' | 'teacher' | 'mentor' | 'admin';
 export interface PilotDirectoryPerson {
@@ -49,9 +49,19 @@ export const PILOT_PORTFOLIO_IDS = Object.fromEntries(PILOT_STUDENTS.map((studen
 export interface PilotLessonProgress {
   progressPercent: number;
   completedAt: string | null;
+  reviewStatus?:'pending_review'|'approved'|'needs_revision';
+  version?:number;
+  submittedAt?:string|null;
+  reviewedAt?:string|null;
+  reviewedBy?:string|null;
+  feedback?:string;
+  legacyProgressPercent?:number;
+  legacyCompletedAt?:string|null;
+  approvalXpAlreadyAwarded?:boolean;
 }
 
 export interface PilotProject {
+  notes?:import('../types/domain.js').ProjectNoteDto[];
   id: string;
   title: string;
   summary: string;
@@ -67,7 +77,16 @@ export interface PilotProject {
     number: string;
     title: string;
     description: string;
-    status: 'locked' | 'available' | 'in_progress' | 'completed';
+    status: 'locked' | 'available' | 'in_progress' | 'pending_review' | 'needs_revision' | 'completed';
+    contentText?:string;
+    version?:number;
+    feedback?:string;
+    submittedAt?:string|null;
+    reviewedAt?:string|null;
+    reviewedBy?:string|null;
+    legacyStatus?:string;
+    approvalXpAlreadyAwarded?:boolean;
+    attempts?:Array<{version:number;contentText:string;submittedAt:string;decision?:'approved'|'needs_revision';feedback?:string;reviewedAt?:string;reviewedBy?:string}>;
     xpReward: number;
     weight: number;
   }>;
@@ -143,6 +162,8 @@ export interface PilotAttendanceRecord {
 export interface PilotRuntimeState {
   schemaVersion: 3;
   seededContentCleanupApplied?: boolean;
+  automaticGroupSessionsCleanupApplied?: boolean;
+  academicApprovalMigrationApplied?:boolean;
   groups: SchoolGroup[];
   directory: Record<string, PilotDirectoryPerson>;
   telegramBindings: Record<string, string>;
@@ -283,6 +304,8 @@ export function createPilotRuntimeState(options: { includeDemoContent?: boolean 
   return {
     schemaVersion: 3,
     seededContentCleanupApplied: true,
+    automaticGroupSessionsCleanupApplied: true,
+    academicApprovalMigrationApplied: true,
     groups: [legacyGroup()],
     directory,
     telegramBindings: {},
@@ -340,6 +363,22 @@ export function migratePilotRuntimeState(input: PilotRuntimeState | (Partial<Pil
     }
     state.seededContentCleanupApplied=true;
   }
+  if (!state.automaticGroupSessionsCleanupApplied) {
+    for (const session of state.classSessions ?? []) {
+      const expectedTitle=session.number ? PILOT_SESSION_TITLES[session.number-1] ?? `Заняття ${session.number}` : null;
+      const hasProgress=Object.values(state.lessonProgress??{}).some(progress=>Boolean(progress[session.id]));
+      if (session.scheduleManaged===true && session.number && session.lessonId===null &&
+          session.status==='scheduled' && session.title===expectedTitle && session.lessonTitle===expectedTitle &&
+          !session.changedAt && !session.description && !session.meetingUrl && !session.meetingProvider &&
+          !session.teacherNotes && !session.materials?.length && !hasProgress &&
+          !(state.attendance??[]).some(a=>a.sessionId===session.id) &&
+          !(state.homework??[]).some(h=>h.classSessionId===session.id)) {
+        session.status='archived';
+        session.archivedByCount=false;
+      }
+    }
+    state.automaticGroupSessionsCleanupApplied=true;
+  }
   if (!state.groups) state.groups = [legacyGroup()];
   // Only the eight original pilot sessions acquire managed schedule numbers. Manually
   // added sessions remain independent, so a later group edit cannot duplicate them.
@@ -378,6 +417,34 @@ export function migratePilotRuntimeState(input: PilotRuntimeState | (Partial<Pil
     state.userStatus[person.id]=person.status;
   }
   for(const projects of Object.values(state.projects??{}))for(const project of projects)project.updatedAt??='2026-09-21T00:00:00.000Z';
+  if(!state.academicApprovalMigrationApplied){
+    for(const progress of Object.values(state.lessonProgress??{}))for(const item of Object.values(progress)){
+      if(item.progressPercent===100&&!item.reviewedBy){
+        item.legacyProgressPercent=item.progressPercent;item.legacyCompletedAt=item.completedAt;
+        item.progressPercent=0;item.completedAt=null;item.reviewStatus='pending_review';
+        item.version=(item.version??0)+1;item.submittedAt=item.legacyCompletedAt??null;
+        item.approvalXpAlreadyAwarded=true;
+      }
+    }
+    for(const projects of Object.values(state.projects??{}))for(const project of projects){
+      if(project.tasks.some(task=>task.status==='completed'&&!task.reviewedBy)){
+        let current=false;
+        for(const task of project.tasks){
+          if(task.status==='completed'&&task.reviewedBy)continue;
+          task.legacyStatus=task.status;task.approvalXpAlreadyAwarded=task.status==='completed';
+          task.status=current?'locked':'in_progress';current=true;task.version=(task.version??1)+1;
+        }
+        project.status='active';
+      }
+    }
+    state.academicApprovalMigrationApplied=true;
+  }
+  // Stage metadata is a projection of the same reviewed tasks used by every app.
+  for(const projects of Object.values(state.projects??{}))for(const project of projects){
+    const current=Math.max(0,project.tasks.findIndex(task=>task.status!=='completed'));
+    const index=project.tasks.every(task=>task.status==='completed')?Math.max(0,project.tasks.length-1):current;
+    project.stagePosition=index+1;project.stageCode=['problem','user','prototype','test'][index]??'test';project.stageTitle=project.tasks[index]?.title??'';
+  }
   state.schemaVersion=3;
   return state;
 }

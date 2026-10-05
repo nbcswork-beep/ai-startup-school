@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { MemoryRepository } from './memory-repository.js';
 import { createPilotRuntimeState, MemoryPilotRuntimeStore, migratePilotRuntimeState, type PilotNotification } from './pilot-runtime-store.js';
 import { DEV_IDS, PILOT, PILOT_TEACHERS } from './seed.js';
-import { PILOT_SESSION_TITLES, zonedStart, type GroupInput } from './group-model.js';
+import { PILOT_SESSION_TITLES, groupDates, zonedStart, type GroupInput } from './group-model.js';
 import { evaluateDelivery } from './notification-policy.js';
 
 const ADMIN='14000000-0000-4000-8000-000000000001';
@@ -15,6 +15,10 @@ const input:GroupInput={name:'Пілот 2027',academicYear:2027,startsOn:'2027-
 function pair(){const runtime=new MemoryPilotRuntimeStore(createAssignedPilotState());return{runtime,first:createAssignedRepository(undefined,{runtimeStore:runtime}),second:createAssignedRepository(undefined,{runtimeStore:runtime})};}
 async function add(repository:MemoryRepository,runtime:MemoryPilotRuntimeStore,groupId:string,studentId=STUDENT){await repository.setGroupStudent(ADMIN,groupId,studentId,true,(await runtime.read()).directory[studentId]!.version,'add');}
 
+async function createRealSessions(repository:MemoryRepository,runtime:MemoryPilotRuntimeStore,groupId:string){
+  const group=(await runtime.read()).groups.find(g=>g.id===groupId)!;
+  for(const [index,startsAt] of groupDates(group).entries())await repository.createClassSession(ADMIN,{groupId,courseId:DEV_IDS.course,title:PILOT_SESSION_TITLES[index]!,startsAt,endsAt:new Date(Date.parse(startsAt)+90*60000).toISOString()});
+}
 describe('shared academic state and group ownership',()=>{
   it('checks live lesson, homework and group membership before delivering queued reminders',()=>{
     const state=createAssignedPilotState(),now=new Date('2026-10-05T12:00:00.000Z');
@@ -30,11 +34,13 @@ describe('shared academic state and group ownership',()=>{
     state.homework[0]!.status='published';state.groups[0]!.status='archived';
     expect(evaluateDelivery(state,notification,now)).toEqual({deliver:false,reason:'HOMEWORK_INACTIVE'});
   });
-  it('creates eight persistent sessions in Kyiv time and exposes them to the assigned teacher/admin',async()=>{
+  it('creates an empty group and exposes only explicitly created sessions to assigned teacher/admin',async()=>{
     const {first,second,runtime}=pair();const {id}=await first.createGroup(TEACHER,input,'create');
+    expect((await second.getGroupDetail(TEACHER,id)).sessions).toEqual([]);
+    await createRealSessions(first,runtime,id);
     const sessions=(await second.getTeacherWorkspace(TEACHER)).sessions.filter(s=>s.groupId===id);
     expect(sessions.map(s=>s.title)).toEqual(PILOT_SESSION_TITLES);
-    expect(sessions.map(s=>s.number)).toEqual([1,2,3,4,5,6,7,8]);
+    expect(new Set(sessions.map(s=>s.id)).size).toBe(8);
     expect(sessions[0]?.startsAt).toBe('2027-03-22T15:00:00.000Z');
     expect(sessions[2]?.startsAt).toBe('2027-03-29T14:00:00.000Z'); // Summer-time transition.
     expect((await second.getAdminWorkspace(ADMIN)).groups.some(g=>g.id===id)).toBe(true);
@@ -45,8 +51,9 @@ describe('shared academic state and group ownership',()=>{
     expect((await second.getSchedule(SECOND)).upcoming).toEqual((await first.getSchedule(STUDENT)).upcoming);
   });
 
-  it('updates a stable schedule, retains manually moved/completed sessions and archives excess occurrences',async()=>{
+  it('changes group metadata without inventing, moving, restoring or archiving lessons',async()=>{
     const {first,second,runtime}=pair();const {id}=await first.createGroup(TEACHER,input,'create');
+    await createRealSessions(first,runtime,id);
     const before=(await runtime.read()).classSessions.filter(s=>s.groupId===id);
     await first.rescheduleClass(TEACHER,before[1]!.id,{startsAt:'2027-04-01T12:00:00.000Z',endsAt:'2027-04-01T13:00:00.000Z'});
     await first.updateTeacherClass(TEACHER,before[0]!.id,{status:'completed'});
@@ -54,12 +61,13 @@ describe('shared academic state and group ownership',()=>{
     let sessions=(await second.getTeacherWorkspace(TEACHER)).sessions.filter(s=>s.groupId===id);
     expect(sessions.find(s=>s.id===before[0]!.id)).toMatchObject({status:'completed',startsAt:before[0]!.startsAt});
     expect(sessions.find(s=>s.id===before[1]!.id)).toMatchObject({status:'rescheduled',startsAt:'2027-04-01T12:00:00.000Z'});
-    expect(sessions.find(s=>s.id===before[2]!.id)?.startsAt).toBe('2027-03-29T15:00:00.000Z');
-    expect(sessions.filter(s=>s.status==='archived')).toHaveLength(2);
+    expect(sessions.find(s=>s.id===before[2]!.id)?.startsAt).toBe(before[2]!.startsAt);
+    expect(sessions.filter(s=>s.status==='archived')).toHaveLength(0);
+    await first.updateTeacherClass(TEACHER,before[7]!.id,{status:'cancelled'});
     await first.updateGroup(TEACHER,id,{...input,time:'18:00',expectedVersion:2},'restore-count');
     sessions=(await runtime.read()).classSessions.filter(s=>s.groupId===id);
     expect(new Set(sessions.map(s=>s.id))).toEqual(new Set(before.map(s=>s.id)));
-    expect(sessions.filter(s=>s.status==='archived')).toHaveLength(0);
+    expect(sessions.find(s=>s.id===before[7]!.id)?.status).toBe('cancelled');
     await expect(first.updateGroup(TEACHER,id,{...input,expectedVersion:1},'stale')).rejects.toMatchObject({statusCode:409});
   });
 
@@ -83,6 +91,7 @@ describe('shared academic state and group ownership',()=>{
 
   it('enforces ownership on group, session, homework, attendance and private-note writes',async()=>{
     const {first,runtime}=pair();const {id}=await first.createGroup(ADMIN,{...input,teacherId:OTHER},'other');await add(first,runtime,id);
+    await createRealSessions(first,runtime,id);
     const session=(await runtime.read()).classSessions.find(s=>s.groupId===id)!;
     const homework=await first.createHomework(ADMIN,{groupId:id,courseId:DEV_IDS.course,title:'Приватне',instructions:'Завдання',xpReward:10,status:'draft'});
     for(const operation of [
@@ -100,6 +109,7 @@ describe('shared academic state and group ownership',()=>{
 
   it('archives a group without deleting children/history, then restores it',async()=>{
     const {first,second,runtime}=pair();const {id}=await first.createGroup(TEACHER,input,'create');await add(first,runtime,id);
+    await createRealSessions(first,runtime,id);
     const session=(await runtime.read()).classSessions.find(s=>s.groupId===id)!;
     await first.confirmAttendance(TEACHER,session.id,STUDENT,'present');
     const homework=await first.createHomework(TEACHER,{groupId:id,courseId:DEV_IDS.course,title:'Робота',instructions:'Опис',xpReward:10,status:'published'});

@@ -18,7 +18,7 @@ The Student route previously returned all of `SEEDED_LESSONS` independently of r
 
 Teacher/Admin use the same backend create/edit/archive/restore actions. Teachers see assigned groups and can create groups for themselves. Admin sees all groups and can assign another active teacher. Server ownership checks also cover sessions, attendance, homework, reviews, private notes, portfolios and reports.
 
-Creating a group produces eight persistent pilot sessions by default. Dates follow selected weekdays and Kyiv time, including daylight-saving transitions. Editing retains session IDs: only future automatically scheduled sessions move. Manually moved, ongoing, completed and cancelled sessions retain their dates. Reducing lesson count archives excess future occurrences; increasing it restores those occurrences without duplicates.
+Creating a group creates only the group. The lesson count, start date, weekdays and time describe its plan; they never create, restore, cancel or move lessons. The planned count starts at zero. Group cards show the actual non-cancelled, non-archived session count. Use **Запланувати заняття** to enter a real title and start/end in Kyiv time, including daylight-saving conversion. Editing a group retains every session ID and date; group/teacher labels update without altering the schedule.
 
 Existing students are selected rather than copied. The existing model has **one current group per student**: adding from another group transfers that membership, with explicit UI wording; removing does not delete the person or history. Multi-group enrollment is not introduced.
 
@@ -28,9 +28,11 @@ Group pages contain Students, Sessions, Attendance, Homework and Projects. Group
 
 `classSessions` is the sole persisted schedule. Compatible statuses are `scheduled`, `rescheduled`, `in_progress`, `completed`, `cancelled`, `archived`. The shared server selector returns upcoming lessons only from the student's active current group, with scheduled/rescheduled/in-progress status and a nonexpired end time. Completed/cancelled/archived lessons never remain upcoming.
 
-Protected `GET /api/v1/academic-revision` returns only a hash of the caller's academic scope, including attendance/submissions/reviews and lesson progress. Visible pages check every **5 seconds**, on focus and visibility changes. Student refresh includes schedule, learning route and homework; an open lesson also refreshes from the server. BroadcastChannel signals other tabs immediately without sending educational records, names or identifiers. Hidden pages pause polling and refresh when shown. A successful mutation refreshes its initiating page immediately. Other devices update on the next poll plus request time; this is not a WebSocket subscription.
+Protected `GET /api/v1/academic-revision` returns only a hash of the caller's academic scope, including membership, attendance, submissions/reviews, lesson progress and projects with their notes/replies. Visible pages check every **5 seconds**, on focus and visibility changes. Student refresh includes home, schedule, learning route, homework, projects and recoveries; open lesson/homework details also refresh. BroadcastChannel signals other tabs immediately without sending educational records, names or identifiers. Hidden pages pause polling and refresh when shown. A successful mutation refreshes its initiating page immediately. Other devices update on the next poll plus request time; this is not a WebSocket subscription.
 
-Teacher refresh pauses for open modals/menus and unsaved review, attendance or class-note edits. Admin refresh pauses for modals/search. An open student homework draft is retained; withdrawn homework disables submission. The backend independently rejects attempts against inactive homework. Failed refreshes retry because their revision is not marked applied.
+Teacher refresh pauses for open modals/menus and unsaved review or class-note edits. Attendance can refresh while being edited: only touched statuses/notes are reapplied to fresh server rows, with focus/cursor preserved. Removed members become read-only historical rows and stop counting as current members. Admin refresh pauses for modals/search. Student homework, stage, project and note drafts survive unrelated refreshes; withdrawn homework disables submission. The backend independently rejects attempts against inactive homework. Failed refreshes retry because their revision is not marked applied.
+
+Teacher/Admin class lists and group session tables default to **Актуальні**. Completed, cancelled and archived records are accessible through explicit history filters. Cancelled/archived attendance is read-only. Student future lists, learning access and recovery cards exclude cancelled/archived sessions on the server.
 
 Notification enqueue and final delivery recheck live group membership/status. Queued reminders cannot resurrect archived/unpublished content or notify a student about another group's work. Guardian summaries/digests also use the student's current group.
 
@@ -56,13 +58,14 @@ If a new activity-renewal policy is approved later, change `server/services/auth
 
 Run `npm run typecheck`, `npm test`, `npm run build`. Use isolated local/test data or a separately approved Preview namespace.
 
-1. Teacher → Groups → New group: name/year/start/days/time/teacher, default 8 lessons. Verify cards, eight titles/dates and all five tabs.
+1. Teacher → Groups → New group: name/year/start/days/time/teacher. Verify the empty group in Teacher/Admin and all five tabs. Change planned count to 8: no lessons should appear. Use **Запланувати заняття** for each real lesson; verify the entered title and Kyiv date in Teacher/Admin/Student.
 2. Add existing students; check Admin and two Student accounts. Verify an unassigned teacher/student cannot manage the group.
 3. Teacher/Admin → Classes → Edit: change date, cancel, restore as Scheduled, archive, restore. Open student pages update automatically; reload retains state.
 4. Create Draft homework → Publish → Student Learning. Submit and review. Unpublish removes it from Student's active list. Archive removes it from Teacher's active list. Archive retains response/grade/feedback; restore returns Draft; explicit Publish makes it active again.
 5. Delete an unused assignment. DELETE for any assignment with attempts returns `409 HOMEWORK_HAS_SUBMISSIONS`, even if the UI was stale.
 6. Admin → Users → Active sessions → Extend: verify exactly +180 days, immediate table refresh and retained Revoke. Teacher/student get 403; a stale second request gets 409.
-7. Archive/restore a group and remove a student; profiles/history remain. Repeat group form and homework actions at mobile width.
+7. Archive/restore a group and remove a student; profiles/history remain. Repeat group form and homework actions at mobile width. Check six current members when only one attendance record exists; membership includes pending/disabled accounts without enabling their login.
+8. Follow [TEACHER-APPROVAL.md](TEACHER-APPROVAL.md) to test Teacher-only lesson credit, sequential written project stages, notes, links and replies.
 
 ## Boundaries and limitations
 

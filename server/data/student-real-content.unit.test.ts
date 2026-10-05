@@ -48,6 +48,8 @@ describe('student sees assigned content instead of automatic templates',()=>{
   const runtime=new MemoryPilotRuntimeStore(),repository=new MemoryRepository(undefined,{runtimeStore:runtime});
   const input={name:'Реальна група',academicYear:2027,startsOn:'2027-03-01',weekdays:[1],time:'17:00',teacherId:teacher,status:'active' as const,lessonCount:8};
   const group=await repository.createGroup(teacher,input,'real');await repository.setGroupStudent(admin,group.id,DEV_IDS.user,true,1,'assign');
+  expect((await repository.getLearning(DEV_IDS.user)).course.totalLessons).toBe(0);
+  for(const [i,title] of PILOT_SESSION_TITLES.entries())await repository.createClassSession(teacher,{groupId:group.id,courseId:DEV_IDS.course,title,startsAt:`2027-03-${String(i+1).padStart(2,'0')}T15:00:00.000Z`,endsAt:`2027-03-${String(i+1).padStart(2,'0')}T16:30:00.000Z`});
   const sessions=(await repository.getSchedule(DEV_IDS.user)).upcoming,learning=await repository.getLearning(DEV_IDS.user);
   expect(learning.modules[0]!.lessons.map(l=>l.title)).toEqual(PILOT_SESSION_TITLES);expect(learning.modules[0]!.lessons.map(l=>l.id)).toEqual(sessions.map(s=>s.id));
   const first=sessions[0]!;expect(await repository.getLesson(DEV_IDS.user,first.id)).toMatchObject({id:first.id,title:first.title,content:{task:{prompt:''}}});

@@ -1,4 +1,4 @@
-import { groupInputSchema, isUpcomingSession, reconcileGroupSessions, type GroupInput, type SchoolGroup } from './group-model.js';
+import { groupInputSchema, isUpcomingSession, updateGroupSessionLabels, type GroupInput, type SchoolGroup } from './group-model.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { AppError } from '../errors/app-error.js';
 import { MemorySessionStore, type SessionStore } from '../auth/session-store.js';
@@ -288,7 +288,7 @@ export class MemoryRepository implements AppRepository {
     const lessons:LessonSummaryDto[]=sessions.map((session,index)=>{
       const value=progress[session.id]?.progressPercent??0,catalog=SEEDED_LESSONS.find(item=>item.id===session.lessonId);
       return{id:session.id,number:String(session.number??index+1).padStart(2,'0'),title:session.title,summary:session.description,estimatedMinutes:session.durationMinutes,xpReward:catalog?.xp??0,
-        state:value===100?'completed':index===firstIncomplete?(value>0?'current':'available'):'locked',progressPercent:value};
+        state:value===100?'completed':index===firstIncomplete?(value>0?'current':'available'):'locked',progressPercent:value,...this.completionReview(progress[session.id])};
     });
     return{course:{id:DEV_IDS.course,title:PILOT.courseTitle,description:PILOT.courseDescription,progressPercent:lessons.length?Math.round(lessons.reduce((sum,item)=>sum+item.progressPercent,0)/lessons.length):0,completedLessons:lessons.filter(item=>item.state==='completed').length,totalLessons:lessons.length},
       modules:lessons.length?[{id:DEV_IDS.module,number:'01',title:group?.name??sessions[0]!.moduleTitle??'',description:'',lessons}]:[]};
@@ -307,20 +307,40 @@ export class MemoryRepository implements AppRepository {
       nextLessonId:sessions[sessions.findIndex(item=>item.id===session.id)+1]?.id??null};
   }
 
-  async completeLesson(userId: string, lessonId: string, idempotencyKey: string): Promise<{ awardedXp: number; home: HomeDto }> {
-    const lesson=await this.getLesson(userId,lessonId);
-    if(!lesson)throw new AppError('LESSON_NOT_FOUND',404,'Урок не знайдено');
-    const rewardKey=`lesson:${userId}:${lesson.id}:${idempotencyKey}`,completedAt=nowIso();
-    const awardedXp=await this.runtimeStore.mutate(state=>{
-      if(!this.studentLearningSessions(state,userId).some(session=>session.id===lesson.id))throw new AppError('LESSON_NOT_FOUND',404,'Урок не знайдено');
-      const progress=state.lessonProgress[userId]??(state.lessonProgress[userId]={});
-      if(state.idempotencyKeys.includes(rewardKey)||progress[lesson.id]?.progressPercent===100)return 0;
-      progress[lesson.id]={progressPercent:100,completedAt};state.idempotencyKeys.push(rewardKey);
-      state.xp[userId]=(state.xp[userId]??0)+lesson.xpReward;state.streak[userId]=Math.max(1,state.streak[userId]??0);
-      const achievements=state.achievements[userId]??(state.achievements[userId]=[]);if(!achievements.includes('first-spark'))achievements.push('first-spark');
-      return lesson.xpReward;
+  async completeLesson(userId: string, lessonId: string, _idempotencyKey: string): Promise<{ awardedXp: number; home: HomeDto }> {
+    await this.runtimeStore.mutate(state=>{
+      this.syncDirectory(state);this.requireRole(userId,'student');
+      const sessions=this.studentLearningSessions(state,userId),session=sessions.find(s=>s.id===lessonId||s.lessonId===lessonId);
+      if(!session)throw new AppError('LESSON_NOT_FOUND',404,'Урок не знайдено');
+      const summary=this.learningFromState(state,userId).modules[0]?.lessons.find(l=>l.id===session.id);
+      if(summary?.state==='locked')throw new AppError('LESSON_LOCKED',403,'Цей урок ще не відкрито');
+      const progress=state.lessonProgress[userId]??(state.lessonProgress[userId]={}),previous=progress[session.id];
+      if(previous?.reviewStatus==='pending_review'||previous?.reviewStatus==='approved')return;
+      progress[session.id]={...previous,progressPercent:0,completedAt:null,reviewStatus:'pending_review',version:(previous?.version??0)+1,submittedAt:nowIso(),reviewedAt:null,reviewedBy:null,feedback:''};
     });
-    return{awardedXp,home:await this.getHome(userId)};
+    return{awardedXp:0,home:await this.getHome(userId)};
+  }
+
+  async reviewLessonCompletion(userId:string,sessionId:string,studentId:string,input:import('../types/domain.js').AcademicReviewInput,correlationId:string):Promise<void>{
+    await this.runtimeStore.mutate(state=>{
+      const session=this.requireClass(state,userId,sessionId),student=this.expectPerson(state,studentId,'student');
+      if(student.groupId!==session.groupId)throw new AppError('STUDENT_FORBIDDEN',403,'Учень не належить до групи');
+      if(['cancelled','archived'].includes(session.status))throw new AppError('CLASS_INACTIVE',409,'Заняття скасовано або архівовано');
+      const progress=state.lessonProgress[studentId]?.[sessionId];
+      if(!progress||progress.reviewStatus!=='pending_review'||progress.version!==input.expectedVersion)throw new AppError('VERSION_CONFLICT',409,'Запит уже змінено. Оновіть сторінку.');
+      progress.reviewStatus=input.decision;progress.version++;progress.feedback=input.feedback;progress.reviewedAt=nowIso();progress.reviewedBy=userId;
+      if(input.decision==='approved'){
+        progress.progressPercent=100;progress.completedAt=progress.reviewedAt;
+        if(!progress.approvalXpAlreadyAwarded){state.xp[studentId]=(state.xp[studentId]??0)+(SEEDED_LESSONS.find(l=>l.id===session.lessonId)?.xp??0);progress.approvalXpAlreadyAwarded=true;}
+        state.streak[studentId]=Math.max(1,state.streak[studentId]??0);
+        const achievements=state.achievements[studentId]??(state.achievements[studentId]=[]);if(!achievements.includes('first-spark'))achievements.push('first-spark');
+      }
+      this.addAudit(state,userId,'lesson.reviewed','class',sessionId,{decision:input.decision},correlationId);
+    });
+  }
+
+  private completionReview(progress:import('./pilot-runtime-store.js').PilotLessonProgress|undefined){
+    return progress?.reviewStatus?{completionReview:{status:progress.reviewStatus,version:progress.version??1,feedback:progress.feedback??'',submittedAt:progress.submittedAt??null,reviewedAt:progress.reviewedAt??null}}:{};
   }
 
   async listProjects(userId: string): Promise<ProjectDto[]> {
@@ -330,7 +350,7 @@ export class MemoryRepository implements AppRepository {
   }
 
   async createProject(userId: string, input: { title: string; summary: string }): Promise<ProjectDto> {
-    this.requireUser(userId);
+    this.syncDirectory(await this.runtimeStore.read());this.requireRole(userId,'student');
     const project: InternalProject = {
       id: randomUUID(), title: input.title, summary: input.summary, status: 'active',
       stagePosition: 1, stageCode: 'idea', stageTitle: 'Ідея', tags: ['AI'], workspaceUrl: this.workspaceUrl ?? null,updatedAt:nowIso(),
@@ -351,10 +371,66 @@ export class MemoryRepository implements AppRepository {
     return project?this.projectDto(project):null;
   }
 
-  async completeProjectTask(userId: string, projectId: string, taskId: string, idempotencyKey: string): Promise<{ awardedXp: number; project: ProjectDto } | null> {
-    this.requireUser(userId);const rewardKey=`project-task:${userId}:${taskId}:${idempotencyKey}`;
-    const result=await this.runtimeStore.mutate(state=>{const project=state.projects[userId]?.find(item=>item.id===projectId);if(!project)return null;const taskIndex=project.tasks.findIndex(item=>item.id===taskId),task=project.tasks[taskIndex];if(!task)return null;if(task.status==='locked')throw new AppError('TASK_LOCKED',403,'Це завдання ще не відкрито');let awardedXp=0;if(task.status!=='completed'&&!state.idempotencyKeys.includes(rewardKey)){task.status='completed';project.updatedAt=nowIso();state.idempotencyKeys.push(rewardKey);state.xp[userId]=(state.xp[userId]??0)+task.xpReward;state.streak[userId]=Math.max(1,state.streak[userId]??0);awardedXp=task.xpReward;const next=project.tasks[taskIndex+1];if(next)next.status='in_progress';else project.status='completed';const completed=project.tasks.filter(item=>item.status==='completed').length;project.stagePosition=Math.min(STAGES.length,Math.max(1,completed+1));const stage=STAGES[project.stagePosition-1];if(stage){project.stageCode=stage.code;project.stageTitle=stage.title;}if(completed>=2){const achievements=state.achievements[userId]??(state.achievements[userId]=[]);if(!achievements.includes('builder'))achievements.push('builder');}}return{awardedXp,project};});
-    return result?{awardedXp:result.awardedXp,project:this.projectDto(result.project)}:null;
+  async completeProjectTask(_userId:string,_projectId:string,_taskId:string,_idempotencyKey:string):Promise<{awardedXp:number;project:ProjectDto}|null>{
+    throw new AppError('TEACHER_REVIEW_REQUIRED',409,'Надішліть текст етапу на перевірку викладачу');
+  }
+
+  async addProjectNote(userId:string,projectId:string,input:{contentText:string;contentUrl?:string;clientRequestId:string}):Promise<ProjectDto>{
+    const content=input.contentText.trim(),url=input.contentUrl?.trim()||null;
+    if((!content&&!url)||content.length>20000)throw new AppError('INVALID_NOTE',400,'Додайте нотатку або посилання');
+    if(url){let parsed:URL;try{parsed=new URL(url);}catch{throw new AppError('UNSAFE_URL',400,'Некоректне посилання');}if(parsed.protocol!=='https:'||parsed.username||parsed.password||url.length>2048)throw new AppError('UNSAFE_URL',400,'Дозволено лише HTTPS-посилання');}
+    const project=await this.runtimeStore.mutate(state=>{
+      this.syncDirectory(state);this.requireRole(userId,'student');const person=this.expectPerson(state,userId,'student');
+      if(!state.groups.some(g=>g.id===person.groupId&&g.status==='active'))throw new AppError('GROUP_INACTIVE',403,'Немає активної навчальної групи');
+      const project=state.projects[userId]?.find(p=>p.id===projectId);if(!project||project.status==='archived')throw new AppError('PROJECT_NOT_FOUND',404,'Проєкт недоступний');
+      const notes=project.notes??(project.notes=[]);if(notes.some(n=>n.clientRequestId===input.clientRequestId))return project;
+      if(notes.length>=200)throw new AppError('NOTE_LIMIT',409,'Досягнуто ліміту нотаток проєкту');
+      notes.push({id:randomUUID(),contentText:content,contentUrl:url,createdAt:nowIso(),clientRequestId:input.clientRequestId,replies:[]});project.updatedAt=nowIso();return project;
+    });return this.projectDto(project);
+  }
+
+  async replyProjectNote(userId:string,studentId:string,projectId:string,noteId:string,input:{contentText:string;clientRequestId:string},correlationId:string):Promise<void>{
+    const content=input.contentText.trim();if(!content||content.length>4000)throw new AppError('INVALID_FEEDBACK',400,'Напишіть коментар');
+    await this.runtimeStore.mutate(state=>{
+      const student=this.expectPerson(state,studentId,'student');this.requireGroup(state,userId,student.groupId??'');
+      const project=state.projects[studentId]?.find(p=>p.id===projectId),note=project?.notes?.find(n=>n.id===noteId);
+      if(!project||project.status==='archived'||!note)throw new AppError('PROJECT_NOTE_NOT_FOUND',404,'Нотатка недоступна');
+      if(note.replies.some(r=>r.teacherId===userId&&r.clientRequestId===input.clientRequestId))return;
+      if(note.replies.length>=100)throw new AppError('REPLY_LIMIT',409,'Досягнуто ліміту коментарів');
+      note.replies.push({id:randomUUID(),teacherId:userId,teacherName:state.directory[userId]!.displayName,contentText:content,createdAt:nowIso(),clientRequestId:input.clientRequestId});project.updatedAt=nowIso();this.addAudit(state,userId,'project.note_replied','project',projectId,{},correlationId);
+    });
+  }
+
+  async submitProjectTask(userId:string,projectId:string,taskId:string,input:{contentText:string;expectedVersion:number}):Promise<ProjectDto>{
+    const content=input.contentText.trim();if(!content||content.length>20000)throw new AppError('INVALID_RESPONSE',400,'Напишіть відповідь до етапу');
+    const project=await this.runtimeStore.mutate(state=>{
+      this.syncDirectory(state);this.requireRole(userId,'student');
+      const person=this.expectPerson(state,userId,'student');
+      if(!state.groups.some(g=>g.id===person.groupId&&g.status==='active'))throw new AppError('GROUP_INACTIVE',403,'Немає активної навчальної групи');
+      const project=state.projects[userId]?.find(p=>p.id===projectId);if(!project||project.status!=='active')throw new AppError('PROJECT_NOT_FOUND',404,'Проєкт недоступний');
+      const index=project.tasks.findIndex(t=>t.id===taskId),task=project.tasks[index];
+      if(!task||project.tasks.slice(0,index).some(t=>t.status!=='completed')||!['in_progress','available','needs_revision'].includes(task.status))throw new AppError('TASK_LOCKED',403,'Етап ще не відкрито або вже на перевірці');
+      if((task.version??1)!==input.expectedVersion)throw new AppError('VERSION_CONFLICT',409,'Етап уже змінено');
+      task.contentText=content;task.status='pending_review';task.version=(task.version??1)+1;task.submittedAt=nowIso();task.reviewedAt=null;task.reviewedBy=null;task.feedback='';
+      (task.attempts??(task.attempts=[])).push({version:task.version,contentText:content,submittedAt:task.submittedAt});project.updatedAt=nowIso();return project;
+    });return this.projectDto(project);
+  }
+
+  async reviewProjectTask(userId:string,studentId:string,projectId:string,taskId:string,input:import('../types/domain.js').AcademicReviewInput,correlationId:string):Promise<void>{
+    await this.runtimeStore.mutate(state=>{
+      const student=this.expectPerson(state,studentId,'student');this.requireGroup(state,userId,student.groupId??'');
+      const project=state.projects[studentId]?.find(p=>p.id===projectId),index=project?.tasks.findIndex(t=>t.id===taskId)??-1,task=project?.tasks[index];
+      if(!project||!task||task.status!=='pending_review'||(task.version??1)!==input.expectedVersion)throw new AppError('VERSION_CONFLICT',409,'Етап уже змінено');
+      if(project.tasks.slice(0,index).some(t=>t.status!=='completed'))throw new AppError('TASK_LOCKED',409,'Попередній етап ще не підтверджено');
+      task.status=input.decision==='approved'?'completed':'needs_revision';task.version=(task.version??1)+1;task.feedback=input.feedback;task.reviewedAt=nowIso();task.reviewedBy=userId;
+      const attempt=task.attempts?.at(-1);if(attempt)Object.assign(attempt,{decision:input.decision,feedback:input.feedback,reviewedAt:task.reviewedAt,reviewedBy:userId});
+      if(input.decision==='approved'){
+        if(!task.approvalXpAlreadyAwarded){state.xp[studentId]=(state.xp[studentId]??0)+task.xpReward;task.approvalXpAlreadyAwarded=true;}
+        const next=project.tasks[index+1];if(next)next.status='in_progress';else project.status='completed';
+        if(project.tasks.filter(t=>t.status==='completed').length>=2){const earned=state.achievements[studentId]??(state.achievements[studentId]=[]);if(!earned.includes('builder'))earned.push('builder');}
+      }
+      project.updatedAt=nowIso();this.addAudit(state,userId,'project.stage_reviewed','project',projectId,{decision:input.decision},correlationId);
+    });
   }
 
   async getProfile(userId: string): Promise<ProfileDto> {
@@ -460,6 +536,7 @@ export class MemoryRepository implements AppRepository {
     const staff=person?.roles.some(role=>role==='teacher'||role==='admin');
     return{revision:createHash('sha256').update(JSON.stringify([
       groups,sessions,homework,
+      Object.entries(state.projects).filter(([id])=>staff ? ids.has(state.directory[id]?.groupId??'') : id===userId),
       state.attendance.filter(a=>sessionIds.has(a.sessionId)&&(staff||a.studentId===userId)),
       state.submissions.filter(s=>homeworkIds.has(s.homeworkId)&&(staff||s.studentId===userId)),
       Object.entries(state.lessonProgress).filter(([id])=>staff ? ids.has(state.directory[id]?.groupId??'') : id===userId),
@@ -481,26 +558,28 @@ export class MemoryRepository implements AppRepository {
       state.homework=state.homework.filter(h=>h.id!==homeworkId);this.addAudit(state,userId,'homework.deleted','homework',homeworkId,{},correlationId);});
   }
   async groupDirectory(userId:string):Promise<{teachers:Array<{id:string;name:string}>;students:Array<{id:string;name:string;groupId:string|null}>}>{
-    const state=await this.runtimeStore.read();this.syncDirectory(state);this.requireRole(userId,'teacher');
+    return this.groupDirectoryFromState(await this.runtimeStore.read(),userId);
+  }
+  private groupDirectoryFromState(state:PilotRuntimeState,userId:string){
+    this.syncDirectory(state);this.requireRole(userId,'teacher');
     const admin=state.directory[userId]?.roles.includes('admin');
     return {teachers:Object.values(state.directory).filter(p=>p.roles.includes('teacher')&&p.status==='active'&&(admin||p.id===userId)).map(p=>({id:p.id,name:p.displayName})),
-      students:Object.values(state.directory).filter(p=>p.roles.includes('student')&&p.status==='active'&&(!p.groupId||admin||state.groups.some(g=>g.id===p.groupId&&g.teacherIds.includes(userId)))).map(p=>({id:p.id,name:p.displayName,groupId:p.groupId}))};
+      students:Object.values(state.directory).filter(p=>p.roles.includes('student')&&!['archived','deleted'].includes(p.status)&&(!p.groupId||admin||state.groups.some(g=>g.id===p.groupId&&g.teacherIds.includes(userId)))).map(p=>({id:p.id,name:p.displayName,groupId:p.groupId,status:p.status}))};
   }
   async createGroup(userId:string,input:GroupInput,correlationId:string):Promise<{id:string}>{
     const parsed=groupInputSchema.parse(input),id=randomUUID(),timestamp=nowIso();
     await this.runtimeStore.mutate(state=>{this.syncDirectory(state);this.requireRole(userId,'teacher');this.checkGroupTeacher(state,userId,parsed.teacherId);
       const group:SchoolGroup={...parsed,id,teacherIds:[parsed.teacherId],courseId:DEV_IDS.course,timezone:PILOT.timezone,version:1,createdAt:timestamp,updatedAt:timestamp};
-      state.groups.push(group);reconcileGroupSessions(state,group,true);this.addAudit(state,userId,'group.created','group',id,{},correlationId);});return{id};
+      state.groups.push(group);this.addAudit(state,userId,'group.created','group',id,{},correlationId);});return{id};
   }
   async updateGroup(userId:string,groupId:string,input:GroupInput&{expectedVersion:number},correlationId:string):Promise<void>{
     const {expectedVersion,...fields}=input,parsed=groupInputSchema.parse(fields);
     await this.runtimeStore.mutate(state=>{const group=this.requireGroup(state,userId,groupId,false);
       if(group.version!==expectedVersion)throw new AppError('VERSION_CONFLICT',409,'Групу вже змінено. Оновіть сторінку й повторіть.');
       this.checkGroupTeacher(state,userId,parsed.teacherId);
-      const scheduleChanged=group.startsOn!==parsed.startsOn||group.time!==parsed.time||group.weekdays.join(',')!==parsed.weekdays.join(',');
       const teacherChanged=group.teacherId!==parsed.teacherId;
       Object.assign(group,parsed,{teacherIds:teacherChanged?[parsed.teacherId]:group.teacherIds,version:group.version+1,updatedAt:nowIso()});
-      reconcileGroupSessions(state,group,scheduleChanged);
+      updateGroupSessionLabels(state,group);
       for(const homework of state.homework.filter(h=>h.groupId===groupId))homework.groupName=group.name;
       for(const report of state.teacherReports.filter(r=>r.groupId===groupId))report.groupName=group.name;
       this.addAudit(state,userId,'group.updated','group',groupId,{status:group.status},correlationId);});
@@ -510,14 +589,14 @@ export class MemoryRepository implements AppRepository {
   }
   async setGroupStudent(userId:string,groupId:string,studentId:string,add:boolean,expectedVersion:number,correlationId:string):Promise<void>{
     await this.runtimeStore.mutate(state=>{this.requireGroup(state,userId,groupId);const student=this.expectPerson(state,studentId,'student');this.assertVersion(student,expectedVersion);
-      if(student.status!=='active')throw new AppError('STUDENT_INACTIVE',409,'Учень неактивний');
+      if(add&&student.status!=='active')throw new AppError('STUDENT_INACTIVE',409,'Учень неактивний');
       if(add){if(student.groupId&&student.groupId!==groupId)this.requireGroup(state,userId,student.groupId);student.groupId=groupId;}
       else {if(student.groupId!==groupId)throw new AppError('MEMBERSHIP_CONFLICT',409,'Учень уже не належить до цієї групи');student.groupId=null;}
       this.touchPerson(student);this.addAudit(state,userId,add?'group.student_added':'group.student_removed','group',groupId,{studentId},correlationId);});
   }
   async getGroupDetail(userId:string,groupId:string):Promise<Record<string,unknown>>{
     const state=await this.runtimeStore.read();this.requireGroup(state,userId,groupId,false);
-    const workspace=await this.getTeacherWorkspace(userId,true);const directory=await this.groupDirectory(userId);
+    const workspace=await this.teacherWorkspaceFromState(state,userId,true);const directory=this.groupDirectoryFromState(state,userId);
     const group=workspace.groups.find(g=>g.id===groupId);return{group,students:workspace.students.filter(s=>s.groupId===groupId),sessions:workspace.sessions.filter(s=>s.groupId===groupId),homework:workspace.homework.filter(h=>h.groupId===groupId),submissions:workspace.submissions.filter(s=>s.groupId===groupId),directory:{...directory,students:directory.students.map(s=>({...s,version:state.directory[s.id]!.version}))}};
   }
   private requireGroup(state:PilotRuntimeState,userId:string,groupId:string,active=true):SchoolGroup{
@@ -534,23 +613,28 @@ export class MemoryRepository implements AppRepository {
   }
 
   async listTeacherGroups(userId:string):Promise<TeacherGroupDto[]>{return (await this.getTeacherWorkspace(userId)).groups;}
-  async listGroupStudents(userId:string,groupId:string):Promise<TeacherStudentDto[]>{const state=await this.runtimeStore.read();this.requireGroup(state,userId,groupId,false);return (await this.getTeacherWorkspace(userId,true)).students.filter(s=>s.groupId===groupId);}
+  async listGroupStudents(userId:string,groupId:string):Promise<TeacherStudentDto[]>{const state=await this.runtimeStore.read();this.requireGroup(state,userId,groupId,false);return (await this.teacherWorkspaceFromState(state,userId,true)).students.filter(s=>s.groupId===groupId);}
   async createClassSession(userId:string,input:{groupId:string;courseId:string;moduleId?:string;lessonId?:string;title:string;description?:string;startsAt:string;endsAt:string;meetingUrl?:string;meetingProvider?:string}):Promise<ClassSessionDto>{
     const snapshot=await this.runtimeStore.read();const group=this.requireGroup(snapshot,userId,input.groupId);if(input.courseId!==group.courseId)throw new AppError('COURSE_FORBIDDEN',403,'Курс недоступний');
     if(Date.parse(input.endsAt)<=Date.parse(input.startsAt))throw new AppError('INVALID_TIME',400,'Некоректний час заняття');const id=randomUUID();
-    const created={id,groupId:input.groupId,groupName:group.name,lessonId:input.lessonId??null,title:input.title,description:input.description??'',startsAt:input.startsAt,endsAt:input.endsAt,durationMinutes:Math.round((Date.parse(input.endsAt)-Date.parse(input.startsAt))/60000),status:'scheduled' as const,meetingProvider:input.meetingProvider??null,meetingUrl:input.meetingUrl??null,courseTitle:PILOT.courseTitle,moduleTitle:PILOT.moduleTitle,lessonTitle:input.lessonId?SEEDED_LESSONS.find(item=>item.id===input.lessonId)?.title??null:null,teacherName:this.requireUser(userId).displayName,teacherNotes:'',materials:[]};
+    const created={id,groupId:input.groupId,groupName:group.name,scheduleManaged:false,lessonId:input.lessonId??null,title:input.title,description:input.description??'',startsAt:input.startsAt,endsAt:input.endsAt,durationMinutes:Math.round((Date.parse(input.endsAt)-Date.parse(input.startsAt))/60000),status:'scheduled' as const,meetingProvider:input.meetingProvider??null,meetingUrl:input.meetingUrl??null,courseTitle:PILOT.courseTitle,moduleTitle:PILOT.moduleTitle,lessonTitle:input.lessonId?SEEDED_LESSONS.find(item=>item.id===input.lessonId)?.title??null:null,teacherName:this.requireUser(userId).displayName,teacherNotes:'',materials:[]};
     await this.runtimeStore.mutate(state=>{this.requireGroup(state,userId,input.groupId);state.classSessions.push(created);});return this.classSessionDto(created);
   }
   async rescheduleClass(userId:string,sessionId:string,input:{startsAt:string;endsAt:string;reason?:string}):Promise<void>{this.requireRole(userId,'teacher');if(Date.parse(input.endsAt)<=Date.parse(input.startsAt))throw new AppError('INVALID_TIME',400,'Некоректний час заняття');await this.runtimeStore.mutate(state=>{const item=this.requireClass(state,userId,sessionId);item.startsAt=input.startsAt;item.endsAt=input.endsAt;item.durationMinutes=Math.round((Date.parse(input.endsAt)-Date.parse(input.startsAt))/60000);item.status='rescheduled';item.scheduleManaged=false;item.changedAt=nowIso();});}
-  async confirmAttendance(userId:string,sessionId:string,studentId:string,status:'present'|'late'|'absent'|'excused',note?:string):Promise<void>{const snapshot=await this.runtimeStore.read();this.syncDirectory(snapshot);this.requireRole(userId,'teacher');if(!this.activeStudents(snapshot).some(student=>student.id===studentId && student.groupId===this.requireClass(snapshot,userId,sessionId).groupId))throw new AppError('ATTENDANCE_FORBIDDEN',403,'Учень або заняття недоступні');const id=randomUUID(),confirmedAt=nowIso();await this.runtimeStore.mutate(state=>{const current=this.requireClass(state,userId,sessionId);if(state.directory[studentId]?.groupId!==current.groupId)throw new AppError('ATTENDANCE_FORBIDDEN',403,'Учень іншої групи');const record=state.attendance.find(item=>item.sessionId===sessionId&&item.studentId===studentId);if(record){record.status=status;record.note=note??'';record.confirmedAt=confirmedAt;}else state.attendance.push({id,sessionId,studentId,status,note:note??'',confirmedAt});});}
+  async confirmAttendance(userId:string,sessionId:string,studentId:string,status:'present'|'late'|'absent'|'excused',note?:string):Promise<void>{
+    await this.bulkConfirmAttendance(userId,sessionId,[{studentId,status,...(note===undefined?{}:{note})}]);
+  }
   async createHomework(userId:string,input:{groupId:string;courseId:string;moduleId?:string;lessonId?:string;classSessionId?:string;title:string;instructions:string;publishAt?:string;dueAt?:string;xpReward:number;status:'draft'|'published';resources?:Array<{kind:'presentation'|'document'|'link'|'reference'|'other';title:string;url:string}>}):Promise<HomeworkSummaryDto>{this.requireRole(userId,'teacher');if(input.resources?.some(resource=>!resource.url.startsWith('https://')))throw new AppError('UNSAFE_URL',400,'Дозволено лише HTTPS-посилання');const id=randomUUID(),resources=(input.resources??[]).map(resource=>({id:randomUUID(),...resource}));await this.runtimeStore.mutate(state=>{const group=this.requireGroup(state,userId,input.groupId);if(input.courseId!==group.courseId)throw new AppError('COURSE_FORBIDDEN',403,'Курс недоступний');if(input.classSessionId&&this.requireClass(state,userId,input.classSessionId).groupId!==group.id)throw new AppError('CLASS_FORBIDDEN',403,'Заняття іншої групи');state.homework.unshift({id,groupId:input.groupId,groupName:group.name,classSessionId:input.classSessionId??null,title:input.title,instructions:input.instructions,publishAt:input.publishAt??null,dueAt:input.dueAt??null,xpReward:input.xpReward,status:input.status,version:1,submissionCount:0,reviewCount:0,needsRevisionCount:0,resources});});return{id,title:input.title,instructions:input.instructions,publishedAt:input.publishAt??'',dueAt:input.dueAt??null,xpReward:input.xpReward,classTitle:null,state:'not_started',latestSubmission:null};}
   async reviewHomework(userId:string,submissionId:string,input:{score:number;effort:EffortLevel;status:'reviewed'|'needs_revision'|'completed';feedback:string}):Promise<void>{this.requireRole(userId,'teacher');if(input.score<0||input.score>10||!Number.isInteger(input.score))throw new AppError('INVALID_SCORE',400,'Оцінка має бути цілим числом від 0 до 10');const reviewedAt=nowIso();await this.runtimeStore.mutate(state=>{const submission=state.submissions.find(item=>item.id===submissionId);if(!submission)throw new AppError('SUBMISSION_FORBIDDEN',403,'Робота недоступна');const homework=state.homework.find(h=>h.id===submission.homeworkId);this.requireGroup(state,userId,homework?.groupId??'');submission.status=input.status==='needs_revision'?'needs_revision':input.status==='completed'?'completed':submission.status;submission.review={score:input.score,effort:input.effort,status:input.status,feedback:input.feedback,reviewedAt};});}
 
   async getTeacherWorkspace(userId:string,allGroups=false):Promise<TeacherWorkspaceDto>{
-    const state=await this.runtimeStore.read();this.syncDirectory(state);this.requireRole(userId,'teacher');
+    return this.teacherWorkspaceFromState(await this.runtimeStore.read(),userId,allGroups);
+  }
+  private async teacherWorkspaceFromState(state:PilotRuntimeState,userId:string,allGroups=false):Promise<TeacherWorkspaceDto>{
+    this.syncDirectory(state);this.requireRole(userId,'teacher');
     const visible=state.groups.filter(g=>allGroups&&state.directory[userId]?.roles.includes('admin')||g.teacherIds.includes(userId));
     const groupIds=new Set(visible.map(g=>g.id));
-    const groupPeople=this.activeStudents(state).filter(p=>p.groupId&&groupIds.has(p.groupId));
+    const groupPeople=this.groupStudents(state).filter(p=>p.groupId&&groupIds.has(p.groupId));
     const rawSessions=state.classSessions.filter(s=>groupIds.has(s.groupId));
     const sessionIds=new Set(rawSessions.map(s=>s.id));
     const rawHomework=state.homework.filter(h=>groupIds.has(h.groupId));
@@ -567,7 +651,7 @@ export class MemoryRepository implements AppRepository {
       const counts={present:0,late:0,absent:0,excused:0};for(const entry of attendance)counts[entry.status]++;
       const reasons:string[]=[];if(counts.absent>=2)reasons.push('2 або більше пропущених занять');
       if(attempts.some(a=>a.status==='needs_revision'))reasons.push('Є робота на доопрацюванні');if(!projects.length)reasons.push('Ще немає активного проєкту');
-      students.push({id:person.id,firstName:person.displayName,groupId:group.id,groupName:group.name,courseTitle:PILOT.courseTitle,moduleTitle:PILOT.moduleTitle,
+      students.push({id:person.id,firstName:person.displayName,groupId:group.id,groupName:group.name,accountStatus:person.status,courseTitle:PILOT.courseTitle,moduleTitle:PILOT.moduleTitle,
         progressPercent:this.progressPercent(state,person.id),projectTitle:projects.find(p=>p.status==='active')?.title??null,
         xp,level:LEVELS.filter(l=>xp>=l.minXp).at(-1)?.title??LEVELS[0]!.title,attendance:counts,
         homework:{assigned:rawHomework.filter(h=>h.groupId===group.id&&h.status==='published').length,submitted:attempts.length,needsRevision:attempts.filter(a=>a.status==='needs_revision').length,averageScore:scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length*10)/10:null,effort:attempts.find(a=>a.review)?.review?.effort??null},
@@ -579,15 +663,15 @@ export class MemoryRepository implements AppRepository {
       const historicalIds=state.attendance.filter(a=>a.sessionId===item.id).map(a=>a.studentId);
       return{...this.classSessionDto(item),groupId:item.groupId,groupName:visible.find(g=>g.id===item.groupId)!.name,lessonId:item.lessonId,teacherNotes:item.teacherNotes,
         homeworkIds:rawHomework.filter(h=>h.classSessionId===item.id).map(h=>h.id),
-        attendance:[...new Set([...currentIds,...historicalIds])].map(id=>{const a=state.attendance.find(a=>a.sessionId===item.id&&a.studentId===id);return{studentId:id,studentName:state.directory[id]?.displayName??'Учень',status:a?.status??null,suggestedStatus:null,note:a?.note??'',confirmedAt:a?.confirmedAt??null};})};
+        attendance:[...new Set([...currentIds,...historicalIds])].map(id=>{const a=state.attendance.find(a=>a.sessionId===item.id&&a.studentId===id);return{studentId:id,studentName:state.directory[id]?.displayName??'Учень',isCurrentMember:currentIds.includes(id),...this.completionReview(state.lessonProgress[id]?.[item.id]),status:a?.status??null,suggestedStatus:null,note:a?.note??'',confirmedAt:a?.confirmedAt??null};})};
     }).sort((a,b)=>Date.parse(a.startsAt)-Date.parse(b.startsAt));
     const submissions=rawSubmissions.flatMap(attempt=>{const h=rawHomework.find(h=>h.id===attempt.homeworkId),p=state.directory[attempt.studentId];if(!h||!p)return[];return[{id:attempt.id,homeworkId:h.id,homeworkTitle:h.title,groupId:h.groupId,groupName:visible.find(g=>g.id===h.groupId)!.name,studentId:p.id,studentName:p.displayName,attemptNumber:attempt.attemptNumber,submittedAt:attempt.submittedAt,studentComment:attempt.studentComment,contentText:attempt.contentText,contentUrl:attempt.contentUrl,status:attempt.status,review:structuredClone(attempt.review),attachments:[],previousAttempts:rawSubmissions.filter(a=>a.studentId===p.id&&a.homeworkId===h.id&&a.attemptNumber<attempt.attemptNumber).map(a=>this.submissionDto(a))}];}).sort((a,b)=>Date.parse(b.submittedAt??'')-Date.parse(a.submittedAt??''));
-    const homework=rawHomework.map(h=>({...h,submissionCount:rawSubmissions.filter(a=>a.homeworkId===h.id).length,reviewCount:rawSubmissions.filter(a=>a.homeworkId===h.id&&a.review).length,needsRevisionCount:rawSubmissions.filter(a=>a.homeworkId===h.id&&a.status==='needs_revision').length}));
+    const homework=rawHomework.map(h=>({...h,groupName:visible.find(g=>g.id===h.groupId)!.name,submissionCount:rawSubmissions.filter(a=>a.homeworkId===h.id).length,reviewCount:rawSubmissions.filter(a=>a.homeworkId===h.id&&a.review).length,needsRevisionCount:rawSubmissions.filter(a=>a.homeworkId===h.id&&a.status==='needs_revision').length}));
     const days=['Неділя','Понеділок','Вівторок','Середа','Четвер','П’ятниця','Субота'];
-    const groups=visible.map(group=>{const people=students.filter(p=>p.groupId===group.id),classes=sessions.filter(s=>s.groupId===group.id),ids=new Set(classes.map(s=>s.id)),attendance=state.attendance.filter(a=>ids.has(a.sessionId));return{...group,courseTitle:PILOT.courseTitle,studentCount:people.length,
+    const groups=visible.map(group=>{const people=students.filter(p=>p.groupId===group.id),classes=sessions.filter(s=>s.groupId===group.id),ids=new Set(classes.map(s=>s.id)),attendance=state.attendance.filter(a=>ids.has(a.sessionId));return{...group,courseTitle:PILOT.courseTitle,studentCount:people.length,sessionCount:classes.filter(s=>!['cancelled','archived'].includes(s.status)).length,
       teacherName:group.teacherIds.map(id=>state.directory[id]?.displayName??'').filter(Boolean).join(', '),
       scheduleLabel:group.weekdays.map(d=>days[d]).join(' / ')+' · '+group.time+' · '+group.timezone,
-      progressPercent:classes.length?Math.round(classes.filter(s=>s.status==='completed').length/classes.filter(s=>s.status!=='archived').length*100)||0:0,
+      progressPercent:classes.some(s=>!['cancelled','archived'].includes(s.status))?Math.round(classes.filter(s=>s.status==='completed').length/classes.filter(s=>!['cancelled','archived'].includes(s.status)).length*100):0,
       attendanceRate:attendance.length?Math.round(attendance.filter(a=>['present','late'].includes(a.status)).length/attendance.length*100):0,
       nextClassAt:group.status==='active'?classes.find(s=>isUpcomingSession(s))?.startsAt??null:null,recentHomework:homework.find(h=>h.groupId===group.id)?.title??null};});
     const teacher=state.directory[userId]!,isMentor=teacher.roles.includes('mentor'),today=new Date().toISOString().slice(0,10);
@@ -602,7 +686,23 @@ export class MemoryRepository implements AppRepository {
 
   async updateTeacherClass(userId:string,sessionId:string,input:{title?:string;description?:string;lessonId?:string|null;meetingUrl?:string|null;meetingProvider?:string|null;teacherNotes?:string;status?:'scheduled'|'in_progress'|'completed'|'cancelled'|'archived';startsAt?:string;endsAt?:string}):Promise<void>{this.requireRole(userId,'teacher');if(input.meetingUrl&&!input.meetingUrl.startsWith('https://'))throw new AppError('UNSAFE_URL',400,'Дозволено лише HTTPS-посилання');await this.runtimeStore.mutate(state=>{const item=this.requireClass(state,userId,sessionId);if(input.startsAt!==undefined&&input.endsAt!==undefined){if(Date.parse(input.endsAt)<=Date.parse(input.startsAt))throw new AppError('INVALID_TIME',400,'Некоректний час');item.startsAt=input.startsAt;item.endsAt=input.endsAt;item.durationMinutes=Math.round((Date.parse(input.endsAt)-Date.parse(input.startsAt))/60000);item.scheduleManaged=false;item.changedAt=nowIso();}if(input.title!==undefined)item.title=input.title;if(input.description!==undefined)item.description=input.description;if(input.lessonId!==undefined){item.lessonId=input.lessonId;item.lessonTitle=input.lessonId?SEEDED_LESSONS.find(value=>value.id===input.lessonId)?.title??null:null;}if(input.meetingUrl!==undefined)item.meetingUrl=input.meetingUrl;if(input.meetingProvider!==undefined)item.meetingProvider=input.meetingProvider;if(input.teacherNotes!==undefined)item.teacherNotes=input.teacherNotes;if(input.status!==undefined){item.status=input.status;item.changedAt=nowIso();}});}
   async addClassMaterial(userId:string,sessionId:string,input:{kind:'presentation'|'document'|'link'|'reference'|'other';title:string;url:string}):Promise<void>{this.requireRole(userId,'teacher');if(!input.url.startsWith('https://'))throw new AppError('UNSAFE_URL',400,'Дозволено лише HTTPS-посилання');const id=randomUUID();await this.runtimeStore.mutate(state=>{const item=this.requireClass(state,userId,sessionId);item.materials.push({id,kind:input.kind,title:input.title,url:input.url});});}
-  async bulkConfirmAttendance(userId:string,sessionId:string,entries:Array<{studentId:string;status:'present'|'late'|'absent'|'excused';note?:string}>):Promise<void>{const snapshot=await this.runtimeStore.read();this.syncDirectory(snapshot);this.requireRole(userId,'teacher');if(!entries.length)throw new AppError('ATTENDANCE_EMPTY',400,'Додайте учнів');const session=this.requireClass(snapshot,userId,sessionId);const allowed=new Set(this.activeStudents(snapshot).filter(s=>s.groupId===session.groupId).map(student=>student.id));if(entries.some(entry=>!allowed.has(entry.studentId)))throw new AppError('ATTENDANCE_FORBIDDEN',403,'Учень або заняття недоступні');const confirmedAt=nowIso(),ids=entries.map(()=>randomUUID());await this.runtimeStore.mutate(state=>{const current=this.requireClass(state,userId,sessionId);if(entries.some(e=>state.directory[e.studentId]?.groupId!==current.groupId))throw new AppError('ATTENDANCE_FORBIDDEN',403,'Учень іншої групи');entries.forEach((entry,index)=>{const record=state.attendance.find(item=>item.sessionId===sessionId&&item.studentId===entry.studentId);if(record){record.status=entry.status;record.note=entry.note??'';record.confirmedAt=confirmedAt;}else state.attendance.push({id:ids[index]!,sessionId,studentId:entry.studentId,status:entry.status,note:entry.note??'',confirmedAt});});});}
+  async bulkConfirmAttendance(userId:string,sessionId:string,entries:Array<{studentId:string;status:'present'|'late'|'absent'|'excused';note?:string}>):Promise<void>{
+    if(!entries.length)throw new AppError('ATTENDANCE_EMPTY',400,'Оберіть статус хоча б одного учня');
+    if(new Set(entries.map(e=>e.studentId)).size!==entries.length)throw new AppError('ATTENDANCE_DUPLICATE',400,'Учня вказано двічі');
+    const confirmedAt=nowIso(),ids=entries.map(()=>randomUUID());
+    await this.runtimeStore.mutate(state=>{
+      const session=this.requireClass(state,userId,sessionId);
+      if(['cancelled','archived'].includes(session.status))throw new AppError('CLASS_INACTIVE',409,'Заняття скасовано або архівовано');
+      const allowed=new Set(this.groupStudents(state).filter(p=>p.groupId===session.groupId).map(p=>p.id));
+      if(entries.some(e=>!allowed.has(e.studentId)))throw new AppError('ATTENDANCE_FORBIDDEN',403,'Учень уже не належить до цієї групи');
+      entries.forEach((entry,index)=>{
+        const record=state.attendance.find(a=>a.sessionId===sessionId&&a.studentId===entry.studentId);
+        if(record){record.status=entry.status;record.note=entry.note??'';record.confirmedAt=confirmedAt;}
+        else state.attendance.push({id:ids[index]!,sessionId,studentId:entry.studentId,status:entry.status,note:entry.note??'',confirmedAt});
+      });
+    });
+  }
+
   async publishHomework(userId:string,homeworkId:string,publishAt:string):Promise<void>{this.requireRole(userId,'teacher');await this.runtimeStore.mutate(state=>{const homework=state.homework.find(item=>item.id===homeworkId);if(!homework)throw new AppError('HOMEWORK_FORBIDDEN',403,'Домашня робота недоступна');this.requireGroup(state,userId,homework.groupId);if(!['draft','unpublished'].includes(homework.status))throw new AppError('HOMEWORK_STATE',409,'Спочатку відновіть завдання як чернетку');if(homework.dueAt&&Date.parse(homework.dueAt)<=Date.parse(publishAt))throw new AppError('INVALID_TIME',400,'Дедлайн має бути після публікації');homework.status='published';homework.publishAt=publishAt;homework.version=(homework.version??1)+1;});}
   async createTeacherNote(userId:string,studentId:string,input:{category:'general'|'learning'|'project'|'mentoring';content:string}):Promise<TeacherPrivateNoteDto>{const snapshot=await this.runtimeStore.read();this.syncDirectory(snapshot);this.requireRole(userId,'teacher');this.requireGroup(snapshot,userId,snapshot.directory[studentId]?.groupId??'');const timestamp=nowIso(),note={id:randomUUID(),studentId,category:input.category,content:input.content,createdAt:timestamp,updatedAt:timestamp};await this.runtimeStore.mutate(state=>{this.requireGroup(state,userId,state.directory[studentId]?.groupId??'');state.teacherNotes.unshift(note);});return structuredClone(note);}
   async updatePortfolioItemAsTeacher(userId:string,portfolioProjectId:string,input:{title?:string|null;shortDescription?:string;reflection?:string;learned?:string}):Promise<void>{this.requireRole(userId,'teacher');await this.runtimeStore.mutate(state=>{const item=Object.values(state.portfolioProjects).flat().find(project=>project.id===portfolioProjectId);if(!item)throw new AppError('PORTFOLIO_FORBIDDEN',403,'Елемент портфоліо недоступний');const owner=Object.keys(state.portfolioProjects).find(id=>state.portfolioProjects[id]?.some(p=>p.id===portfolioProjectId));this.requireGroup(state,userId,state.directory[owner??'']?.groupId??'');if(input.title)item.title=input.title;if(input.shortDescription!==undefined)item.shortDescription=input.shortDescription;if(input.reflection!==undefined)item.reflection=input.reflection;if(input.learned!==undefined)item.learned=input.learned;});}
@@ -629,7 +729,7 @@ export class MemoryRepository implements AppRepository {
 
   async listMissedLessonRecoveries(userId:string):Promise<MissedLessonRecoveryDto[]>{
     const state=await this.runtimeStore.read();this.syncDirectory(state);this.requireRole(userId,'student');const slots=(await this.mentoringStore.listAvailability(PILOT.mentorId)).filter(item=>item.status==='open'&&Date.parse(item.startsAt)>Date.now()).sort((a,b)=>Date.parse(a.startsAt)-Date.parse(b.startsAt));
-    return state.attendance.filter(item=>item.studentId===userId&&item.status==='absent').flatMap(record=>{const session=state.classSessions.find(item=>item.id===record.sessionId);if(!session)return[];const homework=state.homework.find(item=>item.classSessionId===session.id),submission=homework?state.submissions.filter(item=>item.studentId===userId&&item.homeworkId===homework.id).sort((a,b)=>b.attemptNumber-a.attemptNumber)[0]:undefined;const status=submission?.status==='completed'?'completed':submission?'in_progress':'available';return[{sessionId:session.id,lessonId:session.lessonId,lessonTitle:session.lessonTitle??session.title,title:session.title,description:session.description,startsAt:session.startsAt,materials:session.materials.filter(item=>!item.url||item.url.startsWith('https://')),homework:homework?{id:homework.id,title:homework.title,instructions:homework.instructions,state:submission?.status??'not_started'}:null,recordingUrl:null,mentorSlotId:slots[0]?.id??null,status}];});
+    return state.attendance.filter(item=>item.studentId===userId&&item.status==='absent').flatMap(record=>{const session=state.classSessions.find(item=>item.id===record.sessionId);if(!session||session.groupId!==state.directory[userId]?.groupId||['cancelled','archived'].includes(session.status)||!state.groups.some(g=>g.id===session.groupId&&g.status==='active'))return[];const homework=state.homework.find(item=>item.classSessionId===session.id&&item.status==='published'),submission=homework?state.submissions.filter(item=>item.studentId===userId&&item.homeworkId===homework.id).sort((a,b)=>b.attemptNumber-a.attemptNumber)[0]:undefined;const status=submission?.status==='completed'?'completed':submission?'in_progress':'available';return[{sessionId:session.id,lessonId:session.lessonId,lessonTitle:session.lessonTitle??session.title,title:session.title,description:session.description,startsAt:session.startsAt,materials:session.materials.filter(item=>!item.url||item.url.startsWith('https://')),homework:homework?{id:homework.id,title:homework.title,instructions:homework.instructions,state:submission?.status??'not_started'}:null,recordingUrl:null,mentorSlotId:slots[0]?.id??null,status}];});
   }
 
   async prepareNotificationBatch(now:Date,weeklyDay:number,weeklyHour:number,limit:number):Promise<NotificationDeliveryDto[]>{
@@ -762,7 +862,7 @@ export class MemoryRepository implements AppRepository {
   }
 
   async getAdminWorkspace(userId:string):Promise<AdminWorkspaceDto>{
-    const state=await this.runtimeStore.read();this.syncDirectory(state);this.requireRole(userId,'admin');const teacher=await this.getTeacherWorkspace(userId,true);const now=Date.now();
+    const state=await this.runtimeStore.read();this.syncDirectory(state);this.requireRole(userId,'admin');const teacher=await this.teacherWorkspaceFromState(state,userId,true);const now=Date.now();
     const studentPeople=Object.values(state.directory).filter(item=>item.roles.includes('student'));
     const students=studentPeople.map(person=>{const student=teacher.students.find(item=>item.id===person.id);const attendance=state.attendance.filter(item=>item.studentId===person.id);const attempts=state.submissions.filter(item=>item.studentId===person.id);const guardianIds=state.guardianRelations.filter(link=>link.studentId===person.id&&link.status==='active').map(link=>link.guardianId);return{id:person.id,name:person.displayName,firstName:person.firstName,lastName:person.lastName,version:person.version,status:state.userStatus[person.id]??person.status,group:state.groups.find(g=>g.id===person.groupId)?.name??'Без групи',groupId:person.groupId,course:PILOT.courseTitle,progress:student?.progressPercent??this.progressPercent(state,person.id),xp:state.xp[person.id]??0,level:student?.level??LEVELS[0]!.title,streak:state.streak[person.id]??0,attendance:student?.attendance??{present:attendance.filter(item=>item.status==='present').length,late:attendance.filter(item=>item.status==='late').length,absent:attendance.filter(item=>item.status==='absent').length,excused:attendance.filter(item=>item.status==='excused').length},homework:student?.homework??{assigned:state.homework.filter(item=>item.status==='published').length,submitted:attempts.length,needsRevision:attempts.filter(item=>item.status==='needs_revision').length,averageScore:null,effort:null},project:state.projects[person.id]?.find(item=>item.status==='active')?.title??null,guardianLinked:guardianIds.length>0,guardianIds,telegramLinked:Boolean(person.telegramId),telegramId:person.telegramId};});
     const teachers=Object.values(state.directory).filter(item=>item.roles.some(role=>['teacher','mentor','admin'].includes(role))&&item.id!=='14000000-0000-4000-8000-000000000001').map(item=>({id:item.id,name:item.displayName,firstName:item.firstName,lastName:item.lastName,email:item.email,version:item.version,status:item.status,credentialStatus:item.passwordHash?'active':item.activationTokenHash?'pending_activation':'external_seed',roles:item.roles.filter(role=>['teacher','mentor','admin'].includes(role)),groups:state.groups.filter(g=>g.teacherIds.includes(item.id)&&g.status==='active').length,upcomingClasses:item.roles.includes('teacher')?teacher.sessions.filter(session=>Date.parse(session.startsAt)>now&&session.status!=='cancelled').length:0,classesTaught:0,reviews:0,mentor:item.roles.includes('mentor')}));
@@ -874,7 +974,7 @@ export class MemoryRepository implements AppRepository {
       projectTitle: project?.title ?? null,
       projectSummary: project?.summary ?? null,
       projectStage: project?.stage.title ?? null,
-      nextProjectTask: project?.tasks.find(task => task.status === 'in_progress' || task.status === 'available')?.title ?? null,
+      nextProjectTask: project?.tasks.find(task => ['in_progress','available','pending_review','needs_revision'].includes(task.status))?.title ?? null,
       conversationSummary: conversation.summary,
       recentMessages: structuredClone(conversation.messages.slice(-12))
     };
@@ -942,6 +1042,8 @@ export class MemoryRepository implements AppRepository {
   }
 
   private activeStudents(state:PilotRuntimeState):PilotDirectoryPerson[]{return Object.values(state.directory).filter(person=>person.roles.includes('student')&&person.status==='active');}
+  // Membership is independent of login activation. Archived/deleted people remain in history only.
+  private groupStudents(state:PilotRuntimeState):PilotDirectoryPerson[]{return Object.values(state.directory).filter(person=>person.roles.includes('student')&&!['archived','deleted'].includes(person.status));}
   private activeAdminCount(state:PilotRuntimeState):number{return Object.values(state.directory).filter(person=>person.roles.includes('admin')&&person.status==='active').length;}
   private expectPerson(state:PilotRuntimeState,id:string,role?:PilotDirectoryRole):PilotDirectoryPerson{const person=state.directory[id];if(!person||role&&!person.roles.includes(role))throw new AppError('USER_NOT_FOUND',404,'Користувача не знайдено');return person;}
   private assertVersion(person:PilotDirectoryPerson,expectedVersion:number):void{if(person.version!==expectedVersion)throw new AppError('STALE_UPDATE',409,'Запис уже змінився. Оновіть дані та повторіть дію.');}
@@ -1001,6 +1103,7 @@ export class MemoryRepository implements AppRepository {
     return {
       id: user.id,
       firstName: this.studentDisplayNames.get(userId) ?? user.displayName,
+      group: (()=>{const group=state.groups.find(g=>g.id===state.directory[userId]?.groupId);return group?{id:group.id,name:group.name,status:group.status}:null;})(),
       level: { number: level.number, title: level.title, nextTitle: next?.title ?? null, currentMinXp: level.minXp, nextMinXp: next?.minXp ?? null },
       xp,
       streak: state.streak[userId] ?? 0
@@ -1011,8 +1114,8 @@ export class MemoryRepository implements AppRepository {
     const completionPercent = project.tasks.filter(task => task.status === 'completed').reduce((sum, task) => sum + task.weight, 0);
     return {
       id: project.id, title: project.title, summary: project.summary, status: project.status,
-      completionPercent, tags: [...project.tags], workspaceUrl: project.workspaceUrl,
-      stage: { id: STAGES[project.stagePosition - 1]?.id ?? DEV_IDS.stage, code: project.stageCode, title: project.stageTitle, position: project.stagePosition, total: STAGES.length },
+      completionPercent, tags: [...project.tags], workspaceUrl: project.workspaceUrl,notes:structuredClone(project.notes??[]),
+      stage: { id: STAGES[Math.max(0,project.tasks.findIndex(t=>t.status!=='completed'))]?.id ?? DEV_IDS.stage, code: ['problem','user','prototype','test'][Math.max(0,project.tasks.findIndex(t=>t.status!=='completed'))]??'test', title:(project.tasks.find(t=>t.status!=='completed')??project.tasks.at(-1))?.title??'', position:project.tasks.every(t=>t.status==='completed')?project.tasks.length:project.tasks.findIndex(t=>t.status!=='completed')+1, total:project.tasks.length },
       tasks: structuredClone(project.tasks)
     };
   }

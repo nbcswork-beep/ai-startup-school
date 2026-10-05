@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { AppError } from '../errors/app-error.js';
 import { DEV_IDS, PILOT, PILOT_TEACHERS } from './seed.js';
@@ -8,7 +7,7 @@ export const groupInputSchema = z.object({
   name: z.string().trim().min(1).max(160),
   academicYear: z.number().int().min(2000).max(2100),
   startsOn: z.string().date(),
-  lessonCount: z.number().int().min(1).max(100).default(8),
+  lessonCount: z.number().int().min(0).max(100).default(0),
   weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7).refine(v => new Set(v).size === v.length),
   time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
   teacherId: z.string().uuid(),
@@ -25,7 +24,7 @@ export interface SchoolGroup extends GroupInput {
   updatedAt: string;
 }
 
-// Curriculum titles live on the server. Frontends only render the persisted sessions.
+// Recognizable titles from the retired automatic group generator. Never create assignments from this catalog.
 export const PILOT_SESSION_TITLES = [
   'Не починай з ідеї', 'Для кого це проблема?', 'Ідея стає гіпотезою',
   'Що саме будемо будувати?', 'AI пише код — відповідаєш ти',
@@ -46,6 +45,7 @@ export function isUpcomingSession(session: { status: string; endsAt: string }, n
 
 // Resolve each occurrence in Kyiv, including transitions between summer and winter time.
 export function zonedStart(date: string, time: string, timezone: string): string {
+  if(!z.string().date().safeParse(date).success||!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time))throw new AppError('INVALID_GROUP_TIME',400,'Некоректна дата або час');
   const wall = Date.parse(`${date}T${time}:00Z`);
   let instant = wall;
   const formatter = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric',
@@ -69,35 +69,10 @@ export function groupDates(group: SchoolGroup): string[] {
   return dates;
 }
 
-export function reconcileGroupSessions(state: PilotRuntimeState, group: SchoolGroup, reschedule: boolean): void {
-  const dates = groupDates(group);
-  for (let index = 0; index < group.lessonCount; index++) {
-    const existing = state.classSessions.find(s => s.groupId === group.id && s.number === index + 1);
-    const startsAt = dates[index]!;
-    const endsAt = new Date(Date.parse(startsAt) + 90 * 60_000).toISOString();
-    if (!existing) {
-      const title = PILOT_SESSION_TITLES[index] ?? `Заняття ${index + 1}`;
-      state.classSessions.push({ id: randomUUID(), groupId: group.id, groupName: group.name,
-        number: index + 1, scheduleManaged: true, lessonId: null, title,
-        description: '', startsAt, endsAt, durationMinutes: 90, status: 'scheduled',
-        meetingProvider: null, meetingUrl: null, courseTitle: PILOT.courseTitle,
-        moduleTitle: PILOT.moduleTitle, lessonTitle: title,
-        teacherName: group.teacherIds.map(id => state.directory[id]?.displayName ?? '').filter(Boolean).join(', '),
-        teacherNotes: '', materials: [] });
-    } else if (existing.status === 'archived' && existing.archivedByCount) {
-      existing.status = 'scheduled'; existing.archivedByCount = false;
-      existing.startsAt = startsAt; existing.endsAt = endsAt; existing.changedAt = new Date().toISOString();
-    } else if (reschedule && existing.scheduleManaged !== false &&
-               ['scheduled', 'rescheduled'].includes(existing.status) && Date.parse(existing.startsAt) > Date.now()) {
-      existing.startsAt = startsAt; existing.endsAt = endsAt; existing.status = 'rescheduled';
-      existing.changedAt = new Date().toISOString();
-    }
-  }
+// Group metadata changes must never create, restore, cancel or reschedule lessons.
+export function updateGroupSessionLabels(state: PilotRuntimeState, group: SchoolGroup): void {
   for (const session of state.classSessions.filter(s => s.groupId === group.id)) {
     session.groupName = group.name;
     session.teacherName = group.teacherIds.map(id => state.directory[id]?.displayName ?? '').filter(Boolean).join(', ');
-    if (session.scheduleManaged && (session.number ?? 0) > group.lessonCount && isUpcomingSession(session)) {
-      session.status = 'archived'; session.archivedByCount = true; session.changedAt = new Date().toISOString();
-    }
   }
 }

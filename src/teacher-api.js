@@ -33,6 +33,9 @@ export const teacherApi = {
   setGroupStudent:(groupId,studentId,add,expectedVersion)=>request('/teacher/groups/'+groupId+'/students/'+studentId,{method:'PUT',body:JSON.stringify({add,expectedVersion})}),
   saveOneAttendance:(id,studentId,status)=>request('/teacher/sessions/'+id+'/attendance/'+studentId,{method:'PUT',body:JSON.stringify({status})}),
 
+  replyProjectNote:(studentId,projectId,noteId,input)=>request(`/teacher/students/${studentId}/projects/${projectId}/notes/${noteId}/replies`,{method:'POST',body:JSON.stringify(input)}),
+  reviewLesson:(sessionId,studentId,input)=>request('/teacher/sessions/'+sessionId+'/students/'+studentId+'/review',{method:'POST',body:JSON.stringify(input)}),
+  reviewProjectTask:(studentId,projectId,taskId,input)=>request('/teacher/students/'+studentId+'/projects/'+projectId+'/tasks/'+taskId+'/review',{method:'POST',body:JSON.stringify(input)}),
   revision:()=>request('/academic-revision'),
   workspace: () => request('/teacher/bootstrap'),
   search: query => request(`/teacher/search?q=${encodeURIComponent(query)}`),

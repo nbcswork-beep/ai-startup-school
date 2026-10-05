@@ -13,6 +13,20 @@ const timeRange = z.object({ startsAt:z.string().datetime(),endsAt:z.string().da
 export function registerTeacherRoutes(app:FastifyInstance,repository:AppRepository,authenticate:preHandlerHookHandler):void{
   const secured={preHandler:[authenticate,requireRole('teacher','admin')]};
   registerGroupRoutes(app,repository,'/api/v1/teacher',secured.preHandler);
+  app.post('/api/v1/teacher/students/:studentId/projects/:projectId/notes/:noteId/replies',{...secured,config:{rateLimit:{max:30,timeWindow:'1 minute'}}},async(request,reply)=>{
+    const {studentId,projectId,noteId}=z.object({studentId:uuid,projectId:uuid,noteId:uuid}).parse(request.params);
+    const body=z.object({contentText:z.string().trim().min(1).max(4000),clientRequestId:uuid}).strict().parse(request.body);
+    await repository.replyProjectNote(request.auth.userId,studentId,projectId,noteId,body,request.id);return reply.code(204).send();
+  });
+  const reviewInput=z.object({expectedVersion:z.number().int().positive(),decision:z.enum(['approved','needs_revision']),feedback:z.string().trim().max(4000).default('')}).strict().refine(v=>v.decision!=='needs_revision'||Boolean(v.feedback),'Feedback required');
+  app.post('/api/v1/teacher/sessions/:sessionId/students/:studentId/review',secured,async(request,reply)=>{
+    const {sessionId,studentId}=z.object({sessionId:uuid,studentId:uuid}).parse(request.params);
+    await repository.reviewLessonCompletion(request.auth.userId,sessionId,studentId,reviewInput.parse(request.body),request.id);return reply.code(204).send();
+  });
+  app.post('/api/v1/teacher/students/:studentId/projects/:projectId/tasks/:taskId/review',secured,async(request,reply)=>{
+    const {studentId,projectId,taskId}=z.object({studentId:uuid,projectId:uuid,taskId:uuid}).parse(request.params);
+    await repository.reviewProjectTask(request.auth.userId,studentId,projectId,taskId,reviewInput.parse(request.body),request.id);return reply.code(204).send();
+  });
   app.get('/api/v1/teacher/bootstrap',secured,async request=>repository.getTeacherWorkspace(request.auth.userId));
   app.get('/api/v1/teacher/search',secured,async request=>{
     const {q}=z.object({q:z.string().trim().min(2).max(80)}).parse(request.query);
@@ -23,7 +37,13 @@ export function registerTeacherRoutes(app:FastifyInstance,repository:AppReposito
     const {groupId}=z.object({groupId:uuid}).parse(request.params); return repository.listGroupStudents(request.auth.userId,groupId);
   });
   app.post('/api/v1/teacher/sessions',secured,async(request,reply)=>{
-    const parsed=z.object({groupId:uuid,courseId:uuid,moduleId:uuid.optional(),lessonId:uuid.optional(),title:z.string().trim().min(1).max(160),description:z.string().trim().max(4000).optional(),startsAt:z.string().datetime(),endsAt:z.string().datetime(),meetingUrl:httpsUrl.optional(),meetingProvider:z.string().trim().max(60).optional()}).refine(value=>Date.parse(value.endsAt)>Date.parse(value.startsAt),'End must be after start').parse(request.body);
+    const raw=z.object({localStartsAt:z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/).optional(),localEndsAt:z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/).optional()}).passthrough().parse(request.body);
+    let body=request.body;
+    if(raw.localStartsAt||raw.localEndsAt){
+      if(!raw.localStartsAt||!raw.localEndsAt||raw.startsAt||raw.endsAt)throw new AppError('INVALID_TIME',400,'Вкажіть початок і кінець заняття');
+      body={...raw,startsAt:zonedStart(raw.localStartsAt.slice(0,10),raw.localStartsAt.slice(11),'Europe/Kyiv'),endsAt:zonedStart(raw.localEndsAt.slice(0,10),raw.localEndsAt.slice(11),'Europe/Kyiv')};
+    }
+    const parsed=z.object({groupId:uuid,courseId:uuid,moduleId:uuid.optional(),lessonId:uuid.optional(),title:z.string().trim().min(1).max(160),description:z.string().trim().max(4000).optional(),startsAt:z.string().datetime(),endsAt:z.string().datetime(),meetingUrl:httpsUrl.optional(),meetingProvider:z.string().trim().max(60).optional()}).refine(value=>Date.parse(value.endsAt)>Date.parse(value.startsAt),'End must be after start').parse(body);
     const input:Parameters<AppRepository['createClassSession']>[1]={groupId:parsed.groupId,courseId:parsed.courseId,title:parsed.title,startsAt:parsed.startsAt,endsAt:parsed.endsAt};
     for(const key of ['moduleId','lessonId','description','meetingUrl','meetingProvider'] as const)if(parsed[key]!==undefined)input[key]=parsed[key];
     return reply.status(201).send(await repository.createClassSession(request.auth.userId,input));

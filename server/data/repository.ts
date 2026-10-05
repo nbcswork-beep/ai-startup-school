@@ -72,6 +72,11 @@ export interface AppRepository {
   submitHomework(userId: UserId, homeworkId: string, input: { contentText: string; contentUrl?: string; studentComment?: string }): Promise<HomeworkSubmissionDto>;
   getLearning(userId: UserId): Promise<LearningDto>;
   getLesson(userId: UserId, lessonId: string): Promise<LessonDto | null>;
+  reviewLessonCompletion(userId:UserId,sessionId:string,studentId:string,input:import('../types/domain.js').AcademicReviewInput,correlationId:string):Promise<void>;
+  addProjectNote(userId:UserId,projectId:string,input:{contentText:string;contentUrl?:string;clientRequestId:string}):Promise<ProjectDto>;
+  replyProjectNote(userId:UserId,studentId:string,projectId:string,noteId:string,input:{contentText:string;clientRequestId:string},correlationId:string):Promise<void>;
+  submitProjectTask(userId:UserId,projectId:string,taskId:string,input:{contentText:string;expectedVersion:number}):Promise<ProjectDto>;
+  reviewProjectTask(userId:UserId,studentId:string,projectId:string,taskId:string,input:import('../types/domain.js').AcademicReviewInput,correlationId:string):Promise<void>;
   completeLesson(userId: UserId, lessonId: string, idempotencyKey: string): Promise<{ awardedXp: number; home: HomeDto }>;
 
   listProjects(userId: UserId): Promise<ProjectDto[]>;

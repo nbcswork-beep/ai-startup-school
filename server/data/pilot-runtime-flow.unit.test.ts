@@ -57,7 +57,11 @@ describe('persistent pilot runtime flow',()=>{
   it('preserves lesson completion and exposes actual progress to Teacher OS',async()=>{
     const runtime=new MemoryPilotRuntimeStore(createAssignedPilotState()),sessions=new MemorySessionStore();const student=await appFor(DEV_IDS.user,runtime,sessions);
     const completed=await student.app.inject({method:'POST',url:`/api/v1/lessons/${SEEDED_LESSONS[0]!.id}/complete`,headers:student.headers,payload:{idempotencyKey:'lesson-persistence-001'}});
-    expect(completed.statusCode).toBe(200);expect(completed.json().awardedXp).toBe(SEEDED_LESSONS[0]!.xp);
+    expect(completed.statusCode).toBe(200);expect(completed.json().awardedXp).toBe(0);
+    const pending=await student.app.inject({method:'GET',url:'/api/v1/learning',headers:student.headers});expect(pending.json().course.completedLessons).toBe(0);
+    const assigned=pending.json().modules[0].lessons[0];
+    const reviewer=await appFor(ADMIN_ID,runtime,sessions);
+    expect((await reviewer.app.inject({method:'POST',url:`/api/v1/teacher/sessions/${assigned.id}/students/${DEV_IDS.user}/review`,headers:reviewer.headers,payload:{expectedVersion:1,decision:'approved',feedback:''}})).statusCode).toBe(204);
     const coldStudent=await appFor(DEV_IDS.user,runtime,sessions);const learning=await coldStudent.app.inject({method:'GET',url:'/api/v1/learning',headers:coldStudent.headers});
     expect(learning.json().course).toMatchObject({completedLessons:1,progressPercent:13});
     const teacher=await appFor(ADMIN_ID,runtime,sessions);const workspace=await teacher.app.inject({method:'GET',url:'/api/v1/teacher/bootstrap',headers:teacher.headers});

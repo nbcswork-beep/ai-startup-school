@@ -21,6 +21,30 @@ async function fixture(userId:string){
 }
 afterEach(async()=>{await Promise.all(apps.splice(0).map(app=>app.close()))});
 describe('academic HTTP boundaries',()=>{
+  it('validates shared project notes and blocks forged authors and Student replies',async()=>{
+    const {app,headers,repository}=await fixture(DEV_IDS.user),p=await repository.createProject(DEV_IDS.user,{title:'Real journal',summary:''}),url=`/api/v1/projects/${p.id}/notes`;
+    const requestId='80000000-0000-4000-8000-000000000001';
+    for(const payload of [{contentText:'',clientRequestId:requestId},{contentText:'Note',contentUrl:'javascript:alert(1)',clientRequestId:requestId},{contentText:'Note',authorId:TEACHER,clientRequestId:requestId}])expect((await app.inject({method:'POST',url,headers,payload})).statusCode).toBe(400);
+    const created=await app.inject({method:'POST',url,headers,payload:{contentText:'Real note',contentUrl:'https://example.test/project',clientRequestId:requestId}});expect(created.statusCode).toBe(200);const noteId=created.json().notes[0].id;
+    expect((await app.inject({method:'POST',url:`/api/v1/teacher/students/${DEV_IDS.user}/projects/${p.id}/notes/${noteId}/replies`,headers,payload:{contentText:'Forged feedback',clientRequestId:requestId}})).statusCode).toBe(403);
+  });
+  it('blocks Student review actions and rejects blank or forged project submissions',async()=>{
+    const {app,headers,repository}=await fixture(DEV_IDS.user);
+    const p=await repository.createProject(DEV_IDS.user,{title:'Real project',summary:''}),task=p.tasks[0]!;
+    const url=`/api/v1/projects/${p.id}/tasks/${task.id}/submit`;
+    for(const payload of [{contentText:' ',expectedVersion:1},{contentText:'Text',expectedVersion:1,status:'completed'},{contentText:'x'.repeat(20001),expectedVersion:1}])expect((await app.inject({method:'POST',url,headers,payload})).statusCode).toBe(400);
+    expect((await app.inject({method:'POST',url:`/api/v1/projects/${p.id}/tasks/${task.id}/complete`,headers,payload:{idempotencyKey:'old-self-completion'}})).statusCode).toBe(409);
+    for(const url of [`/api/v1/teacher/sessions/71000000-0000-4000-8000-000000000001/students/${DEV_IDS.user}/review`,`/api/v1/teacher/students/${DEV_IDS.user}/projects/${p.id}/tasks/${task.id}/review`])expect((await app.inject({method:'POST',url,headers,payload:{expectedVersion:1,decision:'approved'}})).statusCode).toBe(403);
+  });
+  it('validates Teacher decisions and retains UTC/ Kyiv create-session time validation',async()=>{
+    const {app,headers}=await fixture(TEACHER);
+    const review='/api/v1/teacher/sessions/71000000-0000-4000-8000-000000000001/students/'+DEV_IDS.user+'/review';
+    for(const payload of [{expectedVersion:1,decision:'completed'},{expectedVersion:1,decision:'needs_revision',feedback:''},{expectedVersion:1,decision:'approved',xp:999}])expect((await app.inject({method:'POST',url:review,headers,payload})).statusCode).toBe(400);
+    const create={groupId:PILOT.groupId,courseId:DEV_IDS.course,title:'Real Kyiv lesson',localStartsAt:'2027-03-29T17:00',localEndsAt:'2027-03-29T18:30'};
+    const response=await app.inject({method:'POST',url:'/api/v1/teacher/sessions',headers,payload:create});expect(response.statusCode).toBe(201);expect(response.json().startsAt).toBe('2027-03-29T14:00:00.000Z');
+    expect((await app.inject({method:'POST',url:'/api/v1/teacher/sessions',headers,payload:{...create,localEndsAt:'2027-03-29T16:30'}})).statusCode).toBe(400);
+    expect((await app.inject({method:'POST',url:'/api/v1/teacher/sessions',headers,payload:{...create,startsAt:'2027-03-29T17:00:00Z'}})).statusCode).toBe(400);
+  });
   it.each([DEV_IDS.user,TEACHER])('denies non-admin session extension (%s)',async(userId)=>{
     const {app,headers,principal}=await fixture(userId);
     expect((await app.inject({method:'POST',url:`/api/v1/admin/sessions/${principal.sessionId}/extend`,headers,payload:{expectedExpiresAt:'2027-01-01T00:00:00.000Z'}})).statusCode).toBe(403);
@@ -49,7 +73,7 @@ describe('academic HTTP boundaries',()=>{
     expect(created.statusCode).toBe(201);
     const detail=await app.inject({method:'GET',url:`/api/v1/teacher/groups/${created.json().id}`,headers});
     expect(detail.headers['cache-control']).toBe('no-store');
-    expect(detail.json().sessions).toHaveLength(8);
+    expect(detail.json().sessions).toHaveLength(0);
   });
   it('allows a pure admin to update a lesson through the shared handler',async()=>{
     const {app,headers}=await fixture(ADMIN);
