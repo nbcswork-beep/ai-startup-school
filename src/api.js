@@ -1,10 +1,11 @@
+import {announceAcademicChange} from './academic-sync.js';
 let accessToken = '';
 
 async function request(path, options = {}, retry = true) {
   const headers = new Headers(options.headers);
   if (options.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
   if (accessToken) headers.set('authorization', `Bearer ${accessToken}`);
-  const response = await fetch(`/api/v1${path}`, { ...options, headers, credentials: 'include' });
+  const response = await fetch(`/api/v1${path}`, { ...options, headers, credentials: 'include', cache:'no-store' });
   if (response.status === 401 && retry && !path.startsWith('/auth/')) {
     const refreshed = await fetch('/api/v1/auth/refresh', { method: 'POST', credentials: 'include' });
     if (refreshed.ok) {
@@ -16,6 +17,7 @@ async function request(path, options = {}, retry = true) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.error?.message || 'Не вдалося завантажити дані');
   }
+  if(options.method&&!path.startsWith('/auth/'))announceAcademicChange();
   return response.status === 204 ? null : response.json();
 }
 
@@ -30,9 +32,14 @@ async function authenticate() {
 
 export const api = {
   authenticate,
+  revision:()=>request('/academic-revision'),
   bootstrap: () => request('/bootstrap'),
+  home: () => request('/home'),
+  projects: () => request('/projects'),
+  learning: () => request('/learning'),
   lesson: id => request(`/lessons/${id}`),
   completeLesson: (id, idempotencyKey) => request(`/lessons/${id}/complete`, { method: 'POST', body: JSON.stringify({ idempotencyKey }) }),
+  recoveries:()=>request('/recoveries'),
   schedule: () => request('/schedule'),
   homework: () => request('/homework'),
   submitHomework: (id, input) => request(`/homework/${id}/submissions`, { method: 'POST', body: JSON.stringify(input) }),
@@ -44,6 +51,8 @@ export const api = {
   markNotificationsRead: (notificationIds = []) => request('/notifications/read', { method: 'POST', body: JSON.stringify({ notificationIds }) }),
   createProject: input => request('/projects', { method: 'POST', body: JSON.stringify(input) }),
   updateProject: (id, input) => request(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  addProjectNote:(projectId,input)=>request(`/projects/${projectId}/notes`,{method:'POST',body:JSON.stringify(input)}),
+  submitProjectTask:(projectId,taskId,input)=>request(`/projects/${projectId}/tasks/${taskId}/submit`,{method:'POST',body:JSON.stringify(input)}),
   completeTask: (projectId, taskId, idempotencyKey) => request(`/projects/${projectId}/tasks/${taskId}/complete`, { method: 'POST', body: JSON.stringify({ idempotencyKey }) }),
   createConversation: title => request('/ai/conversations', { method: 'POST', body: JSON.stringify({ title }) }),
   messages: id => request(`/ai/conversations/${id}/messages`),

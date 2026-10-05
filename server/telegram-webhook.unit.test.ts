@@ -1,3 +1,4 @@
+import {createAssignedRepository} from './data/assigned-pilot.test-fixture.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from './app.js';
@@ -14,7 +15,7 @@ let apps:FastifyInstance[]=[];
 
 async function testApp(configured=true,handler?:Parameters<typeof buildApp>[0]['telegramWebhookHandler']){
   const env=loadEnv({NODE_ENV:'test',DATA_BACKEND:'memory',DEV_EPHEMERAL_JWT:'true',SESSION_TOKEN_PEPPER:'webhook-test-pepper',...(configured?{TELEGRAM_BOT_TOKEN:'123456789:test-token',TELEGRAM_WEBHOOK_SECRET:SECRET,MINI_APP_URL}: {})});
-  const app=await buildApp({env,repository:new MemoryRepository(),jwt:await createJwtService(env),aiProvider:new MockAiProvider(),...(handler?{telegramWebhookHandler:handler}:{})});
+  const app=await buildApp({env,repository:createAssignedRepository(),jwt:await createJwtService(env),aiProvider:new MockAiProvider(),...(handler?{telegramWebhookHandler:handler}:{})});
   apps.push(app);return app;
 }
 

@@ -1,3 +1,4 @@
+import type { SchoolGroup } from '../data/group-model.js';
 export type UserId = string;
 export type AppRole = 'student' | 'guardian' | 'teacher' | 'admin';
 export type DirectoryRole = AppRole | 'mentor';
@@ -39,6 +40,7 @@ export type RotationResult =
 export interface ViewerDto {
   id: string;
   firstName: string;
+  group?: { id: string; name: string; status: 'active' | 'archived' } | null;
   level: {
     number: number;
     title: string;
@@ -50,7 +52,16 @@ export interface ViewerDto {
   streak: number;
 }
 
+export interface CompletionReviewDto {
+  status:'pending_review'|'approved'|'needs_revision';
+  version:number;
+  feedback:string;
+  submittedAt:string|null;
+  reviewedAt:string|null;
+}
+export interface AcademicReviewInput {expectedVersion:number;decision:'approved'|'needs_revision';feedback:string}
 export interface LessonSummaryDto {
+  completionReview?:CompletionReviewDto;
   id: string;
   number: string;
   title: string;
@@ -92,16 +103,31 @@ export interface LessonDto extends LessonSummaryDto {
 }
 
 export interface ProjectTaskDto {
+  contentText?:string;
+  version?:number;
+  feedback?:string;
+  submittedAt?:string|null;
+  reviewedAt?:string|null;
+  reviewedBy?:string|null;
   id: string;
   number: string;
   title: string;
   description: string;
-  status: 'locked' | 'available' | 'in_progress' | 'completed';
+  status: 'locked' | 'available' | 'in_progress' | 'pending_review' | 'needs_revision' | 'completed';
   xpReward: number;
   weight: number;
 }
 
+export interface ProjectNoteDto {
+  id:string;
+  contentText:string;
+  contentUrl:string|null;
+  createdAt:string;
+  replies:Array<{id:string;teacherId:string;teacherName:string;contentText:string;createdAt:string;clientRequestId?:string}>;
+  clientRequestId?:string;
+}
 export interface ProjectDto {
+  notes?:ProjectNoteDto[];
   id: string;
   title: string;
   summary: string;
@@ -161,7 +187,7 @@ export interface ClassSessionDto {
   startsAt: string;
   endsAt: string;
   durationMinutes: number;
-  status: 'scheduled' | 'rescheduled' | 'in_progress' | 'completed' | 'cancelled';
+  status: 'scheduled' | 'rescheduled' | 'in_progress' | 'completed' | 'cancelled' | 'archived';
   meetingProvider: string | null;
   meetingUrl: string | null;
   courseTitle: string;
@@ -259,6 +285,7 @@ export interface MentorBookingDto {
 }
 
 export interface TeacherGroupDto {
+  sessionCount?: number;
   id: string;
   name: string;
   courseTitle: string;
@@ -316,8 +343,10 @@ export type AttendanceStatus = 'present' | 'late' | 'absent' | 'excused';
 export type TeacherClassStatus = 'scheduled' | 'rescheduled' | 'in_progress' | 'completed' | 'cancelled';
 
 export interface TeacherAttendanceDto {
+  completionReview?:CompletionReviewDto;
   studentId: string;
   studentName: string;
+  isCurrentMember?: boolean;
   status: AttendanceStatus | null;
   suggestedStatus: AttendanceStatus | null;
   note: string;
@@ -343,7 +372,8 @@ export interface TeacherHomeworkDto {
   publishAt: string | null;
   dueAt: string | null;
   xpReward: number;
-  status: 'draft' | 'published' | 'closed' | 'archived';
+  status: 'draft' | 'published' | 'unpublished' | 'archived';
+  version?: number;
   submissionCount: number;
   reviewCount: number;
   needsRevisionCount: number;
@@ -381,6 +411,7 @@ export interface TeacherPrivateNoteDto {
 export interface TeacherStudentDetailDto extends TeacherStudentDto {
   groupId: string;
   groupName: string;
+  accountStatus?: AuthUser['status'];
   courseTitle: string;
   moduleTitle: string;
   xp: number;
@@ -419,7 +450,7 @@ export interface TeacherReportDto extends ParentReportDto {
 export interface TeacherWorkspaceDto {
   teacher: { id: string; name: string; title: string; timezone: string };
   metrics: { todayClasses: number; awaitingReview: number; resubmitted: number; mentorToday: number; reportsPending: number };
-  groups: Array<TeacherGroupDto & { courseId: string; scheduleLabel: string; progressPercent: number; attendanceRate: number; recentHomework: string | null }>;
+  groups: Array<TeacherGroupDto & Partial<SchoolGroup> & { courseId: string; scheduleLabel: string; progressPercent: number; attendanceRate: number; recentHomework: string | null; teacherName?: string }>;
   sessions: TeacherSessionDto[];
   homework: TeacherHomeworkDto[];
   submissions: TeacherSubmissionDto[];

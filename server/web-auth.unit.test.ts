@@ -1,3 +1,4 @@
+import {createAssignedRepository} from './data/assigned-pilot.test-fixture.js';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from './app.js';
@@ -29,7 +30,7 @@ beforeAll(async()=>{
 afterEach(async()=>{await Promise.all(apps.map(app=>app.close()));apps=[]});
 
 async function appWith(store=new MemorySessionStore(),limiter=new MemoryLoginAttemptLimiter()){
-  const app=await buildApp({env,repository:new MemoryRepository(undefined,{sessionStore:store}),jwt,aiProvider:new MockAiProvider(),loginLimiter:limiter});
+  const app=await buildApp({env,repository:createAssignedRepository(undefined,{sessionStore:store}),jwt,aiProvider:new MockAiProvider(),loginLimiter:limiter});
   apps.push(app);return app;
 }
 

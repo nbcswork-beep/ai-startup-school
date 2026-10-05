@@ -1,3 +1,4 @@
+import {createAssignedRepository} from './assigned-pilot.test-fixture.js';
 import { describe, expect, it } from 'vitest';
 import { MemoryRepository } from './memory-repository.js';
 import { PILOT, PILOT_STUDENTS, PILOT_TEACHERS, SEEDED_HOMEWORK } from './seed.js';
@@ -6,7 +7,7 @@ const bindings = Object.fromEntries(PILOT_STUDENTS.map((student, index) => [stud
 
 describe('pilot operational data', () => {
   it('binds all four Telegram identities to separate seeded students', async () => {
-    const repository = new MemoryRepository(undefined, {
+    const repository = createAssignedRepository(undefined, {
       telegramBindingsJson: JSON.stringify(bindings),
       requireSeededTelegramIdentity: true
     });
@@ -23,7 +24,7 @@ describe('pilot operational data', () => {
   });
 
   it('exposes the pilot curriculum, homework, Meet URL and correct name scopes', async () => {
-    const repository = new MemoryRepository();
+    const repository = createAssignedRepository();
     const yuliia = PILOT_STUDENTS.find(student => student.key === 'yuliia')!;
     const studentProfile = await repository.getProfile(yuliia.id);
     const learning = await repository.getLearning(yuliia.id);

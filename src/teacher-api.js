@@ -1,10 +1,11 @@
+import {announceAcademicChange} from './academic-sync.js';
 let accessToken = '';
 
 async function request(path, options = {}, retry = true) {
   const headers = new Headers(options.headers);
   if (options.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
   if (accessToken) headers.set('authorization', `Bearer ${accessToken}`);
-  const response = await fetch(`/api/v1${path}`, { ...options, headers, credentials: 'include' });
+  const response = await fetch(`/api/v1${path}`, { ...options, headers, credentials: 'include', cache:'no-store' });
   if (response.status === 401 && retry && !path.startsWith('/auth/')) {
     const refreshed = await fetch('/api/v1/auth/refresh', { method: 'POST', credentials: 'include' });
     if (refreshed.ok) {
@@ -14,7 +15,7 @@ async function request(path, options = {}, retry = true) {
   }
   const payload = response.status === 204 ? null : await response.json().catch(() => ({}));
   if (!response.ok) { const error=new Error(payload?.error?.message || 'Не вдалося виконати дію');error.status=response.status;throw error; }
-  return payload;
+  if(options.method&&!path.startsWith('/auth/'))announceAcademicChange();return payload;
 }
 
 export const teacherApi = {
@@ -24,6 +25,18 @@ export const teacherApi = {
     return result.user;
   },
   async logout() { await request('/auth/logout', { method:'POST' }, false); accessToken=''; },
+  groupDirectory:()=>request('/teacher/groups/directory'),
+  group:id=>request('/teacher/groups/'+id),
+  createGroup:input=>request('/teacher/groups',{method:'POST',body:JSON.stringify(input)}),
+  updateGroup:(id,input)=>request('/teacher/groups/'+id,{method:'PATCH',body:JSON.stringify(input)}),
+  archiveGroup:(id,expectedVersion)=>request('/teacher/groups/'+id+'/archive',{method:'POST',body:JSON.stringify({expectedVersion})}),
+  setGroupStudent:(groupId,studentId,add,expectedVersion)=>request('/teacher/groups/'+groupId+'/students/'+studentId,{method:'PUT',body:JSON.stringify({add,expectedVersion})}),
+  saveOneAttendance:(id,studentId,status)=>request('/teacher/sessions/'+id+'/attendance/'+studentId,{method:'PUT',body:JSON.stringify({status})}),
+
+  replyProjectNote:(studentId,projectId,noteId,input)=>request(`/teacher/students/${studentId}/projects/${projectId}/notes/${noteId}/replies`,{method:'POST',body:JSON.stringify(input)}),
+  reviewLesson:(sessionId,studentId,input)=>request('/teacher/sessions/'+sessionId+'/students/'+studentId+'/review',{method:'POST',body:JSON.stringify(input)}),
+  reviewProjectTask:(studentId,projectId,taskId,input)=>request('/teacher/students/'+studentId+'/projects/'+projectId+'/tasks/'+taskId+'/review',{method:'POST',body:JSON.stringify(input)}),
+  revision:()=>request('/academic-revision'),
   workspace: () => request('/teacher/bootstrap'),
   search: query => request(`/teacher/search?q=${encodeURIComponent(query)}`),
   createClass: input => request('/teacher/sessions', { method: 'POST', body: JSON.stringify(input) }),
@@ -32,6 +45,8 @@ export const teacherApi = {
   addMaterial: (id, input) => request(`/teacher/sessions/${id}/materials`, { method: 'POST', body: JSON.stringify(input) }),
   saveAttendance: (id, entries) => request(`/teacher/sessions/${id}/attendance`, { method: 'PUT', body: JSON.stringify({ entries }) }),
   createHomework: input => request('/teacher/homework', { method: 'POST', body: JSON.stringify(input) }),
+  updateHomework:(id,input)=>request('/teacher/homework/'+id,{method:'PATCH',body:JSON.stringify(input)}),
+  deleteHomework:(id,expectedVersion)=>request('/teacher/homework/'+id,{method:'DELETE',body:JSON.stringify({expectedVersion})}),
   publishHomework: id => request(`/teacher/homework/${id}/publish`, { method: 'POST', body: JSON.stringify({ publishAt: new Date().toISOString() }) }),
   review: (id, input) => request(`/teacher/submissions/${id}/review`, { method: 'PUT', body: JSON.stringify(input) }),
   addNote: (studentId, input) => request(`/teacher/students/${studentId}/notes`, { method: 'POST', body: JSON.stringify(input) }),

@@ -16,6 +16,19 @@ import type { PilotRuntimeState } from './pilot-runtime-store.js';
 type Db = Pick<PoolClient, 'query'>;
 
 export class PostgresRepository implements AppRepository {
+  async academicRevision(..._args:Parameters<AppRepository['academicRevision']>):ReturnType<AppRepository['academicRevision']>{throw this.groupManagementUnavailable();}
+  async updateHomework(..._args:Parameters<AppRepository['updateHomework']>):ReturnType<AppRepository['updateHomework']>{throw this.groupManagementUnavailable();}
+  async deleteHomework(..._args:Parameters<AppRepository['deleteHomework']>):ReturnType<AppRepository['deleteHomework']>{throw this.groupManagementUnavailable();}
+  // The deployed pilot uses Redis runtime state. Do not create a parallel group store here.
+  private groupManagementUnavailable(){return new AppError('GROUP_MANAGEMENT_UNAVAILABLE',503,'Керування групами й продовження сесій недоступні для цього backend');}
+  async groupDirectory(..._args:Parameters<AppRepository['groupDirectory']>):ReturnType<AppRepository['groupDirectory']>{throw this.groupManagementUnavailable();}
+  async createGroup(..._args:Parameters<AppRepository['createGroup']>):ReturnType<AppRepository['createGroup']>{throw this.groupManagementUnavailable();}
+  async updateGroup(..._args:Parameters<AppRepository['updateGroup']>):ReturnType<AppRepository['updateGroup']>{throw this.groupManagementUnavailable();}
+  async archiveGroup(..._args:Parameters<AppRepository['archiveGroup']>):ReturnType<AppRepository['archiveGroup']>{throw this.groupManagementUnavailable();}
+  async setGroupStudent(..._args:Parameters<AppRepository['setGroupStudent']>):ReturnType<AppRepository['setGroupStudent']>{throw this.groupManagementUnavailable();}
+  async getGroupDetail(..._args:Parameters<AppRepository['getGroupDetail']>):ReturnType<AppRepository['getGroupDetail']>{throw this.groupManagementUnavailable();}
+  async adminExtendUserSession(..._args:Parameters<AppRepository['adminExtendUserSession']>):ReturnType<AppRepository['adminExtendUserSession']>{throw this.groupManagementUnavailable();}
+
   private readonly pool: Pool;
 
   constructor(
@@ -201,10 +214,12 @@ export class PostgresRepository implements AppRepository {
     });
   }
 
-  async completeLesson(userId: string, lessonId: string, idempotencyKey: string) {
-    const awardedXp = await this.withUser(userId, async db => Number((await db.query(`select awarded_xp from public.complete_lesson($1,$2)`, [lessonId, idempotencyKey])).rows[0]?.awarded_xp ?? 0));
-    return { awardedXp, home: await this.getHome(userId) };
-  }
+  async completeLesson(..._args:Parameters<AppRepository['completeLesson']>):ReturnType<AppRepository['completeLesson']>{throw this.groupManagementUnavailable();}
+  async reviewLessonCompletion(..._args:Parameters<AppRepository['reviewLessonCompletion']>):ReturnType<AppRepository['reviewLessonCompletion']>{throw this.groupManagementUnavailable();}
+  async addProjectNote(..._args:Parameters<AppRepository['addProjectNote']>):ReturnType<AppRepository['addProjectNote']>{throw this.groupManagementUnavailable();}
+  async replyProjectNote(..._args:Parameters<AppRepository['replyProjectNote']>):ReturnType<AppRepository['replyProjectNote']>{throw this.groupManagementUnavailable();}
+  async submitProjectTask(..._args:Parameters<AppRepository['submitProjectTask']>):ReturnType<AppRepository['submitProjectTask']>{throw this.groupManagementUnavailable();}
+  async reviewProjectTask(..._args:Parameters<AppRepository['reviewProjectTask']>):ReturnType<AppRepository['reviewProjectTask']>{throw this.groupManagementUnavailable();}
 
   async listProjects(userId: string): Promise<ProjectDto[]> {
     return this.withUser(userId, async db => {
@@ -236,12 +251,7 @@ export class PostgresRepository implements AppRepository {
     return (await this.listProjects(userId)).find(p=>p.id===projectId) ?? null;
   }
 
-  async completeProjectTask(userId: string, projectId: string, taskId: string, idempotencyKey: string) {
-    const result = await this.withUser(userId, db => db.query(`select * from public.complete_project_task($1,$2,$3)`, [projectId,taskId,idempotencyKey]));
-    if (!result.rows[0]) return null;
-    const project = (await this.listProjects(userId)).find(p=>p.id===projectId);
-    return project ? { awardedXp: Number(result.rows[0].awarded_xp), project } : null;
-  }
+  async completeProjectTask(..._args:Parameters<AppRepository['completeProjectTask']>):ReturnType<AppRepository['completeProjectTask']>{throw this.groupManagementUnavailable();}
 
   async getProfile(userId: string): Promise<ProfileDto> {
     const [viewer, learning, projects, achievements, mentor] = await Promise.all([this.getViewer(userId),this.getLearning(userId),this.listProjects(userId),this.listAchievements(userId),this.getMentor(userId)]);
@@ -358,7 +368,10 @@ export class PostgresRepository implements AppRepository {
   }
 
   async searchTeacherScope(userId:string,query:string):Promise<TeacherSearchDto>{const data=await this.getTeacherWorkspace(userId);const term=query.trim().toLocaleLowerCase('uk');const includes=(value:string)=>value.toLocaleLowerCase('uk').includes(term);return{students:data.students.filter(item=>includes(item.firstName)).map(item=>({id:item.id,label:item.firstName,meta:item.groupName})),groups:data.groups.filter(item=>includes(item.name)||includes(item.courseTitle)).map(item=>({id:item.id,label:item.name,meta:item.courseTitle})),homework:data.homework.filter(item=>includes(item.title)).map(item=>({id:item.id,label:item.title,meta:item.groupName})),projects:data.students.flatMap(student=>student.projects.filter(project=>includes(project.title)).map(project=>({id:project.id,label:project.title,meta:student.firstName})))}};
-  async updateTeacherClass(userId:string,sessionId:string,input:{title?:string;description?:string;lessonId?:string|null;meetingUrl?:string|null;meetingProvider?:string|null;teacherNotes?:string;status?:'scheduled'|'in_progress'|'completed'|'cancelled'}):Promise<void>{await this.withUser(userId,db=>db.query(`select public.update_teacher_class($1,$2,$3,$4,$5,$6,$7,$8)`,[sessionId,input.title??null,input.description??null,input.lessonId??null,input.meetingUrl??null,input.meetingProvider??null,input.teacherNotes??null,input.status??null]),true);}
+  async updateTeacherClass(userId:string,sessionId:string,input:Parameters<AppRepository['updateTeacherClass']>[2]):Promise<void>{
+    if(input.startsAt!==undefined||input.endsAt!==undefined||input.status==='archived')throw this.groupManagementUnavailable();
+    await this.withUser(userId,db=>db.query(`select public.update_teacher_class($1,$2,$3,$4,$5,$6,$7,$8)`,[sessionId,input.title??null,input.description??null,input.lessonId??null,input.meetingUrl??null,input.meetingProvider??null,input.teacherNotes??null,input.status??null]),true);
+  }
   async addClassMaterial(userId:string,sessionId:string,input:{kind:'presentation'|'document'|'link'|'reference'|'other';title:string;url:string}):Promise<void>{await this.withUser(userId,db=>db.query(`insert into public.class_materials(class_session_id,kind,title,external_url,position,created_by) values($1,$2,$3,$4,(select coalesce(max(position)+1,1) from public.class_materials where class_session_id=$1),$5)`,[sessionId,input.kind,input.title,input.url,userId]),true);}
   async bulkConfirmAttendance(userId:string,sessionId:string,entries:Array<{studentId:string;status:'present'|'late'|'absent'|'excused';note?:string}>):Promise<void>{await this.withUser(userId,async db=>{for(const entry of entries)await db.query(`select public.confirm_attendance($1,$2,$3,$4)`,[sessionId,entry.studentId,entry.status,entry.note??'']);},true);}
   async publishHomework(userId:string,homeworkId:string,publishAt:string):Promise<void>{await this.withUser(userId,db=>db.query(`select public.publish_homework($1,$2)`,[homeworkId,publishAt]),true);}

@@ -40,8 +40,19 @@ import type {
   UserId
 } from '../types/domain.js';
 import type { PilotRuntimeState } from './pilot-runtime-store.js';
+import type { GroupInput } from './group-model.js';
 
 export interface AppRepository {
+  academicRevision(userId:string):Promise<{revision:string}>;
+  updateHomework(userId:string,homeworkId:string,input:{expectedVersion:number;title?:string;instructions?:string;dueAt?:string|null;status?:'draft'|'published'|'unpublished'|'archived'},correlationId:string):Promise<void>;
+  deleteHomework(userId:string,homeworkId:string,expectedVersion:number,correlationId:string):Promise<void>;
+  groupDirectory(userId:string):Promise<{teachers:Array<{id:string;name:string}>;students:Array<{id:string;name:string;groupId:string|null}>}>;
+  createGroup(userId:string,input:GroupInput,correlationId:string):Promise<{id:string}>;
+  updateGroup(userId:string,groupId:string,input:GroupInput&{expectedVersion:number},correlationId:string):Promise<void>;
+  archiveGroup(userId:string,groupId:string,expectedVersion:number,correlationId:string):Promise<void>;
+  setGroupStudent(userId:string,groupId:string,studentId:string,add:boolean,expectedVersion:number,correlationId:string):Promise<void>;
+  getGroupDetail(userId:string,groupId:string):Promise<Record<string,unknown>>;
+  adminExtendUserSession(userId:string,sessionId:string,expectedExpiresAt:string,correlationId:string):Promise<{expiresAt:string}>;
   ping(): Promise<void>;
 
   resolveTelegramUser(identity: TelegramIdentityInput): Promise<AuthUser>;
@@ -61,6 +72,11 @@ export interface AppRepository {
   submitHomework(userId: UserId, homeworkId: string, input: { contentText: string; contentUrl?: string; studentComment?: string }): Promise<HomeworkSubmissionDto>;
   getLearning(userId: UserId): Promise<LearningDto>;
   getLesson(userId: UserId, lessonId: string): Promise<LessonDto | null>;
+  reviewLessonCompletion(userId:UserId,sessionId:string,studentId:string,input:import('../types/domain.js').AcademicReviewInput,correlationId:string):Promise<void>;
+  addProjectNote(userId:UserId,projectId:string,input:{contentText:string;contentUrl?:string;clientRequestId:string}):Promise<ProjectDto>;
+  replyProjectNote(userId:UserId,studentId:string,projectId:string,noteId:string,input:{contentText:string;clientRequestId:string},correlationId:string):Promise<void>;
+  submitProjectTask(userId:UserId,projectId:string,taskId:string,input:{contentText:string;expectedVersion:number}):Promise<ProjectDto>;
+  reviewProjectTask(userId:UserId,studentId:string,projectId:string,taskId:string,input:import('../types/domain.js').AcademicReviewInput,correlationId:string):Promise<void>;
   completeLesson(userId: UserId, lessonId: string, idempotencyKey: string): Promise<{ awardedXp: number; home: HomeDto }>;
 
   listProjects(userId: UserId): Promise<ProjectDto[]>;
@@ -84,7 +100,7 @@ export interface AppRepository {
   reviewHomework(userId: UserId, submissionId: string, input: { score: number; effort: EffortLevel; status: 'reviewed' | 'needs_revision' | 'completed'; feedback: string }): Promise<void>;
   getTeacherWorkspace(userId: UserId): Promise<TeacherWorkspaceDto>;
   searchTeacherScope(userId: UserId, query: string): Promise<TeacherSearchDto>;
-  updateTeacherClass(userId: UserId, sessionId: string, input: { title?: string; description?: string; lessonId?: string | null; meetingUrl?: string | null; meetingProvider?: string | null; teacherNotes?: string; status?: 'scheduled' | 'in_progress' | 'completed' | 'cancelled' }): Promise<void>;
+  updateTeacherClass(userId: UserId, sessionId: string, input: { title?: string; description?: string; lessonId?: string | null; meetingUrl?: string | null; meetingProvider?: string | null; teacherNotes?: string; status?: 'scheduled' | 'in_progress' | 'completed' | 'cancelled' | 'archived'; startsAt?: string; endsAt?: string }): Promise<void>;
   addClassMaterial(userId: UserId, sessionId: string, input: { kind: 'presentation' | 'document' | 'link' | 'reference' | 'other'; title: string; url: string }): Promise<void>;
   bulkConfirmAttendance(userId: UserId, sessionId: string, entries: Array<{ studentId: string; status: 'present' | 'late' | 'absent' | 'excused'; note?: string }>): Promise<void>;
   publishHomework(userId: UserId, homeworkId: string, publishAt: string): Promise<void>;

@@ -1,3 +1,6 @@
+import { AppError } from '../errors/app-error.js';
+import { zonedStart } from '../data/group-model.js';
+import { registerGroupRoutes } from './groups.js';
 import type { FastifyInstance, preHandlerHookHandler } from 'fastify';
 import { z } from 'zod';
 import type { AppRepository } from '../data/repository.js';
@@ -8,7 +11,22 @@ const httpsUrl = z.string().url().refine(value => new URL(value).protocol === 'h
 const timeRange = z.object({ startsAt:z.string().datetime(),endsAt:z.string().datetime() }).refine(value=>Date.parse(value.endsAt)>Date.parse(value.startsAt),'End must be after start');
 
 export function registerTeacherRoutes(app:FastifyInstance,repository:AppRepository,authenticate:preHandlerHookHandler):void{
-  const secured={preHandler:[authenticate,requireRole('teacher')]};
+  const secured={preHandler:[authenticate,requireRole('teacher','admin')]};
+  registerGroupRoutes(app,repository,'/api/v1/teacher',secured.preHandler);
+  app.post('/api/v1/teacher/students/:studentId/projects/:projectId/notes/:noteId/replies',{...secured,config:{rateLimit:{max:30,timeWindow:'1 minute'}}},async(request,reply)=>{
+    const {studentId,projectId,noteId}=z.object({studentId:uuid,projectId:uuid,noteId:uuid}).parse(request.params);
+    const body=z.object({contentText:z.string().trim().min(1).max(4000),clientRequestId:uuid}).strict().parse(request.body);
+    await repository.replyProjectNote(request.auth.userId,studentId,projectId,noteId,body,request.id);return reply.code(204).send();
+  });
+  const reviewInput=z.object({expectedVersion:z.number().int().positive(),decision:z.enum(['approved','needs_revision']),feedback:z.string().trim().max(4000).default('')}).strict().refine(v=>v.decision!=='needs_revision'||Boolean(v.feedback),'Feedback required');
+  app.post('/api/v1/teacher/sessions/:sessionId/students/:studentId/review',secured,async(request,reply)=>{
+    const {sessionId,studentId}=z.object({sessionId:uuid,studentId:uuid}).parse(request.params);
+    await repository.reviewLessonCompletion(request.auth.userId,sessionId,studentId,reviewInput.parse(request.body),request.id);return reply.code(204).send();
+  });
+  app.post('/api/v1/teacher/students/:studentId/projects/:projectId/tasks/:taskId/review',secured,async(request,reply)=>{
+    const {studentId,projectId,taskId}=z.object({studentId:uuid,projectId:uuid,taskId:uuid}).parse(request.params);
+    await repository.reviewProjectTask(request.auth.userId,studentId,projectId,taskId,reviewInput.parse(request.body),request.id);return reply.code(204).send();
+  });
   app.get('/api/v1/teacher/bootstrap',secured,async request=>repository.getTeacherWorkspace(request.auth.userId));
   app.get('/api/v1/teacher/search',secured,async request=>{
     const {q}=z.object({q:z.string().trim().min(2).max(80)}).parse(request.query);
@@ -19,7 +37,13 @@ export function registerTeacherRoutes(app:FastifyInstance,repository:AppReposito
     const {groupId}=z.object({groupId:uuid}).parse(request.params); return repository.listGroupStudents(request.auth.userId,groupId);
   });
   app.post('/api/v1/teacher/sessions',secured,async(request,reply)=>{
-    const parsed=z.object({groupId:uuid,courseId:uuid,moduleId:uuid.optional(),lessonId:uuid.optional(),title:z.string().trim().min(1).max(160),description:z.string().trim().max(4000).optional(),startsAt:z.string().datetime(),endsAt:z.string().datetime(),meetingUrl:httpsUrl.optional(),meetingProvider:z.string().trim().max(60).optional()}).refine(value=>Date.parse(value.endsAt)>Date.parse(value.startsAt),'End must be after start').parse(request.body);
+    const raw=z.object({localStartsAt:z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/).optional(),localEndsAt:z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/).optional()}).passthrough().parse(request.body);
+    let body=request.body;
+    if(raw.localStartsAt||raw.localEndsAt){
+      if(!raw.localStartsAt||!raw.localEndsAt||raw.startsAt||raw.endsAt)throw new AppError('INVALID_TIME',400,'Вкажіть початок і кінець заняття');
+      body={...raw,startsAt:zonedStart(raw.localStartsAt.slice(0,10),raw.localStartsAt.slice(11),'Europe/Kyiv'),endsAt:zonedStart(raw.localEndsAt.slice(0,10),raw.localEndsAt.slice(11),'Europe/Kyiv')};
+    }
+    const parsed=z.object({groupId:uuid,courseId:uuid,moduleId:uuid.optional(),lessonId:uuid.optional(),title:z.string().trim().min(1).max(160),description:z.string().trim().max(4000).optional(),startsAt:z.string().datetime(),endsAt:z.string().datetime(),meetingUrl:httpsUrl.optional(),meetingProvider:z.string().trim().max(60).optional()}).refine(value=>Date.parse(value.endsAt)>Date.parse(value.startsAt),'End must be after start').parse(body);
     const input:Parameters<AppRepository['createClassSession']>[1]={groupId:parsed.groupId,courseId:parsed.courseId,title:parsed.title,startsAt:parsed.startsAt,endsAt:parsed.endsAt};
     for(const key of ['moduleId','lessonId','description','meetingUrl','meetingProvider'] as const)if(parsed[key]!==undefined)input[key]=parsed[key];
     return reply.status(201).send(await repository.createClassSession(request.auth.userId,input));
@@ -31,9 +55,10 @@ export function registerTeacherRoutes(app:FastifyInstance,repository:AppReposito
   });
   app.patch('/api/v1/teacher/sessions/:sessionId',secured,async(request,reply)=>{
     const {sessionId}=z.object({sessionId:uuid}).parse(request.params);
-    const parsed=z.object({title:z.string().trim().min(1).max(160).optional(),description:z.string().trim().max(4000).optional(),lessonId:uuid.nullable().optional(),meetingUrl:httpsUrl.nullable().optional(),meetingProvider:z.string().trim().max(60).nullable().optional(),teacherNotes:z.string().trim().max(10000).optional(),status:z.enum(['scheduled','in_progress','completed','cancelled']).optional()}).refine(value=>Object.keys(value).length>0,'At least one field is required').parse(request.body);
+    const parsed=z.object({title:z.string().trim().min(1).max(160).optional(),description:z.string().trim().max(4000).optional(),lessonId:uuid.nullable().optional(),meetingUrl:httpsUrl.nullable().optional(),meetingProvider:z.string().trim().max(60).nullable().optional(),teacherNotes:z.string().trim().max(10000).optional(),localStartsAt:z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/).optional(),localEndsAt:z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/).optional(),startsAt:z.string().datetime().optional(),endsAt:z.string().datetime().optional(),status:z.enum(['scheduled','in_progress','completed','cancelled','archived']).optional()}).strict().refine(value=>!value.localStartsAt===!value.localEndsAt,'Both local times required').refine(value=>!value.localStartsAt||!value.startsAt,'One time format required').refine(value=>!value.startsAt===!value.endsAt,'Both times required').refine(value=>!value.startsAt||Date.parse(value.endsAt!)>Date.parse(value.startsAt),'End must follow start').refine(value=>Object.keys(value).length>0,'At least one field is required').parse(request.body);
     const input:Parameters<AppRepository['updateTeacherClass']>[2]={};
-    for(const key of ['title','description','lessonId','meetingUrl','meetingProvider','teacherNotes','status'] as const)if(parsed[key]!==undefined)(input as Record<string,unknown>)[key]=parsed[key];
+    for(const key of ['title','description','lessonId','meetingUrl','meetingProvider','teacherNotes','status','startsAt','endsAt'] as const)if(parsed[key]!==undefined)(input as Record<string,unknown>)[key]=parsed[key];
+    if(parsed.localStartsAt&&parsed.localEndsAt){const convert=(v:string)=>{const [d,t]=v.split('T');z.string().date().parse(d);return zonedStart(d!,t!,'Europe/Kyiv');};input.startsAt=convert(parsed.localStartsAt);input.endsAt=convert(parsed.localEndsAt);if(Date.parse(input.endsAt)<=Date.parse(input.startsAt))throw new AppError('INVALID_TIME',400,'Кінець заняття має бути після початку');}
     await repository.updateTeacherClass(request.auth.userId,sessionId,input); return reply.status(204).send();
   });
   app.post('/api/v1/teacher/sessions/:sessionId/materials',secured,async(request,reply)=>{
@@ -60,6 +85,10 @@ export function registerTeacherRoutes(app:FastifyInstance,repository:AppReposito
     const {submissionId}=z.object({submissionId:uuid}).parse(request.params); const parsed=z.object({score:z.number().int().min(0).max(10),effort:z.enum(['needs_attention','good_effort','high_effort']),status:z.enum(['reviewed','needs_revision','completed']),feedback:z.string().trim().max(10000)}).parse(request.body);
     await repository.reviewHomework(request.auth.userId,submissionId,parsed); return reply.status(204).send();
   });
+
+  app.patch('/api/v1/teacher/homework/:homeworkId',secured,async(request,reply)=>{const {homeworkId}=z.object({homeworkId:uuid}).parse(request.params);const parsed=z.object({expectedVersion:z.number().int().positive(),title:z.string().trim().min(1).max(180).optional(),instructions:z.string().trim().min(1).max(20000).optional(),dueAt:z.string().datetime().nullable().optional(),status:z.enum(['draft','published','unpublished','archived']).optional()}).strict().refine(v=>Object.keys(v).length>1,'At least one field required').parse(request.body);const input:Parameters<AppRepository['updateHomework']>[2]={expectedVersion:parsed.expectedVersion};for(const key of ['title','instructions','dueAt','status'] as const)if(parsed[key]!==undefined)(input as Record<string,unknown>)[key]=parsed[key];await repository.updateHomework(request.auth.userId,homeworkId,input,request.id);return reply.code(204).send();});
+  app.delete('/api/v1/teacher/homework/:homeworkId',secured,async(request,reply)=>{const {homeworkId}=z.object({homeworkId:uuid}).parse(request.params);const {expectedVersion}=z.object({expectedVersion:z.number().int().positive()}).strict().parse(request.body);await repository.deleteHomework(request.auth.userId,homeworkId,expectedVersion,request.id);return reply.code(204).send();});
+
   app.post('/api/v1/teacher/homework/:homeworkId/publish',secured,async(request,reply)=>{
     const {homeworkId}=z.object({homeworkId:uuid}).parse(request.params);
     const {publishAt}=z.object({publishAt:z.string().datetime()}).parse(request.body);

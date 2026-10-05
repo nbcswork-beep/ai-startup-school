@@ -101,6 +101,7 @@ const lessonProgressSchema = z.object({
 
 const stateSchema = z.object({
   schemaVersion: z.number().int().positive(),
+  seededContentCleanupApplied: z.boolean().optional(),
   directory: record(directoryPersonSchema),
   telegramBindings: record(z.string().min(1)),
   guardianRelations: z.array(guardianRelationSchema),
@@ -111,6 +112,7 @@ const stateSchema = z.object({
   projects: record(z.array(looseObject)),
   achievements: record(z.array(z.string())),
   idempotencyKeys: z.array(z.string()),
+  groups: z.array(looseObject).optional(),
   classSessions: z.array(looseObject),
   attendance: z.array(looseObject),
   homework: z.array(looseObject),
@@ -152,7 +154,7 @@ export function summarizeRuntimeState(state: PilotRuntimeState): SnapshotCounts 
     staff: people.filter(person => has(person, 'teacher') || has(person, 'mentor') || has(person, 'admin')).length,
     telegramBindings: Object.keys(state.telegramBindings).length,
     guardianRelations: state.guardianRelations.filter(link => link.status === 'active').length,
-    groups: groups.size,
+    groups: state.groups?.length ?? groups.size,
     classSessions: state.classSessions.length,
     attendance: state.attendance.length,
     homework: state.homework.length,

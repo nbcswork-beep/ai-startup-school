@@ -1,3 +1,4 @@
+import {createAssignedRepository,createAssignedPilotState} from './assigned-pilot.test-fixture.js';
 import { describe, expect, it, vi } from 'vitest';
 import { exportPKCS8, exportSPKI, generateKeyPair } from 'jose';
 import type { FastifyInstance } from 'fastify';
@@ -59,7 +60,7 @@ class UpstashRestEmulator {
 }
 
 function populated(): PilotRuntimeState {
-  const state = createPilotRuntimeState();
+  const state = createAssignedPilotState();
   state.directory[TEACHER]!.passwordHash = 'scrypt$live-teacher-secret';
   state.directory[TEACHER]!.email = 'teacher@school.test';
   state.directory[ADMIN]!.activationTokenHash = 'a'.repeat(64);
@@ -199,7 +200,7 @@ describe('recovery', () => {
     const live = populated();
     const store = new MemoryPilotRuntimeStore(live);
     const before = JSON.stringify(await store.read());
-    const incoming = createPilotRuntimeState();
+    const incoming = createAssignedPilotState();
     incoming.classSessions = [];
     const plan = await planRuntimeRestore(store, snapshotOf(incoming), 'production');
     expect(plan.current!.classSessions).toBeGreaterThan(0);
@@ -209,7 +210,7 @@ describe('recovery', () => {
 
   it('refuses to restore a preview snapshot into production', async () => {
     const store = new MemoryPilotRuntimeStore(populated());
-    const snapshot = snapshotOf(createPilotRuntimeState(), 'preview');
+    const snapshot = snapshotOf(createAssignedPilotState(), 'preview');
     const plan = await planRuntimeRestore(store, snapshot, 'production');
     expect(plan.environmentMismatch).toBe(true);
     await expect(applyRuntimeRestore(store, snapshot, plan, { backup: async () => 'x' }))
@@ -220,7 +221,7 @@ describe('recovery', () => {
 
   it('allows a deliberate cross-environment restore', async () => {
     const store = new MemoryPilotRuntimeStore(populated());
-    const incoming = createPilotRuntimeState();
+    const incoming = createAssignedPilotState();
     incoming.classSessions = [];
     const snapshot = snapshotOf(incoming, 'preview');
     const plan = await planRuntimeRestore(store, snapshot, 'production');
@@ -231,7 +232,7 @@ describe('recovery', () => {
   it('writes a pre-restore backup before overwriting, and aborts if the backup fails', async () => {
     const live = populated();
     const store = new MemoryPilotRuntimeStore(live);
-    const incoming = createPilotRuntimeState();
+    const incoming = createAssignedPilotState();
     incoming.classSessions = [];
     const snapshot = snapshotOf(incoming);
     const plan = await planRuntimeRestore(store, snapshot, 'production');
@@ -266,7 +267,7 @@ describe('recovery', () => {
   });
 
   it('reports staff whose credentials cannot be recovered', async () => {
-    const store = new MemoryPilotRuntimeStore(createPilotRuntimeState());
+    const store = new MemoryPilotRuntimeStore(createAssignedPilotState());
     const plan = await planRuntimeRestore(store, snapshotOf(populated()), 'production');
     expect(plan.credentialsUnrecoverable).toContain(TEACHER);
   });
@@ -361,7 +362,7 @@ describe('admin export endpoint', () => {
       APP_JWT_PRIVATE_KEY_BASE64: Buffer.from(await exportPKCS8(pair.privateKey)).toString('base64'),
       APP_JWT_PUBLIC_KEY_BASE64: Buffer.from(await exportSPKI(pair.publicKey)).toString('base64')
     });
-    const repository = new MemoryRepository(undefined, {
+    const repository = createAssignedRepository(undefined, {
       runtimeStore: runtime, mentoringStore: new MemoryMentoringStore(), sessionStore: new MemorySessionStore()
     });
     const app = await buildApp({
@@ -410,7 +411,7 @@ describe('admin export endpoint', () => {
         APP_JWT_PRIVATE_KEY_BASE64: Buffer.from(await exportPKCS8(pair.privateKey)).toString('base64'),
         APP_JWT_PUBLIC_KEY_BASE64: Buffer.from(await exportSPKI(pair.publicKey)).toString('base64')
       });
-      const repository = new MemoryRepository(undefined, {
+      const repository = createAssignedRepository(undefined, {
         runtimeStore: runtime, mentoringStore: new MemoryMentoringStore(), sessionStore: new MemorySessionStore()
       });
       const app = await buildApp({ env, repository, jwt: await createJwtService(env), aiProvider: new MockAiProvider(), loginLimiter: new MemoryLoginAttemptLimiter() });

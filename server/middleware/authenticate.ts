@@ -16,8 +16,8 @@ export function createAuthenticate(jwt: JwtService, repository: AppRepository) {
   };
 }
 
-export function requireRole(role: AppRole) {
+export function requireRole(...roles: AppRole[]) {
   return async function authorizeRole(request: FastifyRequest, _reply: FastifyReply): Promise<void> {
-    if (!request.access.roles.includes(role)) throw new AppError('ROLE_FORBIDDEN', 403, 'Недостатньо прав');
+    if (!roles.some(role => request.access.roles.includes(role))) throw new AppError('ROLE_FORBIDDEN', 403, 'Недостатньо прав');
   };
 }

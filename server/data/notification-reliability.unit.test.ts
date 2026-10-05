@@ -1,3 +1,4 @@
+import {createAssignedRepository,createAssignedPilotState} from './assigned-pilot.test-fixture.js';
 import { describe, expect, it, vi } from 'vitest';
 import { MemorySessionStore } from '../auth/session-store.js';
 import { NotificationWorker, type NotificationSender } from '../services/telegram-notification-service.js';
@@ -53,8 +54,8 @@ class UpstashRestEmulator {
 }
 
 async function fixture(store?: PilotRuntimeStore) {
-  const runtime = store ?? new MemoryPilotRuntimeStore();
-  const repository = new MemoryRepository(undefined, { runtimeStore: runtime, sessionStore: new MemorySessionStore(), requireSeededTelegramIdentity: true });
+  const runtime = store ?? new MemoryPilotRuntimeStore(createAssignedPilotState());
+  const repository = createAssignedRepository(undefined, { runtimeStore: runtime, sessionStore: new MemorySessionStore(), requireSeededTelegramIdentity: true });
   const student = await repository.adminCreateStudent(ADMIN, { firstName: 'Реальний', lastName: 'Учень', groupId: PILOT.groupId, telegramId: '777001001', status: 'active' }, 'c1');
   const guardian = await repository.adminCreateGuardian(ADMIN, { firstName: 'Реальна', lastName: 'Мама', telegramId: '777001002', studentIds: [String(student.id)], status: 'active' }, 'c2');
   // Production syncs the directory in the auth middleware before any handler runs; do the same here.
