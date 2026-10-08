@@ -229,6 +229,8 @@ export interface HomeworkSubmissionDto {
 }
 
 export interface HomeworkSummaryDto {
+  classSessionId?: string | null;
+  resources?: ClassMaterialDto[];
   id: string;
   title: string;
   instructions: string;

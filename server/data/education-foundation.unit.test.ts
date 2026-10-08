@@ -40,7 +40,8 @@ describe('education foundation invariants',()=>{
   });
   it('preserves the rescheduled class state and new timezone-safe timestamps',async()=>{
     const repository=createAssignedRepository(); const sessionId='71000000-0000-4000-8000-000000000001';
-    const startsAt='2026-10-06T15:00:00.000Z'; const endsAt='2026-10-06T16:30:00.000Z';
+    const futureDate=new Date(Date.now()+7*86400000).toISOString().slice(0,10);
+    const startsAt=`${futureDate}T15:00:00.000Z`; const endsAt=`${futureDate}T16:30:00.000Z`;
     await repository.rescheduleClass(teacher,sessionId,{startsAt,endsAt,reason:'Зміна розкладу'});
     const session=(await repository.getSchedule(DEV_IDS.user)).upcoming.find(item=>item.id===sessionId);
     expect(session).toMatchObject({startsAt,endsAt,status:'rescheduled',durationMinutes:90});

@@ -259,7 +259,7 @@ export class MemoryRepository implements AppRepository {
     return state.homework.filter(item => item.status === 'published' && item.groupId===state.directory[userId]?.groupId && state.groups.some(g=>g.id===item.groupId&&g.status==='active')).map(homework => {
       const latest = submissions.filter(item => item.homeworkId === homework.id).sort((a,b)=>b.attemptNumber-a.attemptNumber)[0] ?? null;
       const session = state.classSessions.find(item => item.id === homework.classSessionId);
-      return { id:homework.id,title:homework.title,instructions:homework.instructions,publishedAt:homework.publishAt??'',dueAt:homework.dueAt,xpReward:homework.xpReward,classTitle:session?.title??null,state:latest?.status??'not_started',latestSubmission:latest ? this.submissionDto(latest) : null };
+      return { classSessionId:homework.classSessionId,resources:structuredClone(homework.resources??[]),id:homework.id,title:homework.title,instructions:homework.instructions,publishedAt:homework.publishAt??'',dueAt:homework.dueAt,xpReward:homework.xpReward,classTitle:session?.title??null,state:latest?.status??'not_started',latestSubmission:latest ? this.submissionDto(latest) : null };
     });
   }
 

@@ -1,13 +1,23 @@
 import {announceAcademicChange} from './academic-sync.js';
 let accessToken = '';
 
+async function boundedFetch(url, options) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try { return await fetch(url, { ...options, signal: controller.signal }); }
+  catch (error) {
+    if (error.name === 'AbortError') throw new Error('Сервер не відповів вчасно. Спробуй ще раз.');
+    throw new Error(navigator.onLine === false ? 'Немає з’єднання з інтернетом. Спробуй після відновлення мережі.' : 'Не вдалося з’єднатися із сервером. Спробуй ще раз.');
+  } finally { clearTimeout(timeout); }
+}
+
 async function request(path, options = {}, retry = true) {
   const headers = new Headers(options.headers);
   if (options.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
   if (accessToken) headers.set('authorization', `Bearer ${accessToken}`);
-  const response = await fetch(`/api/v1${path}`, { ...options, headers, credentials: 'include', cache:'no-store' });
+  const response = await boundedFetch(`/api/v1${path}`, { ...options, headers, credentials: 'include', cache:'no-store' });
   if (response.status === 401 && retry && !path.startsWith('/auth/')) {
-    const refreshed = await fetch('/api/v1/auth/refresh', { method: 'POST', credentials: 'include' });
+    const refreshed = await boundedFetch('/api/v1/auth/refresh', { method: 'POST', credentials: 'include' });
     if (refreshed.ok) {
       accessToken = (await refreshed.json()).accessToken;
       return request(path, options, false);
@@ -23,6 +33,7 @@ async function request(path, options = {}, retry = true) {
 
 async function authenticate() {
   const initData = window.Telegram?.WebApp?.initData;
+  if (!initData && import.meta.env.PROD) throw new Error('Відкрий Student OS із кнопки Mini App у Telegram.');
   const endpoint = initData ? '/auth/telegram' : '/auth/development';
   const body = initData ? JSON.stringify({ initData }) : undefined;
   const result = await request(endpoint, { method: 'POST', ...(body ? { body } : {}) }, false);
