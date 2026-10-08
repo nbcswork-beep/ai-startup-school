@@ -1,0 +1,48 @@
+/* Student Mini App palette. The six brand HEX values were confirmed by the user.
+   The book cover supplies the restrained cyan → violet → pink gradient treatment.
+   RGB companions keep translucent surfaces compatible with older mobile WebViews. */
+:root {
+  --brand-midnight: #100B28;
+  --brand-purple: #7438F5;
+  --brand-pink: #F725A8;
+  --brand-cyan: #00D9FF;
+  --brand-lavender: #F0EBFF;
+  --brand-white: #FFFFFF;
+  --midnight-rgb: 16, 11, 40;
+  --purple-rgb: 116, 56, 245;
+  --pink-rgb: 247, 37, 168;
+  --cyan-rgb: 0, 217, 255;
+  --lavender-rgb: 240, 235, 255;
+  --surface-rgb: 29, 21, 55;
+  --surface-strong-rgb: 34, 24, 62;
+
+  --ink: var(--brand-midnight);
+  --deep: var(--brand-midnight);
+  --violet: var(--brand-purple);
+  --pink: var(--brand-pink);
+  --cyan: var(--brand-cyan);
+  --text: var(--brand-white);
+  --surface: #1D1537;
+  --surface-strong: #22183E;
+  --surface-raised: #2C204A;
+  --surface-hover: #382557;
+  --muted: #C9BEDF;
+  --faint: #B3A6CD;
+  --line: rgba(var(--lavender-rgb), 0.20);
+  --line-strong: rgba(var(--lavender-rgb), 0.34);
+  --control-border: #8B79AE;
+  --progress-track: var(--brand-midnight);
+  --on-accent: var(--brand-midnight);
+  --on-purple: var(--brand-white);
+  --on-light: var(--brand-midnight);
+  --on-light-muted: #645776;
+  --accent-hover: #FF5EBF;
+  --accent-active: #EF249F;
+  --attention: #FF9BD8;
+  --success: var(--brand-cyan);
+  --disabled-surface: #34283F;
+  --disabled-text: var(--muted);
+  --brand-gradient: linear-gradient(90deg, var(--cyan), var(--violet) 50%, var(--pink));
+  --page-gradient: linear-gradient(180deg, var(--surface) 0, var(--ink) 450px);
+  --hero-gradient: linear-gradient(135deg, rgba(var(--purple-rgb), 0.10), transparent 65%), var(--surface-strong);
+}

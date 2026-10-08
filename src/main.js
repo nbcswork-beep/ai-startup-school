@@ -38,8 +38,8 @@ if (tg) {
   tg.ready();
   tg.expand();
   try {
-    tg.setHeaderColor('#070a2b');
-    tg.setBackgroundColor('#070a2b');
+    tg.setHeaderColor('#100B28');
+    tg.setBackgroundColor('#100B28');
   } catch {}
   applyTelegramViewport();
   for (const event of ['safeAreaChanged', 'contentSafeAreaChanged', 'viewportChanged', 'fullscreenChanged', 'fullscreenFailed']) {
