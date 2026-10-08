@@ -9,7 +9,7 @@ export function startAcademicSync({revision,refresh,canApply=()=>true,onError=()
   const check=async()=>{
     if(busy||document.hidden||!canApply())return;
     busy=true;
-    try{const value=(await revision()).revision;if(value!==previous){await refresh();previous=value;}}
+    try{const value=(await revision()).revision;if(value!==previous&&canApply()){const applied=await refresh();if(applied!==false)previous=value;}}
     catch(error){onError(error);}finally{busy=false;}
   };
   setInterval(check,5000);
