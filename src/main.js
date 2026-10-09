@@ -537,12 +537,14 @@ function homeworkPage() {
   if (!homework) return `<section class="page homework-page"><button class="lesson-back" data-back="homework">← ${backLabel('homework')}</button><div class="page-title"><h1>Домашніх завдань поки немає</h1></div></section>`;
   const submission = homework.latestSubmission;
   const review = submission?.review;
+  const resources = (homework.resources ?? []).map(resource => ({ ...resource, url: safeHttpsUrl(resource.url) })).filter(resource => resource.url);
   const disabled=homework.withdrawn?'disabled':'';
   const canSubmit = !submission || submission.status === 'needs_revision' || submission.status === 'in_progress';
   return `<section class="page homework-page">
     <button class="lesson-back" data-back="homework">← ${backLabel('homework')}</button>
     <div class="page-title"><span class="section-kicker">HOMEWORK · ${homeworkStateLabel(homework.state)}</span><span class="zone-code">+${homework.xpReward} XP ЗА ЗАВЕРШЕННЯ</span><h1>${escapeHtml(homework.title)}</h1><p>${escapeHtml(homework.instructions)}</p></div>
     <section class="homework-brief"><div><span>ДЕДЛАЙН</span><strong>${homework.dueAt ? escapeHtml(formatClassTime(homework.dueAt,data.schedule.timezone)) : 'Без дедлайну'}</strong></div><div><span>ПОВ’ЯЗАНЕ ЗАНЯТТЯ</span><strong>${escapeHtml(homework.classTitle ?? 'Самостійна практика')}</strong></div></section>
+    ${resources.length ? `<section class="lesson-section homework-materials"><span class="section-kicker">МАТЕРІАЛИ ДО ЗАВДАННЯ</span><div class="recovery-materials">${resources.map(resource => `<button type="button" class="secondary-btn" data-external="${escapeHtml(resource.url)}">${escapeHtml(resource.title)} ${externalIcon()}</button>`).join('')}</div></section>` : ''}
     ${review ? `<section class="teacher-feedback ${review.status}"><div class="feedback-score"><strong>${review.score}</strong><small>/10</small></div><div><span>ВІДГУК ВИКЛАДАЧА</span><h2>${escapeHtml(effortLabel(review.effort))}</h2><p>${escapeHtml(review.feedback)}</p></div></section>` : ''}
     ${submission ? `<section class="attempt-history"><span>СПРОБА ${submission.attemptNumber}</span><strong>${homeworkStateLabel(submission.status)}</strong><p>${escapeHtml(submission.studentComment || submission.contentText)}</p></section>` : ''}
     ${homework.withdrawn?'<p class="withdrawn-homework" role="status">Завдання більше не активне для вашої групи. Введений текст збережено на цій сторінці.</p>':''}
@@ -967,4 +969,3 @@ startAcademicSync({revision:api.revision,canApply:canApplyAcademicSync,refresh:a
   if(active==='home'||active==='learn'||active==='profile'||active==='project')render(active,false);
   if(active==='homework'&&currentHomework){currentHomework=homework.find(h=>h.id===currentHomework.id)??{...currentHomework,withdrawn:true};render('homework',false);}
 }});
-

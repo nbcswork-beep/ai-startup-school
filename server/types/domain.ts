@@ -238,6 +238,7 @@ export interface HomeworkSummaryDto {
   classTitle: string | null;
   state: HomeworkState;
   latestSubmission: HomeworkSubmissionDto | null;
+  resources?: ClassMaterialDto[];
 }
 
 export interface PortfolioProjectDto {
