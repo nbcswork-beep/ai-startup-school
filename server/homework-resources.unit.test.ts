@@ -73,6 +73,13 @@ describe('homework resources reach students', () => {
     expect(bootstrap.json().home.homeworkDue.resources).toEqual(persisted.resources);
     const html = renderHomework(dto);
     expect(html).toContain('МАТЕРІАЛИ ДО ЗАВДАННЯ');
+    expect(html).toContain('ВІДЕО ДО ЗАВДАННЯ');
+    const videos = html.match(/<section class="lesson-section homework-videos">([\s\S]*?)<\/section>/)![1]!;
+    const materials = html.match(/<section class="lesson-section homework-materials">([\s\S]*?)<\/section>/)![1]!;
+    expect(videos).toContain(`Відео — ${video.title}`);
+    expect(videos).not.toContain(document.title);
+    expect(materials).toContain(document.title);
+    expect(materials).not.toContain(video.title);
     expect(html).toContain(video.title);
     expect(html).toContain('data-external="https://example.test/lesson-video?part=1&amp;lesson=2"');
     expect(html).toContain(document.title);
@@ -117,6 +124,51 @@ describe('homework resources reach students', () => {
     expect(html).not.toContain('Unsafe resource');
     expect(html).not.toContain('Missing URL');
     expect(html).toContain('type="button" class="secondary-btn" data-external=');
+  });
+
+  it.each([
+    ['https://youtu.be/lesson123', 'Основи бізнесу', 'link', true],
+    ['https://www.youtube.com/watch?v=lesson123&list=course', 'Основи бізнесу', 'link', true],
+    ['https://www.youtube.com/shorts/lesson123', 'Основи бізнесу', 'link', true],
+    ['https://player.vimeo.com/video/123456', 'Основи бізнесу', 'link', true],
+    ['https://www.loom.com/share/lesson123', 'Основи бізнесу', 'link', true],
+    ['https://example.test/lesson.mp4?download=1', 'Основи бізнесу', 'file', true],
+    ['https://drive.google.com/file/d/lesson/view', 'Відео уроку', 'link', true],
+    ['https://example.test/lesson', 'Видео урока', 'link', true],
+    ['https://example.test/lesson', 'Lesson video', 'other', true],
+    ['https://example.test/guide.pdf', 'Відео: інструкція', 'link', false],
+    ['https://example.test/guide', 'Video editing guide', 'document', false],
+    ['https://youtube.com.example.test/watch?v=lesson123', 'Матеріал', 'link', false],
+    ['https://www.youtube.com/@school', 'Канал школи', 'link', false],
+    ['https://www.youtube.com/watch?v=', 'Матеріал', 'link', false],
+    ['https://example.test/guide', 'Інструкція', 'link', false]
+  ])('separates existing attachment %s (%s) without changing its link', (url, title, kind, isVideo) => {
+    const dto: HomeworkSummaryDto = { id: 'homework', title: 'Завдання', instructions: 'Інструкції', publishedAt: '', dueAt: null, xpReward: 0, classTitle: null, state: 'not_started', latestSubmission: null, resources: [
+      { id: 'attachment', kind: kind as NonNullable<HomeworkSummaryDto['resources']>[number]['kind'], title, url }
+    ] };
+    const html = renderHomework(dto);
+    expect(html.includes('homework-videos')).toBe(isVideo);
+    expect(html.includes('homework-materials')).toBe(!isVideo);
+    expect(html.match(/data-external=/g)).toHaveLength(1);
+    expect(html).toContain(`data-external="${url.replaceAll('&', '&amp;')}"`);
+    expect(html).toContain(title);
+  });
+
+  it('keeps multiple video buttons separate, safely labelled and available after submission', () => {
+    const dto: HomeworkSummaryDto = { id: 'homework', title: 'Завдання', instructions: 'Інструкції', publishedAt: '', dueAt: null, xpReward: 0, classTitle: null, state: 'submitted', latestSubmission: {
+      id: 'submission', status: 'submitted', attemptNumber: 1, contentText: 'Готово', contentUrl: null, studentComment: null, submittedAt: new Date().toISOString(), review: null
+    }, resources: [
+      { id: 'first', ...video, title: 'Відео <перше>' },
+      { id: 'second', ...video, url: 'https://example.test/second.mp4', title: 'Друга частина' },
+      { id: 'unsafe', ...video, url: 'javascript:alert(1)', title: 'Відео unsafe' }
+    ] };
+    const html = renderHomework(dto);
+    expect(html.match(/class="secondary-btn homework-video-btn"/g)).toHaveLength(2);
+    expect(html).toContain('Відео — Відео &lt;перше&gt;');
+    expect(html).toContain('Відео — Друга частина');
+    expect(html).not.toContain('Відео unsafe');
+    expect(html).not.toContain('homework-materials');
+    expect(html).not.toContain('id="homeworkSubmit"');
   });
 
   it('loads PostgreSQL resources only for visible homework and keeps their order', async () => {

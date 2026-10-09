@@ -109,6 +109,23 @@ function safeHttpsUrl(value) {
   } catch { return null; }
 }
 
+function isHomeworkVideoResource(resource) {
+  const href = safeHttpsUrl(resource.url);
+  if (!href) return false;
+  const url = new URL(href);
+  const host = url.hostname.toLowerCase();
+  const path = url.pathname;
+  if (/\.(?:mp4|webm|mov|m4v|ogv|avi|mkv)$/i.test(path)) return true;
+  if (['youtu.be', 'www.youtu.be'].includes(host) && path !== '/') return true;
+  if (['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtube-nocookie.com', 'www.youtube-nocookie.com'].includes(host)
+    && ((path === '/watch' && Boolean(url.searchParams.get('v'))) || /^\/(?:shorts|embed|live)\/[^/]+/.test(path))) return true;
+  if (['vimeo.com', 'www.vimeo.com', 'player.vimeo.com'].includes(host) && /^\/(?:video\/)?\d+(?:\/|$)/.test(path)) return true;
+  if (['loom.com', 'www.loom.com'].includes(host) && /^\/(?:share|embed)\/[^/]+/.test(path)) return true;
+  // Legacy attachments share the "link" kind; a named video can use any HTTPS host.
+  if (!['link', 'other'].includes(resource.kind) || /\.(?:pdf|docx?|pptx?|xlsx?|txt|md|zip|png|jpe?g|svg)$/i.test(path)) return false;
+  return /(?:^|[^\p{L}\p{N}])(?:відео|видео|video)(?=$|[^\p{L}\p{N}])/iu.test(resource.title ?? '');
+}
+
 function formatClassTime(value, timezone = 'Europe/Kyiv') {
   return new Intl.DateTimeFormat('uk-UA', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: timezone }).format(new Date(value));
 }
@@ -538,13 +555,16 @@ function homeworkPage() {
   const submission = homework.latestSubmission;
   const review = submission?.review;
   const resources = (homework.resources ?? []).map(resource => ({ ...resource, url: safeHttpsUrl(resource.url) })).filter(resource => resource.url);
+  const videos = resources.filter(isHomeworkVideoResource);
+  const materials = resources.filter(resource => !isHomeworkVideoResource(resource));
   const disabled=homework.withdrawn?'disabled':'';
   const canSubmit = !submission || submission.status === 'needs_revision' || submission.status === 'in_progress';
   return `<section class="page homework-page">
     <button class="lesson-back" data-back="homework">← ${backLabel('homework')}</button>
     <div class="page-title"><span class="section-kicker">HOMEWORK · ${homeworkStateLabel(homework.state)}</span><span class="zone-code">+${homework.xpReward} XP ЗА ЗАВЕРШЕННЯ</span><h1>${escapeHtml(homework.title)}</h1><p>${escapeHtml(homework.instructions)}</p></div>
     <section class="homework-brief"><div><span>ДЕДЛАЙН</span><strong>${homework.dueAt ? escapeHtml(formatClassTime(homework.dueAt,data.schedule.timezone)) : 'Без дедлайну'}</strong></div><div><span>ПОВ’ЯЗАНЕ ЗАНЯТТЯ</span><strong>${escapeHtml(homework.classTitle ?? 'Самостійна практика')}</strong></div></section>
-    ${resources.length ? `<section class="lesson-section homework-materials"><span class="section-kicker">МАТЕРІАЛИ ДО ЗАВДАННЯ</span><div class="recovery-materials">${resources.map(resource => `<button type="button" class="secondary-btn" data-external="${escapeHtml(resource.url)}">${escapeHtml(resource.title)} ${externalIcon()}</button>`).join('')}</div></section>` : ''}
+    ${videos.length ? `<section class="lesson-section homework-videos"><span class="section-kicker">ВІДЕО ДО ЗАВДАННЯ</span><div class="recovery-materials">${videos.map(resource => `<button type="button" class="secondary-btn homework-video-btn" data-external="${escapeHtml(resource.url)}">${videoIcon()} Відео — ${escapeHtml(resource.title)} ${externalIcon()}</button>`).join('')}</div></section>` : ''}
+    ${materials.length ? `<section class="lesson-section homework-materials"><span class="section-kicker">МАТЕРІАЛИ ДО ЗАВДАННЯ</span><div class="recovery-materials">${materials.map(resource => `<button type="button" class="secondary-btn" data-external="${escapeHtml(resource.url)}">${escapeHtml(resource.title)} ${externalIcon()}</button>`).join('')}</div></section>` : ''}
     ${review ? `<section class="teacher-feedback ${review.status}"><div class="feedback-score"><strong>${review.score}</strong><small>/10</small></div><div><span>ВІДГУК ВИКЛАДАЧА</span><h2>${escapeHtml(effortLabel(review.effort))}</h2><p>${escapeHtml(review.feedback)}</p></div></section>` : ''}
     ${submission ? `<section class="attempt-history"><span>СПРОБА ${submission.attemptNumber}</span><strong>${homeworkStateLabel(submission.status)}</strong><p>${escapeHtml(submission.studentComment || submission.contentText)}</p></section>` : ''}
     ${homework.withdrawn?'<p class="withdrawn-homework" role="status">Завдання більше не активне для вашої групи. Введений текст збережено на цій сторінці.</p>':''}
@@ -630,6 +650,10 @@ function arrowIcon() {
 
 function externalIcon() {
   return '<svg class="arrow-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5h9v9M19 5l-9 9M18 13v6H5V6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+}
+
+function videoIcon() {
+  return '<svg class="arrow-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 11 7-11 7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
 }
 
 function artifactIcon(type) {
