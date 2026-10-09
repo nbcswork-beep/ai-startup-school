@@ -1,5 +1,6 @@
 import {startAcademicSync} from './academic-sync.js';
 import { api } from './api.js';
+import { createActionGate, createNavigationGuard, navigationSection, performUiAction } from './student-interactions.js';
 
 const tg = window.Telegram?.WebApp;
 
@@ -31,6 +32,8 @@ function applyTelegramViewport() {
   const inset = side => `${Math.max(0, (Number(safe[side]) || 0) + (Number(content[side]) || 0))}px`;
   root.setProperty('--tg-app-safe-top', inset('top'));
   root.setProperty('--tg-app-safe-bottom', inset('bottom'));
+  root.setProperty('--tg-app-safe-left', inset('left'));
+  root.setProperty('--tg-app-safe-right', inset('right'));
   scheduleViewportLayout();
 }
 
@@ -62,6 +65,13 @@ let notificationReturnFocus = null;
 // Items that were unread when the panel opened stay highlighted until it closes,
 // even though they are persisted as read right away.
 let notificationFreshIds = new Set();
+let notificationRequestVersion = 0;
+const actionGate = createActionGate();
+const navigationGuard = createNavigationGuard();
+let lessonRequest = null;
+const detailOrigins = { lesson: { tab: 'learn', scroll: 0 }, homework: { tab: 'learn', scroll: 0 } };
+let returnScroll = null;
+let errorReturnPage = null;
 
 const icons = {
   home: '<path d="m3.5 10.8 8.5-7.3 8.5 7.3"/><path d="M5.5 9.5v10.8h13V9.5M9.4 20.3v-6.1h5.2v6.1"/>',
@@ -86,7 +96,7 @@ function stateIcon(status) {
   if (status === 'done') {
     return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.5 12.5 3.4 3.4 7.7-8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   }
-  if (status === 'current') {
+  if (status === 'current' || status === 'available') {
     return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5 16.5 12 8 18.5z"/></svg>';
   }
   return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="10" width="12" height="10" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.7 10V7.5a3.3 3.3 0 0 1 6.6 0V10" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
@@ -154,6 +164,7 @@ app.innerHTML = `
   </div>`;
 
 const view = document.querySelector('#view');
+view.tabIndex = -1;
 const notificationBell = document.querySelector('#notificationBell');
 const notificationDot = notificationBell.querySelector('.notification-dot');
 const notificationBackdrop = document.querySelector('#notificationBackdrop');
@@ -162,7 +173,63 @@ const notificationList = document.querySelector('#notificationList');
 const notificationCount = document.querySelector('#notificationCount');
 const markAllNotifications = document.querySelector('#markAllNotifications');
 let active = 'home';
+let requestedTab = 'home';
 let renderTimer;
+
+function showActionStatus(anchor, state, message) {
+  if (!anchor?.isConnected) return;
+  const host = anchor.closest('form') ?? (anchor.closest('.notification-panel') || anchor.parentElement);
+  let status = [...host.children].find(child => child.classList.contains('action-feedback'));
+  if (!status) { status = document.createElement('p'); status.className = 'action-feedback'; host.append(status); }
+  status.dataset.state = state;
+  status.setAttribute('role', state === 'error' ? 'alert' : 'status');
+  status.textContent = message;
+}
+
+function runAction(button, key, loadingText, operation, afterSuccess, options = {}) {
+  return performUiAction(actionGate, {
+    key, button, form: button.closest('form'), loadingText, operation, afterSuccess,
+    onStatus: (state, message) => showActionStatus(button, state, message), ...options
+  });
+}
+
+function rememberOrigin(page) {
+  if (!['lesson', 'homework'].includes(active)) detailOrigins[page] = { tab: active, scroll: window.scrollY };
+}
+
+function backLabel(page) { return nav.find(([id]) => id === detailOrigins[page].tab)?.[1] ?? 'Навчання'; }
+
+function updateTelegramBackButton() {
+  const mentorOpen = document.querySelector('#mentorBooking')?.hidden === false;
+  const visible = Boolean(data && (notificationPanelOpen || mentorOpen || lessonRequest || errorReturnPage || ['lesson', 'homework', 'ai'].includes(active)));
+  try { if (visible) tg?.BackButton?.show(); else tg?.BackButton?.hide(); } catch {}
+}
+
+function closeMentorBooking() {
+  const panel = document.querySelector('#mentorBooking');
+  if (!panel || panel.hidden) return false;
+  panel.hidden = true;
+  const opener = document.querySelector('#openMentorBooking');
+  opener?.setAttribute('aria-expanded', 'false');
+  opener?.focus();
+  updateTelegramBackButton();
+  return true;
+}
+
+function goBack(requestedPage) {
+  if (notificationPanelOpen) { closeNotifications(); return; }
+  if (closeMentorBooking()) return;
+  const page = typeof requestedPage === 'string' ? requestedPage : errorReturnPage ?? (lessonRequest ? 'lesson' : active);
+  const origin = detailOrigins[page];
+  if (origin) {
+    returnScroll = origin.scroll;
+    if (!lessonRequest && !errorReturnPage && history.state?.studentDetail === page) history.back();
+    else render(origin.tab);
+  } else if (active === 'ai') render('profile');
+}
+
+try { tg?.BackButton?.onClick(goBack); } catch {}
+document.querySelectorAll('.topbar button, .nav-item').forEach(button => { button.disabled = true; });
 
 function notificationTypeIcon(type) {
   if (type.includes('homework_reviewed')) return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 12 4 4 8-9"/><circle cx="12" cy="12" r="9"/></svg>';
@@ -207,9 +274,13 @@ function renderNotificationPanel() {
   notificationList.querySelectorAll('[data-notification-id]').forEach(item => item.addEventListener('click', async () => {
     const id = item.dataset.notificationId;
     if (data.notifications?.items.find(entry => entry.id === id)?.readAt) return navigateFromNotification(item);
-    try { data.notifications = await api.markNotificationsRead([id]); updateNotificationBell(); }
-    catch {}
-    navigateFromNotification(item);
+    if (actionGate.has(`notification:open:${id}`)) return;
+    item.disabled = true;
+    await actionGate.run(`notification:open:${id}`, async () => {
+      try { data.notifications = await actionGate.run('notifications:read', () => api.markNotificationsRead([id])); updateNotificationBell(); }
+      catch {}
+      if (notificationPanelOpen && item.isConnected) navigateFromNotification(item);
+    });
   }));
 }
 
@@ -220,26 +291,35 @@ function navigateFromNotification(item) {
 }
 
 async function openNotifications() {
-  if (notificationPanelOpen) return;
+  if (!data || notificationPanelOpen) return;
+  const requestVersion = ++notificationRequestVersion;
   notificationPanelOpen = true;
   notificationReturnFocus = document.activeElement;
   notificationBell.setAttribute('aria-expanded', 'true');
   notificationBackdrop.hidden = false;
   notificationPanel.hidden = false;
+  notificationBackdrop.tabIndex = -1;
+  for (const element of document.querySelectorAll('.topbar, .bottom-nav, #view')) element.inert = true;
   document.body.classList.add('notifications-open');
   notificationList.innerHTML = '<div class="notification-loading">Завантажуємо сповіщення…</div>';
   document.querySelector('#closeNotifications').focus();
+  updateTelegramBackButton();
   try {
-    data.notifications = await api.notifications();
+    const notifications = await actionGate.run('notifications:load', () => api.notifications());
+    if (!notificationPanelOpen || requestVersion !== notificationRequestVersion) return;
+    data.notifications = notifications;
     notificationFreshIds = new Set(data.notifications.items.filter(item => !item.readAt).map(item => item.id));
     renderNotificationPanel();
     const unreadIds = data.notifications.items.filter(item => !item.readAt).map(item => item.id);
     if (unreadIds.length) {
-      data.notifications = await api.markNotificationsRead(unreadIds);
-      renderNotificationPanel();
-      updateNotificationBell();
+      try {
+        data.notifications = await actionGate.run('notifications:read', () => api.markNotificationsRead(unreadIds));
+        if (!notificationPanelOpen || requestVersion !== notificationRequestVersion) { updateNotificationBell(); return; }
+        renderNotificationPanel(); updateNotificationBell();
+      } catch (error) { if (notificationPanelOpen && requestVersion === notificationRequestVersion) showActionStatus(markAllNotifications, 'error', error.message); }
     }
   } catch (error) {
+    if (!notificationPanelOpen || requestVersion !== notificationRequestVersion) return;
     notificationList.innerHTML = `<div class="notification-empty error"><strong>Не вдалося завантажити сповіщення</strong><small>${escapeHtml(error.message)}</small></div>`;
   }
 }
@@ -247,24 +327,29 @@ async function openNotifications() {
 function closeNotifications() {
   if (!notificationPanelOpen) return;
   notificationPanelOpen = false;
+  notificationRequestVersion += 1;
   notificationFreshIds = new Set();
   notificationBell.setAttribute('aria-expanded', 'false');
   notificationBackdrop.hidden = true;
   notificationPanel.hidden = true;
+  for (const element of document.querySelectorAll('.topbar, .bottom-nav, #view')) element.inert = false;
   document.body.classList.remove('notifications-open');
   notificationReturnFocus?.focus?.();
+  updateTelegramBackButton();
 }
 
 notificationBell.addEventListener('click', openNotifications);
 notificationBackdrop.addEventListener('click', closeNotifications);
 document.querySelector('#closeNotifications').addEventListener('click', closeNotifications);
 markAllNotifications.addEventListener('click', async () => {
-  markAllNotifications.disabled = true;
-  try { data.notifications = await api.markNotificationsRead(); renderNotificationPanel(); updateNotificationBell(); }
-  catch { markAllNotifications.disabled = false; }
+  if (!data) return;
+  await runAction(markAllNotifications, 'notifications:read', 'Позначаємо…', () => api.markNotificationsRead(), result => {
+    data.notifications = result; renderNotificationPanel(); updateNotificationBell();
+  }, { successText: 'Усі сповіщення прочитано' });
 });
 
 document.addEventListener('keydown', event => {
+  if (!notificationPanelOpen && event.key === 'Escape' && closeMentorBooking()) { event.preventDefault(); return; }
   if (!notificationPanelOpen) return;
   if (event.key === 'Escape') { event.preventDefault(); closeNotifications(); return; }
   if (event.key !== 'Tab') return;
@@ -299,14 +384,14 @@ function home() {
       ${nextClass ? `<section class="next-class-zone">
         <div class="class-signal"><span>LIVE</span><i></i></div>
         <div class="class-copy"><span>НАСТУПНЕ ЖИВЕ ЗАНЯТТЯ</span><h2>${escapeHtml(nextClass.title)}</h2><p>${escapeHtml(formatClassTime(nextClass.startsAt, data.schedule.timezone))} · ${nextClass.durationMinutes} хв · ${escapeHtml(nextClass.teacherName)}</p></div>
-        ${joinUrl ? `<button class="class-join" data-external="${escapeHtml(joinUrl)}">Приєднатися до заняття ${externalIcon()}</button>` : '<span class="class-link-pending">Посилання з’явиться перед заняттям</span>'}
+        ${joinUrl ? `<button class="class-join secondary-btn" data-external="${escapeHtml(joinUrl)}">Приєднатися до заняття ${externalIcon()}</button>` : '<span class="class-link-pending">Посилання з’явиться перед заняттям</span>'}
       </section>` : ''}
 
-      <section class="next-step" ${lesson ? `data-lesson="${lesson.id}"` : 'data-tab="learn"'}>
-        <div class="step-index"><small>УРОК</small><strong>${lesson?.number ?? '—'}</strong></div>
-        <div class="step-copy"><span>НАСТУПНИЙ КРОК</span><h2>${escapeHtml(lesson?.title ?? (homeData.course.totalLessons ? 'Маршрут завершено' : 'Занять ще немає'))}</h2><p>${escapeHtml(lesson?.summary ?? (homeData.course.totalLessons ? 'Переглянь свої досягнення та обери наступну ціль.' : 'Викладач ще не додав заняття для вашої групи.'))}</p></div>
-        <button class="round-arrow" aria-label="Відкрити урок">${arrowIcon()}</button>
-      </section>
+      <button type="button" class="next-step card-action" ${lesson ? `data-lesson="${lesson.id}"` : 'data-tab="learn"'} aria-label="${lesson ? `Відкрити урок: ${escapeHtml(lesson.title)}` : 'До навчання'}">
+        <span class="step-index"><small>УРОК</small><strong>${lesson?.number ?? '—'}</strong></span>
+        <span class="step-copy"><span>НАСТУПНИЙ КРОК</span><strong class="card-title">${escapeHtml(lesson?.title ?? (homeData.course.totalLessons ? 'Маршрут завершено' : 'Занять ще немає'))}</strong><span class="card-description">${escapeHtml(lesson?.summary ?? (homeData.course.totalLessons ? 'Переглянь свої досягнення та обери наступну ціль.' : 'Викладач ще не додав заняття для вашої групи.'))}</span><span class="card-action-label">${lesson ? 'Відкрити урок' : 'До навчання'}</span></span>
+        <span class="round-arrow" aria-hidden="true">${arrowIcon()}</span>
+      </button>
 
       ${homeData.homeworkDue ? `<button class="homework-pulse" data-homework="${homeData.homeworkDue.id}"><span>HOMEWORK · ${homeworkStateLabel(homeData.homeworkDue.state)}</span><strong>${escapeHtml(homeData.homeworkDue.title)}</strong><small>${homeData.homeworkDue.dueAt ? `До ${escapeHtml(formatClassTime(homeData.homeworkDue.dueAt, data.schedule.timezone))}` : 'Без дедлайну'}</small>${arrowIcon()}</button>` : ''}
 
@@ -317,11 +402,11 @@ function home() {
       </div>
 
       <div class="section-head"><div><span class="section-kicker">STARTUP LAB</span><h2>Ти зараз будуєш</h2></div><button class="text-link" data-tab="project">До проєкту ${arrowIcon()}</button></div>
-      <section class="project-preview" data-tab="project">
-        <div class="preview-rail">${Array.from({ length: projectData?.stage.total ?? 5 }, (_, index) => `<i class="${index < (projectData?.stage.position ?? 0) ? 'done' : ''}"></i>`).join('')}</div>
-        <div class="preview-copy"><span>MVP · ЕТАП ${projectData?.stage.position ?? 0} З ${projectData?.stage.total ?? 5}</span><h3>${escapeHtml(projectData?.title ?? 'Створи перший проєкт')}</h3><p>${escapeHtml(projectData?.tasks.find(task => task.status === 'in_progress')?.title ?? 'Сформулюй свою ідею')}</p></div>
-        <div class="preview-progress"><strong>${projectData?.completionPercent ?? 0}%</strong><span>створено</span></div>
-      </section>
+      <button type="button" class="project-preview card-action" data-tab="project" aria-label="Відкрити мій проєкт">
+        <span class="preview-rail" aria-hidden="true">${Array.from({ length: projectData?.stage.total ?? 5 }, (_, index) => `<i class="${index < (projectData?.stage.position ?? 0) ? 'done' : ''}"></i>`).join('')}</span>
+        <span class="preview-copy"><span>MVP · ЕТАП ${projectData?.stage.position ?? 0} З ${projectData?.stage.total ?? 5}</span><strong class="card-title">${escapeHtml(projectData?.title ?? 'Створи перший проєкт')}</strong><span class="card-description">${escapeHtml(projectData?.tasks.find(task => task.status === 'in_progress')?.title ?? 'Сформулюй свою ідею')}</span><span class="card-action-label">Відкрити проєкт</span></span>
+        <span class="preview-progress"><strong>${projectData?.completionPercent ?? 0}%</strong><span>створено</span></span>
+      </button>
     </section>`;
 }
 
@@ -329,6 +414,8 @@ function learn() {
   const learning = data.learning;
   const module = learning.modules[0];
   const lessonRows = module?.lessons ?? [];
+  const availableLessons = lessonRows.filter(lesson => ['current', 'available'].includes(lesson.state));
+  const primaryLesson = availableLessons.find(lesson => lesson.id === data.home.currentLesson?.id) ?? availableLessons[0];
   const weekClasses = data.schedule?.thisWeek ?? [];
   const homework = data.homework ?? [];
   const recoveries = data.recoveries ?? [];
@@ -357,23 +444,23 @@ function learn() {
       <div class="journey-label"><span>ТВОЯ ТРАЄКТОРІЯ</span><b>${learning.course.completedLessons} / ${learning.course.totalLessons} уроків</b></div>
       <div class="lesson-journey">
         ${lessonRows.map(lesson => {
-          const visualState = lesson.state === 'completed' ? 'done' : lesson.state === 'current' || lesson.state === 'available' ? 'current' : 'locked';
+          const visualState = lesson.state === 'completed' ? 'done' : ['current', 'available'].includes(lesson.state) ? lesson.id === primaryLesson?.id ? 'current' : 'available' : 'locked';
           return `
-          <button class="lesson-node ${visualState}" ${visualState === 'locked' ? 'aria-disabled="true"' : `data-lesson="${lesson.id}"`}>
+          <button type="button" class="lesson-node ${visualState}" ${visualState === 'locked' ? 'disabled aria-disabled="true"' : `data-lesson="${lesson.id}"`} aria-label="${visualState === 'locked' ? 'Урок поки недоступний' : visualState === 'current' ? 'Продовжити урок' : 'Відкрити урок'}: ${escapeHtml(lesson.title)}">
             <span class="lesson-marker">${stateIcon(visualState)}</span>
-            <span class="lesson-copy"><small>${lesson.number} · ${visualState === 'current' ? 'ЗАРАЗ' : visualState === 'done' ? 'ПРОЙДЕНО' : 'ЗАБЛОКОВАНО'}</small><strong>${escapeHtml(lesson.title)}</strong>${visualState === 'current' ? `<em>Продовжити урок · +${lesson.xpReward} XP</em>` : ''}</span>
-            <span class="lesson-action">${visualState === 'current' ? arrowIcon() : visualState === 'done' ? '+XP' : ''}</span>
+            <span class="lesson-copy"><small>${lesson.number} · ${visualState === 'current' ? 'ЗАРАЗ' : visualState === 'available' ? 'ДОСТУПНО' : visualState === 'done' ? 'ПРОЙДЕНО' : 'ЗАБЛОКОВАНО'}</small><strong>${escapeHtml(lesson.title)}</strong>${visualState === 'current' ? `<em>Продовжити урок · +${lesson.xpReward} XP</em>` : visualState === 'available' ? '<em>Відкрити урок</em>' : visualState === 'locked' ? '<em>Урок поки недоступний.</em>' : ''}</span>
+            <span class="lesson-action" aria-hidden="true">${visualState === 'current' || visualState === 'available' ? arrowIcon() : visualState === 'done' ? '+XP' : ''}</span>
           </button>`}).join('')}
       </div>
       <section class="homework-route">
         <div class="section-head compact-head"><div><span class="section-kicker">ПІСЛЯ ЗАНЯТТЯ</span><h2>Домашня практика</h2></div><span class="tiny-badge">${homework.filter(item=>item.state!=='completed').length} АКТИВНІ</span></div>
         ${homework.map(item => `<button class="homework-row ${item.state}" data-homework="${item.id}"><span class="homework-status">${homeworkStateLabel(item.state)}</span><strong>${escapeHtml(item.title)}</strong><small>${item.latestSubmission?.review ? `${item.latestSubmission.review.score}/10 · ${effortLabel(item.latestSubmission.review.effort)}` : item.dueAt ? `До ${formatClassTime(item.dueAt,data.schedule.timezone)}` : 'Без дедлайну'}</small>${arrowIcon()}</button>`).join('')}
       </section>
-      <section class="mentor-dock">
+      <button type="button" class="mentor-dock card-action" data-tab="profile" aria-label="Допомога ментора — обрати час у профілі">
         ${portalMarkup('mini')}
-        <div><span>ДОПОМОГА МЕНТОРА</span><strong>Потрібна підтримка?</strong><p>Забронюй коротку зустріч 1:1.</p></div>
-        <button data-tab="profile" aria-label="Відкрити допомогу ментора">${arrowIcon()}</button>
-      </section>
+        <div><span>ДОПОМОГА МЕНТОРА</span><strong>Потрібна підтримка?</strong><p>Забронюй коротку зустріч 1:1.</p><span class="card-action-label">Обрати час у профілі</span></div>
+        <span class="mentor-action" aria-hidden="true">${arrowIcon()}</span>
+      </button>
     </section>`;
 }
 
@@ -392,7 +479,7 @@ function project() {
         <div class="project-meter"><div><span>ГОТОВНІСТЬ</span><strong>${projectData.completionPercent}%</strong></div><i><b style="width:${projectData.completionPercent}%"></b></i></div>
       </section>
       <div class="stage-tags">${projectData.tags.map((tag,index)=>`${index?'<i></i>':''}<span>${escapeHtml(tag)}</span>`).join('')}</div>
-      <div class="section-head"><div><span class="section-kicker">СПРИНТ 01</span><h2>Збираємо основу</h2></div><button class="tiny-badge" id="editProject">РЕДАГУВАТИ</button></div>
+      <div class="section-head"><div><span class="section-kicker">СПРИНТ 01</span><h2>Збираємо основу</h2></div><button class="tiny-badge" id="editProject" type="button" aria-controls="projectEditor" aria-expanded="false">Редагувати проєкт</button></div>
       <div class="build-path">
         ${tasks.map(task => {
           const status = task.status === 'completed' ? 'done' : ['in_progress','available','pending_review','needs_revision'].includes(task.status) ? 'current' : 'locked';
@@ -400,17 +487,17 @@ function project() {
           <article class="build-step ${status}" >
             <span class="build-marker">${status === 'done' ? stateIcon('done') : task.number}</span>
             <div><strong>${escapeHtml(task.title)}</strong><small>${status === 'done' ? 'Підтверджено викладачем' : task.status==='pending_review'?'На перевірці':task.status==='needs_revision'?'На доопрацювання':status === 'current' ? `Напиши відповідь · +${task.xpReward} XP після перевірки` : 'Відкриється після підтвердження попереднього етапу'}</small>${task.feedback?`<small>Коментар: ${escapeHtml(task.feedback)}</small>`:''}</div>
-            <span class="build-reward">${status === 'done' ? `+${task.xpReward} XP` : status === 'current' ? arrowIcon() : stateIcon('locked')}</span>
+            <span class="build-reward">${status === 'done' ? `+${task.xpReward} XP` : status === 'current' ? '<span class="stage-direction">Відповідь нижче</span>' : stateIcon('locked')}</span>
           </article>`}).join('')}
       </div>
       ${currentTask?`<form class="project-editor" id="projectStageSubmit" data-project-id="${projectData.id}" data-task-id="${currentTask.id}" data-version="${currentTask.version??1}"><h3>Етап ${currentTask.number}: ${escapeHtml(currentTask.title)}</h3><p>${escapeHtml(currentTask.description)}</p>${currentTask.feedback?`<p class="stage-feedback">Коментар викладача: ${escapeHtml(currentTask.feedback)}</p>`:''}<label>Твоя відповідь<textarea name="contentText" maxlength="20000" required ${currentTask.status==='pending_review'?'disabled':''}>${escapeHtml(currentTask.contentText??'')}</textarea></label><p class="stage-review-status">${currentTask.status==='pending_review'?'Відповідь на перевірці. Наступний етап відкриє викладач.':'Наступний етап відкриється після підтвердження викладачем.'}</p><button class="primary-btn compact" ${currentTask.status==='pending_review'?'disabled':''}>${currentTask.status==='pending_review'?'На перевірці':'Надіслати на перевірку'}</button></form>`:''}
-      <section class="project-notes"><h2>Нотатки й посилання проєкту</h2><p>Тут можна зберігати ідеї, результати й посилання та отримувати коментарі викладача.</p>${(projectData.notes??[]).map(note=>`<article class="project-editor"><p>${escapeHtml(note.contentText)}</p>${note.contentUrl?`<a href="${escapeHtml(note.contentUrl)}" target="_blank" rel="noopener noreferrer">Відкрити посилання проєкту ↗</a>`:''}${note.replies.map(reply=>`<blockquote><strong>${escapeHtml(reply.teacherName)}</strong><p>${escapeHtml(reply.contentText)}</p></blockquote>`).join('')}</article>`).join('')}<form class="project-editor" id="projectNoteForm" data-project-id="${projectData.id}" data-version="${projectData.notes?.length??0}"><label>Нотатка<textarea name="contentText" maxlength="20000" placeholder="Ідея, результат чи питання до викладача…"></textarea></label><label>Посилання HTTPS<input type="url" name="contentUrl" maxlength="2048" placeholder="https://…"></label><button class="primary-btn compact">Зберегти нотатку</button></form></section>
+      <section class="project-notes"><h2>Нотатки й посилання проєкту</h2><p>Тут можна зберігати ідеї, результати й посилання та отримувати коментарі викладача.</p>${(projectData.notes??[]).map(note=>`<article class="project-editor"><p>${escapeHtml(note.contentText)}</p>${note.contentUrl?`<a href="${escapeHtml(note.contentUrl)}" target="_blank" rel="noopener noreferrer">Відкрити посилання проєкту ↗</a>`:''}${note.replies.map(reply=>`<blockquote><strong>${escapeHtml(reply.teacherName)}</strong><p>${escapeHtml(reply.contentText)}</p></blockquote>`).join('')}</article>`).join('')}<form class="project-editor" id="projectNoteForm" data-project-id="${projectData.id}" data-version="${projectData.notes?.length??0}"><label>Нотатка<textarea name="contentText" maxlength="20000" placeholder="Ідея, результат чи питання до викладача…"></textarea></label><label>Посилання HTTPS<input type="url" name="contentUrl" maxlength="2048" placeholder="https://…"></label><button class="secondary-btn compact">Зберегти нотатку</button></form></section>
       <section class="workspace-dock">
         <div class="workspace-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 8-4 4 4 4M15 8l4 4-4 4M14 5l-4 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
         <div><span>CODE WORKSPACE</span><h3>Продовжити збірку</h3><p>Повна web-версія з кодом і preview.</p></div>
-        <button class="primary-btn compact" id="openCode" ${projectData.workspaceUrl ? '' : 'disabled'}>Відкрити ${externalIcon()}</button>
+        <button class="secondary-btn compact" id="openCode" ${projectData.workspaceUrl ? '' : 'disabled'}>Відкрити робочий простір ${externalIcon()}</button>
       </section>
-      <form class="project-editor" id="projectEditor" data-project-id="${projectData.id}" hidden><label>Назва<input name="title" value="${escapeHtml(projectData.title)}" maxlength="120" required></label><label>Короткий опис<textarea name="summary" maxlength="1000">${escapeHtml(projectData.summary)}</textarea></label><button class="primary-btn compact">Зберегти</button></form>
+      <form class="project-editor" id="projectEditor" data-project-id="${projectData.id}" hidden><label>Назва<input name="title" value="${escapeHtml(projectData.title)}" maxlength="120" required></label><label>Короткий опис<textarea name="summary" maxlength="1000">${escapeHtml(projectData.summary)}</textarea></label><button class="secondary-btn compact">Зберегти зміни</button></form>
     </section>`;
 }
 
@@ -434,7 +521,7 @@ function portfolio() {
       <div class="portfolio-list">
         ${projects.length ? projects.map(item => `<article class="portfolio-project"><div class="portfolio-project-signal"><span>BUILD</span><strong>${escapeHtml(item.title.slice(0,2).toUpperCase())}</strong><i></i></div><div><span>${item.completionDate ? 'ЗАВЕРШЕНО' : 'В РОБОТІ'}</span><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.shortDescription)}</p><blockquote>${escapeHtml(item.reflection || 'Рефлексія з’явиться після наступного кроку.')}</blockquote><div class="skill-chips">${[...item.skills,...item.technologies].slice(0,5).map(skill=>`<small>${escapeHtml(skill)}</small>`).join('')}</div></div></article>`).join('') : '<section class="portfolio-empty"><h2>Твій перший проєкт уже близько</h2><p>Додай його свідомо, коли буде що показати й про що розповісти.</p></section>'}
       </div>
-      ${activeProject && !alreadyAdded ? `<button class="primary-btn portfolio-add" data-add-portfolio="${activeProject.id}">Додати ${escapeHtml(activeProject.title)} ${arrowIcon()}</button>` : ''}
+      ${activeProject && !alreadyAdded ? `<button class="primary-btn portfolio-add" data-add-portfolio="${activeProject.id}">Додати до портфоліо: ${escapeHtml(activeProject.title)} ${arrowIcon()}</button>` : ''}
       <div class="section-head"><div><span class="section-kicker">НАВИЧКИ</span><h2>Що вже вмієш</h2></div></div>
       <div class="skill-field">${(portfolioData?.skills ?? []).map(item=>`<article><span>LV ${item.level}</span><strong>${escapeHtml(item.title)}</strong><i><b style="width:${item.level*20}%"></b></i></article>`).join('')}</div>
     </section>`;
@@ -442,13 +529,13 @@ function portfolio() {
 
 function homeworkPage() {
   const homework = currentHomework ?? data.homework?.[0];
-  if (!homework) return `<section class="page homework-page"><button class="lesson-back" data-tab="learn">← Навчання</button><div class="page-title"><h1>Домашніх завдань поки немає</h1></div></section>`;
+  if (!homework) return `<section class="page homework-page"><button class="lesson-back" data-back="homework">← ${backLabel('homework')}</button><div class="page-title"><h1>Домашніх завдань поки немає</h1></div></section>`;
   const submission = homework.latestSubmission;
   const review = submission?.review;
   const disabled=homework.withdrawn?'disabled':'';
   const canSubmit = !submission || submission.status === 'needs_revision' || submission.status === 'in_progress';
   return `<section class="page homework-page">
-    <button class="lesson-back" data-tab="learn">← Навчання</button>
+    <button class="lesson-back" data-back="homework">← ${backLabel('homework')}</button>
     <div class="page-title"><span class="section-kicker">HOMEWORK · ${homeworkStateLabel(homework.state)}</span><span class="zone-code">+${homework.xpReward} XP ЗА ЗАВЕРШЕННЯ</span><h1>${escapeHtml(homework.title)}</h1><p>${escapeHtml(homework.instructions)}</p></div>
     <section class="homework-brief"><div><span>ДЕДЛАЙН</span><strong>${homework.dueAt ? escapeHtml(formatClassTime(homework.dueAt,data.schedule.timezone)) : 'Без дедлайну'}</strong></div><div><span>ПОВ’ЯЗАНЕ ЗАНЯТТЯ</span><strong>${escapeHtml(homework.classTitle ?? 'Самостійна практика')}</strong></div></section>
     ${review ? `<section class="teacher-feedback ${review.status}"><div class="feedback-score"><strong>${review.score}</strong><small>/10</small></div><div><span>ВІДГУК ВИКЛАДАЧА</span><h2>${escapeHtml(effortLabel(review.effort))}</h2><p>${escapeHtml(review.feedback)}</p></div></section>` : ''}
@@ -479,10 +566,11 @@ function ai() {
         <div class="ai-context" aria-label="Контекст AI ментора синхронізовано"><span>КОНТЕКСТ ПІДКЛЮЧЕНО</span><div><b>УРОК ${lessonData?.number ?? '—'}</b><i></i><em></em><i></i><b>MVP ${projectData?.completionPercent ?? 0}%</b></div><small>Ментор бачить твій поточний маршрут</small></div>
       </div>
       <form class="composer" id="composer" data-conversation="${conversation?.id ?? ''}">
-        <button type="button" class="attach" aria-label="Додати файл">+</button>
+        <button type="button" class="attach" disabled aria-label="Додавання файлів поки недоступне" aria-describedby="attachmentHint">+</button>
         <input id="aiInput" autocomplete="off" aria-label="Повідомлення AI ментору" placeholder="Запитай про урок або проєкт…">
         <button class="send" aria-label="Надіслати">${arrowIcon()}</button>
       </form>
+      <p class="attach-hint" id="attachmentHint">Додавання файлів поки недоступне.</p>
       <p class="ai-note">AI допомагає думати, але не робить проєкт замість тебе.</p>
     </section>`;
 }
@@ -509,9 +597,9 @@ function profile() {
       </div>
       <div class="profile-links">
         <button id="openNotificationsFromProfile" type="button"><span class="link-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 8h18c0-1-3-1-3-8M10 21h4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span><strong>Сповіщення</strong><small>Уроки та дедлайни</small></span>${arrowIcon()}</button>
-        <button id="openMentorBooking"><span class="link-icon">1:1</span><span><strong>Допомога ментора</strong><small>${escapeHtml(profileData.mentor?.displayName ?? 'Обери зручний час')}</small></span>${arrowIcon()}</button>
+        <button id="openMentorBooking" type="button" aria-controls="mentorBooking" aria-expanded="false"><span class="link-icon">1:1</span><span><strong>Допомога ментора</strong><small>${escapeHtml(profileData.mentor?.displayName ?? 'Обери зручний час')}</small></span>${arrowIcon()}</button>
       </div>
-      <section class="mentor-booking" id="mentorBooking" hidden><div class="section-head compact-head"><div><span class="section-kicker">MENTOR 1:1</span><h2>Забронювати зустріч</h2></div></div><div class="mentor-slots"><p class="empty-inline">Завантажуємо доступний час…</p></div></section>
+      <section class="mentor-booking" id="mentorBooking" hidden aria-labelledby="mentorBookingTitle"><div class="section-head compact-head"><div><span class="section-kicker">MENTOR 1:1</span><h2 id="mentorBookingTitle" tabindex="-1">Забронювати зустріч</h2></div></div><div class="mentor-slots"><p class="empty-inline">Завантажуємо доступний час…</p></div></section>
     </section>`;
 }
 
@@ -519,7 +607,7 @@ function lessonPage() {
   if (!currentLesson) return `<section class="page lesson-page"><div class="page-title"><h1>Урок не знайдено</h1></div><button class="primary-btn" data-tab="learn">До маршруту</button></section>`;
   const lesson = currentLesson;
   return `<section class="page lesson-page">
-    <button class="lesson-back" data-tab="learn">← Маршрут</button>
+    <button class="lesson-back" data-back="lesson">← ${backLabel('lesson')}</button>
     <div class="page-title"><span class="section-kicker">УРОК ${lesson.number} · ${escapeHtml(lesson.moduleTitle)}</span><span class="zone-code">${lesson.estimatedMinutes} ХВ · +${lesson.xpReward} XP</span><h1>${escapeHtml(lesson.title)}</h1><p>${escapeHtml(lesson.summary)}</p></div>
     ${lesson.content.explanation ? `<section class="lesson-console"><span>КЛЮЧОВА ІДЕЯ</span><h2>${escapeHtml(lesson.content.conceptName)}</h2><p>${escapeHtml(lesson.content.explanation)}</p></section>` : ''}
     ${lesson.content.examples.length ? `<section class="lesson-section"><span class="section-kicker">ПРИКЛАДИ</span>${lesson.content.examples.map(example => `<article><i></i><p>${escapeHtml(example)}</p></article>`).join('')}</section>` : ''}
@@ -561,12 +649,19 @@ function escapeHtml(str) {
 }
 
 function loadingView(label = 'Завантажуємо твій маршрут') {
+  clearTimeout(renderTimer);
+  errorReturnPage = null;
+  view.setAttribute('aria-busy', 'true');
   view.innerHTML = `<section class="system-state"><div class="state-signal"></div><span>SYNC</span><h1>${escapeHtml(label)}</h1><p>Ще мить — з’єднуємо прогрес, проєкт і AI ментора.</p></section>`;
 }
 
-function errorView(message, title = 'Не вдалося увійти') {
-  view.innerHTML = `<section class="system-state error-state"><div class="state-signal"></div><span>CONNECTION</span><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p><button class="primary-btn" id="retryBoot">Спробувати ще раз</button></section>`;
-  document.querySelector('#retryBoot')?.addEventListener('click', initialize);
+function errorView(message, title = 'Не вдалося увійти', retry = initialize, backPage = null) {
+  errorReturnPage = backPage;
+  view.removeAttribute('aria-busy');
+  view.innerHTML = `<section class="system-state error-state">${backPage ? `<button class="lesson-back" id="errorBack">← ${backLabel(backPage)}</button>` : ''}<div class="state-signal"></div><span>CONNECTION</span><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p><button class="primary-btn" id="retryBoot">Спробувати ще раз</button></section>`;
+  document.querySelector('#retryBoot')?.addEventListener('click', retry);
+  document.querySelector('#errorBack')?.addEventListener('click', () => goBack(backPage));
+  updateTelegramBackButton();
 }
 
 async function refreshData() {
@@ -574,19 +669,38 @@ async function refreshData() {
   firstName = data.home.viewer.firstName;
   document.querySelector('.avatar').textContent = firstName[0]?.toUpperCase() || 'A';
   updateNotificationBell();
+  document.querySelectorAll('.topbar button, .nav-item').forEach(button => { button.disabled = false; });
 }
 
 async function openLesson(id, updateHistory = true) {
+  if (!data) return;
+  if (lessonRequest?.id === id && navigationGuard.isCurrent(lessonRequest.token)) return lessonRequest.promise;
+  if (updateHistory) rememberOrigin('lesson');
+  requestedTab = 'lesson';
+  const token = navigationGuard.next();
   loadingView('Відкриваємо урок');
-  try {
-    currentLesson = await api.lesson(id);
-    render('lesson', updateHistory);
-  } catch (error) {
-    errorView(error.message, 'Не вдалося відкрити урок');
-  }
+  const request = { id, token, promise: null };
+  lessonRequest = request;
+  updateTelegramBackButton();
+  request.promise = (async () => {
+    try {
+      const lesson = await api.lesson(id);
+      if (!navigationGuard.isCurrent(token)) return;
+      currentLesson = lesson;
+      render('lesson', updateHistory);
+    } catch (error) {
+      if (navigationGuard.isCurrent(token)) errorView(error.message, 'Не вдалося відкрити урок', () => openLesson(id, updateHistory), 'lesson');
+    } finally {
+      if (lessonRequest === request) lessonRequest = null;
+      updateTelegramBackButton();
+    }
+  })();
+  return request.promise;
 }
 
 function openHomework(id, updateHistory = true) {
+  if (!data) return;
+  if (updateHistory) rememberOrigin('homework');
   currentHomework = data.homework?.find(item => item.id === id) ?? null;
   render('homework', updateHistory);
 }
@@ -607,32 +721,48 @@ function haptic(type = 'impact') {
 }
 
 function render(tab, updateHistory = true) {
+  if (!data) return;
+  const token = navigationGuard.next();
+  errorReturnPage = null;
   const next = templates[tab] ? tab : 'home';
+  requestedTab = next;
   clearTimeout(renderTimer);
   view.classList.add('leaving');
 
   renderTimer = setTimeout(() => {
+    if (!navigationGuard.isCurrent(token)) return;
     const drafts=active===next?[...view.querySelectorAll('#homeworkSubmit,#projectStageSubmit,#projectEditor,#createProject,#projectNoteForm')].map(form=>({formId:form.id,key:form.dataset.homeworkId??form.dataset.taskId??form.dataset.projectId??'',version:form.dataset.version??'',requestId:form.dataset.requestId,hidden:form.hidden,fields:[...form.querySelectorAll('input[name],textarea[name]')].map(field=>({name:field.name,value:field.value,focused:document.activeElement===field,start:field.selectionStart,end:field.selectionEnd}))})):[];
     active = next;
     view.innerHTML = templates[active]();
+    view.removeAttribute('aria-busy');
     document.querySelectorAll('.nav-item').forEach(item => {
-      const isActive = item.dataset.tab === active;
+      const isActive = item.dataset.tab === navigationSection(active);
       item.classList.toggle('active', isActive);
       if (isActive) item.setAttribute('aria-current', 'page');
       else item.removeAttribute('aria-current');
     });
-    document.querySelector('.app-shell')?.scrollTo({ top: 0, behavior: 'auto' });
+    const scroll = returnScroll ?? 0;
+    returnScroll = null;
+    document.querySelector('.app-shell')?.scrollTo({ top: scroll, behavior: 'auto' });
+    window.scrollTo({ top: scroll, behavior: 'auto' });
     view.classList.remove('leaving');
     wirePage();
     for(const draft of drafts){const nextForm=view.querySelector('#'+draft.formId);if(!nextForm)continue;const key=nextForm.dataset.homeworkId??nextForm.dataset.taskId??nextForm.dataset.projectId??'';if(key!==draft.key||(['projectStageSubmit','projectNoteForm'].includes(draft.formId)&&nextForm.dataset.version!==draft.version))continue;if(draft.requestId)nextForm.dataset.requestId=draft.requestId;nextForm.hidden=draft.hidden;for(const item of draft.fields){const field=nextForm.elements.namedItem(item.name);if(field){field.value=item.value;if(item.focused&&!field.disabled){field.focus();if(item.start!==null)field.setSelectionRange(item.start,item.end);}}}}
 
     const targetHash = active === 'lesson' && currentLesson ? `#lesson=${currentLesson.id}` : active === 'homework' && currentHomework ? `#homework=${currentHomework.id}` : `#${active}`;
-    if (updateHistory && location.hash !== targetHash) history.pushState({ tab: active }, '', targetHash);
+    if (updateHistory && location.hash !== targetHash) history.pushState({ tab: active, ...(['lesson', 'homework'].includes(active) ? { studentDetail: active, detailOrigin: detailOrigins[active] } : {}) }, '', targetHash);
+    updateTelegramBackButton();
+    if (updateHistory) {
+      const title = view.querySelector('h1') ?? view;
+      title.tabIndex = -1;
+      title.focus({ preventScroll: true });
+    }
     haptic('selection');
   }, 70);
 }
 
 function wirePage() {
+  view.querySelectorAll('[data-back]').forEach(button => { button.onclick = () => goBack(button.dataset.back); });
   view.querySelectorAll('[data-tab]').forEach(element => {
     element.onclick = event => {
       event.stopPropagation();
@@ -651,118 +781,127 @@ function wirePage() {
     element.onclick = event => { event.stopPropagation(); openExternal(element.dataset.external); };
   });
   view.querySelectorAll('[data-recovery-mentor]').forEach(button => {
-    button.onclick = async event => {
+    button.onclick = event => {
       event.stopPropagation();
-      button.disabled = true; button.textContent = 'Бронюємо…';
-      try {
-        await api.bookMentor(button.dataset.recoveryMentor);
-        button.textContent = 'Зустріч зарезервовано'; button.classList.add('booked');
+      runAction(button, 'mentor:book', 'Бронюємо…', () => api.bookMentor(button.dataset.recoveryMentor), () => {
+        button.classList.add('booked');
         tg?.showAlert?.('Зустріч із ментором зарезервовано. Деталі з’являться у профілі.');
-      } catch (error) { button.disabled = false; button.textContent = error.message; }
+      }, { successText: 'Зустріч зарезервовано' });
     };
   });
 
-  document.querySelector('#completeLesson')?.addEventListener('click', async event => {
-    const button = event.currentTarget; button.disabled = true; button.textContent = 'Зберігаємо…';
-    try { await api.completeLesson(button.dataset.lesson, crypto.randomUUID()); await refreshData(); currentLesson = await api.lesson(button.dataset.lesson); render('lesson', false); }
-    catch (error) { button.disabled = false; button.textContent = error.message; }
+  document.querySelector('#completeLesson')?.addEventListener('click', event => {
+    const button = event.currentTarget, id = button.dataset.lesson;
+    runAction(button, `lesson:complete:${id}`, 'Надсилаємо…', () => api.completeLesson(id, button.dataset.requestId ?? (button.dataset.requestId = crypto.randomUUID())), async () => {
+      await refreshData();
+      const lesson = await api.lesson(id);
+      if (active === 'lesson' && currentLesson?.id === id && button.isConnected) { currentLesson = lesson; render('lesson', false); }
+    }, { successText: 'Надіслано на підтвердження' });
   });
 
   const form = document.querySelector('#composer');
   if (form) {
-    const input = document.querySelector('#aiInput');
-    const chat = document.querySelector('#chat');
-    const submit = async text => {
-      if (!text?.trim()) return;
+    const input = document.querySelector('#aiInput'), chat = document.querySelector('#chat'), send = form.querySelector('.send');
+    const prompts = [...view.querySelectorAll('[data-prompt]')], key = `ai:send:${form.dataset.conversation}`;
+    const updateComposer = () => { const busy = actionGate.has(key); send.disabled = busy || !input.value.trim(); for (const prompt of prompts) prompt.disabled = busy; };
+    const submit = async rawText => {
+      const text = rawText?.trim();
+      if (!text || actionGate.has(key)) return;
       chat.querySelector('.ai-context')?.remove();
-      chat.insertAdjacentHTML('beforeend', `<div class="message user-msg"><p>${escapeHtml(text.trim())}</p></div>`);
-      input.value = '';
-      chat.scrollTop = chat.scrollHeight;
-      input.disabled = true;
-      try {
-        const result = await api.sendMessage(form.dataset.conversation, text.trim(), crypto.randomUUID());
+      const optimistic = document.createElement('div'); optimistic.className = 'message user-msg';
+      optimistic.innerHTML = `<p>${escapeHtml(text)}</p>`; chat.append(optimistic); chat.scrollTop = chat.scrollHeight;
+      const pending = runAction(send, key, '…', () => api.sendMessage(form.dataset.conversation, text, crypto.randomUUID()), result => {
         aiMessages.push(result.userMessage, result.assistantMessage);
-        if (!document.body.contains(chat)) return;
+        if (!chat.isConnected) return;
         chat.insertAdjacentHTML('beforeend', `<div class="message ai-msg"><div class="msg-avatar">${svgIcon('ai')}</div><p>${escapeHtml(result.assistantMessage.content)}</p></div>`);
         chat.scrollTop = chat.scrollHeight;
-      } catch (error) {
-        chat.insertAdjacentHTML('beforeend', `<div class="message ai-msg error-message"><p>${escapeHtml(error.message)}</p></div>`);
-      } finally { input.disabled = false; input.focus(); }
+      }, { keepDisabled: false, successText: 'Відповідь отримано', onStatus: (state, message) => showActionStatus(send, state, state === 'loading' ? 'Ментор готує відповідь…' : message) });
+      input.value = ''; updateComposer();
+      const result = await pending;
+      if (!result.ok && !result.committed && input.isConnected) { optimistic.remove(); input.value = text; }
+      if (input.isConnected) { updateComposer(); input.focus(); }
     };
-    form.onsubmit = event => {
-      event.preventDefault();
-      submit(input.value);
-    };
-    document.querySelectorAll('[data-prompt]').forEach(button => {
-      button.onclick = () => submit(button.dataset.prompt);
-    });
+    input.addEventListener('input', updateComposer);
+    form.onsubmit = event => { event.preventDefault(); submit(input.value); };
+    for (const button of prompts) button.onclick = () => submit(button.dataset.prompt);
+    updateComposer();
   }
 
   const createForm = document.querySelector('#createProject');
-  createForm?.addEventListener('submit', async event => {
-    event.preventDefault(); const values = new FormData(createForm); const button = createForm.querySelector('button'); button.disabled = true;
-    try { await api.createProject({ title: values.get('title'), summary: values.get('summary') }); await refreshData(); render('project', false); }
-    catch (error) { button.disabled = false; button.textContent = error.message; }
+  createForm?.addEventListener('submit', event => {
+    event.preventDefault(); const values = new FormData(createForm), button = createForm.querySelector('button');
+    runAction(button, 'project:create', 'Створюємо…', () => api.createProject({ title: values.get('title'), summary: values.get('summary') }), async () => {
+      await refreshData(); if (createForm.isConnected) render('project', false);
+    }, { successText: 'Проєкт створено' });
   });
-  document.querySelector('#editProject')?.addEventListener('click', () => { document.querySelector('#projectEditor').hidden = false; });
+  document.querySelector('#editProject')?.addEventListener('click', event => {
+    const editor = document.querySelector('#projectEditor'); editor.hidden = !editor.hidden;
+    event.currentTarget.setAttribute('aria-expanded', String(!editor.hidden));
+    if (!editor.hidden) { editor.scrollIntoView({ block: 'center', behavior: 'auto' }); editor.querySelector('input').focus({ preventScroll: true }); }
+  });
   const editor = document.querySelector('#projectEditor');
-  editor?.addEventListener('submit', async event => {
-    event.preventDefault(); const values = new FormData(editor); const projectData = data.projects.find(item => item.status === 'active') ?? data.projects[0];
-    try { await api.updateProject(projectData.id, { title: values.get('title'), summary: values.get('summary') }); await refreshData(); render('project', false); }
-    catch (error) { editor.querySelector('button').textContent = error.message; }
+  editor?.addEventListener('submit', event => {
+    event.preventDefault(); const values = new FormData(editor), button = editor.querySelector('button');
+    const projectData = data.projects.find(item => item.status === 'active') ?? data.projects[0];
+    runAction(button, `project:edit:${projectData.id}`, 'Зберігаємо…', () => api.updateProject(projectData.id, { title: values.get('title'), summary: values.get('summary') }), async () => {
+      await refreshData(); if (editor.isConnected) { editor.hidden = true; render('project', false); }
+    }, { successText: 'Зміни збережено' });
   });
-  const noteForm=view.querySelector('#projectNoteForm');
-  noteForm?.addEventListener('submit',async event=>{
-    event.preventDefault();const button=noteForm.querySelector('button'),fields=new FormData(noteForm);button.disabled=true;
-    const input={contentText:fields.get('contentText'),clientRequestId:noteForm.dataset.requestId??(noteForm.dataset.requestId=crypto.randomUUID())};if(fields.get('contentUrl'))input.contentUrl=fields.get('contentUrl');
-    try{await api.addProjectNote(noteForm.dataset.projectId,input);await refreshData();render('project',false);}
-    catch(error){button.disabled=false;button.textContent=error.message;}
+  const noteForm = view.querySelector('#projectNoteForm');
+  noteForm?.addEventListener('submit', event => {
+    event.preventDefault(); const button = noteForm.querySelector('button'), fields = new FormData(noteForm);
+    const input = { contentText: fields.get('contentText'), clientRequestId: noteForm.dataset.requestId ?? (noteForm.dataset.requestId = crypto.randomUUID()) };
+    if (fields.get('contentUrl')) input.contentUrl = fields.get('contentUrl');
+    runAction(button, `project:note:${noteForm.dataset.projectId}`, 'Зберігаємо…', () => api.addProjectNote(noteForm.dataset.projectId, input), async () => {
+      await refreshData(); if (noteForm.isConnected) render('project', false);
+    }, { successText: 'Нотатку збережено' });
   });
-  const stageForm=view.querySelector('#projectStageSubmit');
-  stageForm?.addEventListener('submit',async event=>{
-    event.preventDefault();const button=stageForm.querySelector('button'),contentText=stageForm.querySelector('textarea').value;button.disabled=true;stageForm.querySelector('textarea').disabled=true;
-    try{await api.submitProjectTask(stageForm.dataset.projectId,stageForm.dataset.taskId,{contentText,expectedVersion:Number(stageForm.dataset.version)});await refreshData();render('project',false);}
-    catch(error){button.disabled=false;stageForm.querySelector('textarea').disabled=false;button.textContent=error.message;}
+  const stageForm = view.querySelector('#projectStageSubmit');
+  stageForm?.addEventListener('submit', event => {
+    event.preventDefault(); const button = stageForm.querySelector('button'), contentText = stageForm.querySelector('textarea').value;
+    runAction(button, `project:stage:${stageForm.dataset.taskId}`, 'Надсилаємо…', () => api.submitProjectTask(stageForm.dataset.projectId, stageForm.dataset.taskId, { contentText, expectedVersion: Number(stageForm.dataset.version) }), async () => {
+      await refreshData(); if (stageForm.isConnected) render('project', false);
+    }, { successText: 'Відповідь надіслано на перевірку' });
   });
 
   document.querySelector('#openCode')?.addEventListener('click', () => {
     const url = (data.projects.find(item => item.status === 'active') ?? data.projects[0])?.workspaceUrl;
-    if (!url) return;
-    openExternal(url);
+    if (url) openExternal(url);
   });
-
-  document.querySelector('[data-add-portfolio]')?.addEventListener('click', async event => {
-    const button = event.currentTarget; button.disabled = true; button.textContent = 'Додаємо до колекції…';
-    try { data.portfolio = await api.addToPortfolio(button.dataset.addPortfolio); render('portfolio', false); }
-    catch (error) { button.disabled = false; button.textContent = error.message; }
+  document.querySelector('[data-add-portfolio]')?.addEventListener('click', event => {
+    const button = event.currentTarget;
+    runAction(button, `portfolio:add:${button.dataset.addPortfolio}`, 'Додаємо до портфоліо…', () => api.addToPortfolio(button.dataset.addPortfolio), result => {
+      data.portfolio = result; if (button.isConnected) render('portfolio', false);
+    }, { successText: 'Проєкт додано до портфоліо' });
   });
 
   const homeworkForm = document.querySelector('#homeworkSubmit');
-  homeworkForm?.addEventListener('submit', async event => {
-    event.preventDefault();
-    const values = new FormData(homeworkForm);
-    const contentUrl = String(values.get('contentUrl') ?? '').trim();
-    const button = homeworkForm.querySelector('button'); button.disabled = true; button.textContent = 'Надсилаємо…';
-    try {
-      await api.submitHomework(homeworkForm.dataset.homeworkId, { contentText: String(values.get('contentText') ?? ''), ...(contentUrl ? { contentUrl } : {}), studentComment: String(values.get('studentComment') ?? '') });
-      data.homework = await api.homework(); currentHomework = data.homework.find(item=>item.id===homeworkForm.dataset.homeworkId); data.home.homeworkDue = data.homework.find(item=>item.state!=='completed') ?? null; render('homework', false);
-    } catch (error) { button.disabled = false; button.textContent = error.message; }
+  homeworkForm?.addEventListener('submit', event => {
+    event.preventDefault(); const values = new FormData(homeworkForm), contentUrl = String(values.get('contentUrl') ?? '').trim(), button = homeworkForm.querySelector('button');
+    runAction(button, `homework:submit:${homeworkForm.dataset.homeworkId}`, 'Надсилаємо…', () => api.submitHomework(homeworkForm.dataset.homeworkId, { contentText: String(values.get('contentText') ?? ''), ...(contentUrl ? { contentUrl } : {}), studentComment: String(values.get('studentComment') ?? '') }), async () => {
+      data.homework = await api.homework(); data.home.homeworkDue = data.homework.find(item => item.state !== 'completed') ?? null;
+      if (homeworkForm.isConnected) { currentHomework = data.homework.find(item => item.id === homeworkForm.dataset.homeworkId); render('homework', false); }
+    }, { successText: 'Роботу надіслано' });
   });
 
   document.querySelector('#openNotificationsFromProfile')?.addEventListener('click', openNotifications);
-
-  document.querySelector('#openMentorBooking')?.addEventListener('click', async () => {
-    const panel = document.querySelector('#mentorBooking'); panel.hidden = false;
+  document.querySelector('#openMentorBooking')?.addEventListener('click', async event => {
+    const button = event.currentTarget, panel = document.querySelector('#mentorBooking');
+    if (!panel.hidden) { closeMentorBooking(); return; }
+    panel.hidden = false; button.setAttribute('aria-expanded', 'true'); updateTelegramBackButton();
     const list = panel.querySelector('.mentor-slots');
-    try {
-      const slots = await api.mentorSlots();
-      list.innerHTML = slots.length ? slots.map(slot=>`<button class="mentor-slot" data-mentor-slot="${slot.id}" ${slot.available?'':'disabled'}><span>${escapeHtml(formatClassTime(slot.startsAt,slot.timezone))}</span><strong>${escapeHtml(slot.mentorName)}</strong><small>${escapeHtml(slot.mentorTitle)}</small></button>`).join('') : '<p class="empty-inline">Нові вікна з’являться незабаром.</p>';
-      list.querySelectorAll('[data-mentor-slot]').forEach(slotButton => slotButton.onclick = async () => {
-        slotButton.disabled = true; slotButton.textContent = 'Бронюємо…';
-        try { await api.bookMentor(slotButton.dataset.mentorSlot); slotButton.textContent = 'Зустріч зарезервовано'; slotButton.classList.add('booked'); }
-        catch (error) { slotButton.disabled = false; slotButton.textContent = error.message; }
-      });
-    } catch (error) { list.innerHTML = `<p class="empty-inline">${escapeHtml(error.message)}</p>`; }
+    await runAction(button, 'mentor:availability', 'Шукаємо час…', () => api.mentorSlots(), slots => {
+      if (!panel.isConnected || panel.hidden) return;
+      list.innerHTML = slots.length ? slots.map(slot => `<button type="button" class="mentor-slot" data-mentor-slot="${slot.id}" ${slot.available ? '' : 'disabled'}><span>${escapeHtml(formatClassTime(slot.startsAt, slot.timezone))}</span><strong>${escapeHtml(slot.mentorName)}</strong><small>${escapeHtml(slot.mentorTitle)}</small><small>${slot.available ? 'Забронювати цей час' : 'Час недоступний'}</small></button>`).join('') : '<p class="empty-inline">Нові вікна з’являться незабаром.</p>';
+      list.querySelectorAll('[data-mentor-slot]').forEach(slotButton => { slotButton.onclick = async () => {
+        if (actionGate.has('mentor:book')) return;
+        const siblings = [...list.querySelectorAll('[data-mentor-slot]')].filter(item => item !== slotButton).map(item => ({ item, disabled: item.disabled }));
+        for (const { item } of siblings) item.disabled = true;
+        await runAction(slotButton, 'mentor:book', 'Бронюємо…', () => api.bookMentor(slotButton.dataset.mentorSlot), () => { slotButton.classList.add('booked'); }, { successText: 'Зустріч зарезервовано' });
+        for (const { item, disabled } of siblings) item.disabled = disabled;
+      }; });
+      panel.scrollIntoView({ block: 'nearest', behavior: 'auto' }); document.querySelector('#mentorBookingTitle')?.focus({ preventScroll: true });
+    }, { keepDisabled: false, successText: 'Обери зручний час' });
   });
 }
 
@@ -774,6 +913,7 @@ document.addEventListener('click', event => {
 async function renderFromLocation() {
   if (!data) return;
   const requested = location.hash.replace('#', '');
+  if (history.state?.studentDetail && history.state.detailOrigin) detailOrigins[history.state.studentDetail] = history.state.detailOrigin;
   if (requested.startsWith('lesson=')) { await openLesson(requested.slice(7), false); return; }
   if (requested.startsWith('homework=')) { openHomework(requested.slice(9), false); return; }
   const next = templates[requested] ? requested : 'home';
@@ -784,24 +924,29 @@ window.addEventListener('popstate', renderFromLocation);
 window.addEventListener('hashchange', renderFromLocation);
 
 async function initialize() {
+  if (actionGate.has('initialize')) return actionGate.get('initialize');
   authError = '';
   loadingView();
-  try {
-    await api.authenticate();
-    await refreshData();
-    if (!data.conversations.length) data.conversations.push(await api.createConversation('Мій маршрут'));
-    aiMessages = await api.messages(data.conversations[0].id);
-    await renderFromLocation();
-  } catch (error) {
-    authError = error.message;
-    errorView(authError);
-  }
+  return actionGate.run('initialize', async () => {
+    try {
+      await api.authenticate();
+      await refreshData();
+      if (!data.conversations.length) data.conversations.push(await api.createConversation('Мій маршрут'));
+      aiMessages = await api.messages(data.conversations[0].id);
+      await renderFromLocation();
+    } catch (error) { authError = error.message; errorView(authError); }
+  });
 }
 
 initialize();
 
-startAcademicSync({revision:api.revision,canApply:()=>Boolean(data)&&!notificationPanelOpen,refresh:async()=>{
+const canApplyAcademicSync = () => Boolean(data) && !notificationPanelOpen && !actionGate.busy && !lessonRequest && !errorReturnPage && requestedTab === active;
+startAcademicSync({revision:api.revision,canApply:canApplyAcademicSync,refresh:async()=>{
+  const actionVersion = actionGate.version;
+  if (!canApplyAcademicSync()) throw new Error('Student controls are busy');
   const [schedule,homework,learning,home,projects,recoveries]=await Promise.all([api.schedule(),api.homework(),api.learning(),api.home(),api.projects(),api.recoveries()]);
+  // Let the next poll refresh instead of applying a snapshot from before a user action.
+  if (!canApplyAcademicSync() || actionGate.version !== actionVersion) throw new Error('Student controls changed during refresh');
   data.schedule=schedule;data.home.nextClass=schedule.nextClass;data.homework=homework;data.home.homeworkDue=homework.find(h=>h.state!=='completed')??null;
   data.learning=learning;data.home.course=learning.course;data.home.currentLesson=learning.modules.flatMap(module=>module.lessons).find(lesson=>lesson.state==='current'||lesson.state==='available')??null;
   data.recoveries=recoveries;data.projects=projects;data.home.currentProject=home.currentProject;data.home.projectCount=projects.length;data.profile.projectCount=projects.length;
@@ -810,6 +955,7 @@ startAcademicSync({revision:api.revision,canApply:()=>Boolean(data)&&!notificati
     const lessonId=currentLesson.id;
     const visible=learning.modules.some(module=>module.lessons.some(lesson=>lesson.id===lessonId));
     const refreshed=visible?await api.lesson(lessonId):null;
+    if (!canApplyAcademicSync() || actionGate.version !== actionVersion) throw new Error('Student controls changed during refresh');
     if(active==='lesson'&&currentLesson?.id===lessonId){currentLesson=refreshed;render('lesson',false);}
   }
   if(active==='home'||active==='learn'||active==='profile'||active==='project')render(active,false);
