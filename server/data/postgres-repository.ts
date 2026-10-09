@@ -159,7 +159,8 @@ export class PostgresRepository implements AppRepository {
         left join lateral(select * from public.homework_submissions hs where hs.homework_id=h.id and hs.student_id=$1 order by attempt_number desc limit 1)s on true
         left join public.homework_reviews r on r.submission_id=s.id
         where h.status='published' and h.publish_at<=now() order by coalesce(h.due_at,'infinity')`, [userId]);
-      return result.rows.map(row => this.homework(row));
+      const resources = result.rows.length ? await db.query(`select id,homework_id,kind,title,external_url from public.homework_resources where homework_id=any($1::uuid[]) order by homework_id,position`, [result.rows.map(row => row.id)]) : { rows: [] };
+      return result.rows.map(row => ({ ...this.homework(row), resources: resources.rows.filter(resource => resource.homework_id === row.id).map(resource => ({ id: resource.id, kind: resource.kind, title: resource.title, url: resource.external_url })) }));
     });
   }
 
