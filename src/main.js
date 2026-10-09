@@ -260,7 +260,11 @@ function updateNotificationBell() {
 function renderNotificationPanel() {
   const notifications = data?.notifications ?? { items: [], unreadCount: 0 };
   notificationCount.textContent = notificationFreshIds.size ? `${notificationFreshIds.size} нових` : `${notifications.unreadCount} непрочитаних`;
-  markAllNotifications.disabled = notifications.unreadCount < 1;
+  markAllNotifications.disabled = notifications.unreadCount < 1 || actionGate.has('notifications:read');
+  if (!actionGate.has('notifications:read')) {
+    markAllNotifications.textContent = 'Позначити всі прочитаними';
+    delete markAllNotifications.dataset.actionState;
+  }
   notificationList.innerHTML = notifications.items.length ? notifications.items.map(item => {
     const isNew = !item.readAt || notificationFreshIds.has(item.id);
     const destination = item.destination?.homeworkId ? ` data-homework="${escapeHtml(item.destination.homeworkId)}"` : item.destination?.tab ? ` data-notification-tab="${escapeHtml(item.destination.tab)}"` : '';
@@ -298,6 +302,7 @@ async function openNotifications() {
   notificationBell.setAttribute('aria-expanded', 'true');
   notificationBackdrop.hidden = false;
   notificationPanel.hidden = false;
+  notificationPanel.querySelector('.action-feedback')?.remove();
   notificationBackdrop.tabIndex = -1;
   for (const element of document.querySelectorAll('.topbar, .bottom-nav, #view')) element.inert = true;
   document.body.classList.add('notifications-open');
@@ -724,6 +729,7 @@ function render(tab, updateHistory = true) {
   if (!data) return;
   const token = navigationGuard.next();
   errorReturnPage = null;
+  lessonRequest = null;
   const next = templates[tab] ? tab : 'home';
   requestedTab = next;
   clearTimeout(renderTimer);
@@ -917,7 +923,7 @@ async function renderFromLocation() {
   if (requested.startsWith('lesson=')) { await openLesson(requested.slice(7), false); return; }
   if (requested.startsWith('homework=')) { openHomework(requested.slice(9), false); return; }
   const next = templates[requested] ? requested : 'home';
-  if (next !== active || !view.querySelector('.page')) render(next, false);
+  if (next !== active || requestedTab !== next || !view.querySelector('.page')) render(next, false);
 }
 
 window.addEventListener('popstate', renderFromLocation);
@@ -961,3 +967,4 @@ startAcademicSync({revision:api.revision,canApply:canApplyAcademicSync,refresh:a
   if(active==='home'||active==='learn'||active==='profile'||active==='project')render(active,false);
   if(active==='homework'&&currentHomework){currentHomework=homework.find(h=>h.id===currentHomework.id)??{...currentHomework,withdrawn:true};render('homework',false);}
 }});
+
