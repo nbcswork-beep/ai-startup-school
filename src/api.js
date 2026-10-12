@@ -15,7 +15,7 @@ async function request(path, options = {}, retry = true) {
   }
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.error?.message || 'Не вдалося завантажити дані');
+    throw Object.assign(new Error(payload.error?.message || 'Не вдалося завантажити дані'), { status: response.status, code: payload.error?.code });
   }
   if(options.method&&!path.startsWith('/auth/'))announceAcademicChange();
   return response.status === 204 ? null : response.json();
@@ -43,6 +43,9 @@ export const api = {
   schedule: () => request('/schedule'),
   homework: () => request('/homework'),
   submitHomework: (id, input) => request(`/homework/${id}/submissions`, { method: 'POST', body: JSON.stringify(input) }),
+  reserveUpload: (homeworkId, input) => request(`/homework/${homeworkId}/uploads`, { method: 'POST', body: JSON.stringify(input) }),
+  completeUpload: (homeworkId, uploadId) => request(`/homework/${homeworkId}/uploads/${uploadId}/complete`, { method: 'POST' }),
+  discardUpload: (homeworkId, uploadId) => request(`/homework/${homeworkId}/uploads/${uploadId}`, { method: 'DELETE' }),
   portfolio: () => request('/portfolio'),
   addToPortfolio: (projectId, input = {}) => request(`/portfolio/projects/${projectId}`, { method: 'POST', body: JSON.stringify(input) }),
   mentorSlots: () => request('/mentor/availability'),

@@ -13,6 +13,7 @@ import { PostgresRepository } from './data/postgres-repository.js';
 import { DEV_IDS, PILOT } from './data/seed.js';
 import { MockAiProvider } from './services/ai-provider.js';
 import type { HomeworkSummaryDto } from './types/domain.js';
+import { HOMEWORK_FILE_ACCEPT, formatFileSize } from '../src/homework-uploads.js';
 
 const TEACHER = '12000000-0000-4000-8000-000000000001';
 const ADMIN = '14000000-0000-4000-8000-000000000001';
@@ -30,14 +31,16 @@ async function client(repository: MemoryRepository, userId: string) {
   return { app, headers: { authorization: `Bearer ${login.json().accessToken}` } };
 }
 
-function renderHomework(homework: HomeworkSummaryDto) {
+function renderHomework(homework: HomeworkSummaryDto, extraData: Record<string, unknown> = {}) {
   const source = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
   const helpers = source.slice(source.indexOf('const icons ='), source.indexOf('const app ='));
   const icons = source.slice(source.indexOf('function arrowIcon()'), source.indexOf('function artifactIcon('));
   const escape = source.slice(source.indexOf('function escapeHtml('), source.indexOf('function loadingView('));
   const page = source.slice(source.indexOf('function homeworkPage()'), source.indexOf('function ai()'));
   return vm.runInNewContext(`${helpers}\n${icons}\n${escape}\n${page}\nhomeworkPage()`, {
-    currentHomework: homework, data: { schedule: { timezone: 'Europe/Kyiv' } }, backLabel: () => 'Навчання', URL, Intl, Date
+    currentHomework: homework, data: { schedule: { timezone: 'Europe/Kyiv' }, ...extraData }, backLabel: () => 'Навчання', URL, Intl, Date, Map, Set,
+    // main.js imports these from homework-uploads.js; the sliced template needs them in scope.
+    formatFileSize, HOMEWORK_FILE_ACCEPT
   }) as string;
 }
 
@@ -123,7 +126,7 @@ describe('homework resources reach students', () => {
     expect(html).not.toContain('<script>');
     expect(html).not.toContain('Unsafe resource');
     expect(html).not.toContain('Missing URL');
-    expect(html).toContain('type="button" class="secondary-btn" data-external=');
+    expect(html).toContain('type="button" class="btn btn--secondary btn--row btn--block homework-material-btn" data-external=');
   });
 
   it.each([
@@ -163,12 +166,55 @@ describe('homework resources reach students', () => {
       { id: 'unsafe', ...video, url: 'javascript:alert(1)', title: 'Відео unsafe' }
     ] };
     const html = renderHomework(dto);
-    expect(html.match(/class="secondary-btn homework-video-btn"/g)).toHaveLength(2);
+    expect(html.match(/class="btn btn--secondary btn--row btn--block homework-video-btn"/g)).toHaveLength(2);
     expect(html).toContain('Відео — Відео &lt;перше&gt;');
     expect(html).toContain('Відео — Друга частина');
     expect(html).not.toContain('Відео unsafe');
     expect(html).not.toContain('homework-materials');
     expect(html).not.toContain('id="homeworkSubmit"');
+  });
+
+  describe('homework files in the Student template', () => {
+    const policy = { enabled: true, reason: null, maxFileBytes: 20 * 1024 * 1024, maxFiles: 10, maxTotalBytes: 50 * 1024 * 1024, extensions: ['pdf', 'png'] };
+    const file = { id: 'file-1', name: '<b>Звіт</b>.pdf', extension: 'pdf', mimeType: 'application/pdf', size: 1258291, uploadedAt: new Date().toISOString(), url: 'https://store.example/homework/report.pdf?sig=1', urlExpiresAt: new Date(Date.now() + 600000).toISOString() };
+    const base: HomeworkSummaryDto = { id: 'homework', title: 'Завдання', instructions: 'Інструкції', publishedAt: '', dueAt: null, xpReward: 10, classTitle: null, state: 'not_started', latestSubmission: null, resources: [] };
+
+    it('lists saved drafts with escaped names, size and a real attach control', () => {
+      const html = renderHomework({ ...base, canSubmit: true, draftFiles: [file] }, { fileUploads: policy });
+      expect(html).toContain('data-tone="draft">Чернетка<');
+      expect(html).toContain('&lt;b&gt;Звіт&lt;/b&gt;.pdf');
+      expect(html).not.toContain('<b>Звіт</b>');
+      expect(html).toContain('1,2 МБ');
+      expect(html).toContain('id="homeworkAttach"');
+      expect(html).not.toMatch(/id="homeworkAttach"[^>]*disabled/);
+      expect(html).toContain(`data-file-url="${file.url.replaceAll('&', '&amp;')}"`);
+      expect(html).toContain('data-file-remove="file-1"');
+      expect(html).toContain('Надіслати домашнє завдання');
+    });
+
+    it('explains unavailable uploads instead of rendering a dead button', () => {
+      const html = renderHomework({ ...base, canSubmit: true }, { fileUploads: { ...policy, enabled: false, reason: 'Сховище не підключено.' } });
+      expect(html).not.toContain('homeworkAttach');
+      expect(html).toContain('Сховище не підключено.');
+      expect(html).toContain('id="homeworkSubmit"');
+    });
+
+    it('shows a sent attempt with its files and no form', () => {
+      const html = renderHomework({ ...base, state: 'submitted', canSubmit: false, latestSubmission: { id: 's', attemptNumber: 1, submittedAt: new Date().toISOString(), studentComment: '', contentText: 'Готово', contentUrl: null, status: 'submitted', review: null, attachments: [file] } }, { fileUploads: policy });
+      expect(html).toContain('data-tone="review">На перевірці<');
+      expect(html).toContain('&lt;b&gt;Звіт&lt;/b&gt;.pdf');
+      expect(html).not.toContain('id="homeworkSubmit"');
+      expect(html).not.toContain('data-file-remove');
+      expect(html).toContain('Роботу надіслано');
+    });
+
+    it('carries files of a returned attempt into the next one', () => {
+      const html = renderHomework({ ...base, state: 'needs_revision', canSubmit: true, latestSubmission: { id: 's', attemptNumber: 1, submittedAt: new Date().toISOString(), studentComment: '', contentText: 'Готово', contentUrl: null, status: 'needs_revision', review: { score: 6, effort: 'good_effort', status: 'needs_revision', feedback: 'Додай скриншот', reviewedAt: new Date().toISOString() }, attachments: [file] } }, { fileUploads: policy });
+      expect(html).toContain('data-tone="revision">На доопрацюванні<');
+      expect(html).toContain('Допрацюй і надішли ще раз');
+      expect(html).toContain('З попередньої спроби');
+      expect(html).toContain('Не надсилати повторно');
+    });
   });
 
   it('loads PostgreSQL resources only for visible homework and keeps their order', async () => {

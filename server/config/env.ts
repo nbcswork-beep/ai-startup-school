@@ -141,6 +141,19 @@ const envSchema = z.object({
   WORKSPACE_URL: optionalString,
   TRUST_PROXY: booleanFromEnv.default(false),
   STORAGE_PRIVATE_BUCKETS_CONFIGURED: booleanFromEnv.default(false),
+  // Homework attachments. Files go straight from the browser to private object storage, so the
+  // limits are about fairness and storage cost, not the 4.5 MB function body limit.
+  HOMEWORK_UPLOAD_MAX_FILE_MB: z.coerce.number().int().min(1).max(100).default(20),
+  HOMEWORK_UPLOAD_MAX_FILES: z.coerce.number().int().min(1).max(20).default(10),
+  HOMEWORK_UPLOAD_MAX_TOTAL_MB: z.coerce.number().int().min(1).max(500).default(50),
+  /** First path segment for stored files. Defaults to the deployment environment. */
+  FILE_STORAGE_PREFIX: z.preprocess(value => typeof value === 'string' ? value.trim() || undefined : value, z.string().regex(/^[a-z0-9-]{2,40}$/).optional()),
+  /** Local development only: where uploaded files are kept. Ignored on Vercel. */
+  LOCAL_UPLOAD_DIR: optionalTrimmedString,
+  // Set by Vercel when a private Blob store is connected to the project. @vercel/blob reads them
+  // from process.env itself; here they only decide whether uploads are enabled.
+  BLOB_STORE_ID: optionalTrimmedString,
+  BLOB_READ_WRITE_TOKEN: optionalTrimmedString,
   ADMIN_MFA_CONFIGURED: booleanFromEnv.default(false),
   SECURITY_MONITORING_CONFIGURED: booleanFromEnv.default(false)
 }).superRefine((env, context) => {

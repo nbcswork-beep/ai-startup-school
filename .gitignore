@@ -9,3 +9,5 @@ coverage
 # The onboarding template is not a secret and must stay addable (README: copy .env.example .env).
 !.env.example
 backups
+# Local development uploads (LOCAL_UPLOAD_DIR). Production files live in Vercel Blob.
+.data

@@ -1,6 +1,7 @@
 import {startAcademicSync} from './academic-sync.js';
 import { api } from './api.js';
 import { createActionGate, createNavigationGuard, navigationSection, performUiAction } from './student-interactions.js';
+import { HOMEWORK_FILE_ACCEPT, checkSelection, formatFileSize, isFinalUploadError, sendFile } from './homework-uploads.js';
 
 const tg = window.Telegram?.WebApp;
 
@@ -135,7 +136,25 @@ function effortLabel(value) {
 }
 
 function homeworkStateLabel(value) {
-  return ({ not_started: 'НОВЕ', in_progress: 'В РОБОТІ', submitted: 'НАДІСЛАНО', needs_revision: 'ПОТРІБНЕ ДОПРАЦЮВАННЯ', completed: 'ГОТОВО' })[value] ?? value;
+  return ({ not_started: 'НОВЕ', in_progress: 'ЧЕРНЕТКА', submitted: 'НА ПЕРЕВІРЦІ', needs_revision: 'НА ДОПРАЦЮВАННІ', completed: 'ПЕРЕВІРЕНО' })[value] ?? value;
+}
+
+// One status vocabulary for every homework surface: Нове, Чернетка, На перевірці, Перевірено, На доопрацюванні.
+function homeworkStatus(homework) {
+  const submission = homework.latestSubmission;
+  if (homework.withdrawn) return { label: 'Неактивне', tone: 'muted' };
+  if (!submission) return homework.draftFiles?.length ? { label: 'Чернетка', tone: 'draft' } : { label: 'Нове', tone: 'new' };
+  if (submission.status === 'needs_revision') return { label: 'На доопрацюванні', tone: 'revision' };
+  if (submission.status === 'completed' || submission.review) return { label: 'Перевірено', tone: 'done' };
+  if (submission.status === 'submitted') return { label: 'На перевірці', tone: 'review' };
+  return { label: 'Чернетка', tone: 'draft' };
+}
+
+function plural(count, one, few, many) {
+  const mod10 = count % 10, mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
 }
 
 function portalMarkup(size = 'large', label = 'AI', sublabel = 'CORE') {
@@ -159,10 +178,10 @@ app.innerHTML = `
         <span class="brand-name">STARTUP <b>SCHOOL</b></span>
       </button>
       <div class="top-actions">
-        <button class="icon-btn notification" id="notificationBell" type="button" aria-label="Сповіщення" aria-controls="studentNotifications" aria-expanded="false">
+        <button class="btn btn--icon btn--secondary notification" id="notificationBell" type="button" aria-label="Сповіщення" aria-controls="studentNotifications" aria-expanded="false">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 8h18c0-1-3-1-3-8M10 21h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><i class="notification-dot" hidden></i>
         </button>
-        <button class="avatar" data-tab="profile" aria-label="Відкрити профіль">${firstName[0]?.toUpperCase() || 'M'}</button>
+        <button class="btn btn--icon btn--primary avatar" type="button" data-tab="profile" aria-label="Відкрити профіль">${firstName[0]?.toUpperCase() || 'M'}</button>
       </div>
     </header>
     <main id="view" class="view"></main>
@@ -173,9 +192,9 @@ app.innerHTML = `
     <section class="notification-panel" id="studentNotifications" role="dialog" aria-modal="true" aria-labelledby="notificationPanelTitle" hidden>
       <header class="notification-panel-head">
         <div><span>STUDENT APP</span><h2 id="notificationPanelTitle">Сповіщення</h2></div>
-        <button class="notification-close" id="closeNotifications" type="button" aria-label="Закрити сповіщення">×</button>
+        <button class="btn btn--icon btn--secondary notification-close" id="closeNotifications" type="button" aria-label="Закрити сповіщення">${closeIcon()}</button>
       </header>
-      <div class="notification-panel-tools"><span id="notificationCount">0 непрочитаних</span><button id="markAllNotifications" type="button">Позначити всі прочитаними</button></div>
+      <div class="notification-panel-tools"><span id="notificationCount">0 непрочитаних</span><button class="btn btn--ghost btn--sm" id="markAllNotifications" type="button">Позначити всі прочитаними</button></div>
       <div class="notification-list" id="notificationList" aria-live="polite"></div>
     </section>
   </div>`;
@@ -397,7 +416,7 @@ function home() {
           <span class="coordinate">ТВІЙ ШЛЯХ · ${String(Math.min(homeData.course.completedLessons + 1, homeData.course.totalLessons)).padStart(2, '0')}/${String(homeData.course.totalLessons).padStart(2, '0')}</span>
           <h1>Твоя ідея<br><em>стає проєктом.</em></h1>
           <p>Крок за кроком: від першої думки до продукту, який працює.</p>
-          <button class="primary-btn" data-tab="learn">Продовжити навчання ${arrowIcon()}</button>
+          <button type="button" class="btn btn--primary btn--lg" data-tab="learn">Продовжити навчання ${arrowIcon()}</button>
         </div>
         <div class="hero-engine-wrap">${portalMarkup('large')}</div>
         <div class="hero-progress" aria-label="Прогрес курсу ${progress} відсотків"><span>КУРС</span><strong>${progress}%</strong><i><b style="width:${progress}%"></b></i></div>
@@ -406,7 +425,7 @@ function home() {
       ${nextClass ? `<section class="next-class-zone">
         <div class="class-signal"><span>LIVE</span><i></i></div>
         <div class="class-copy"><span>НАСТУПНЕ ЖИВЕ ЗАНЯТТЯ</span><h2>${escapeHtml(nextClass.title)}</h2><p>${escapeHtml(formatClassTime(nextClass.startsAt, data.schedule.timezone))} · ${nextClass.durationMinutes} хв · ${escapeHtml(nextClass.teacherName)}</p></div>
-        ${joinUrl ? `<button class="class-join secondary-btn" data-external="${escapeHtml(joinUrl)}">Приєднатися до заняття ${externalIcon()}</button>` : '<span class="class-link-pending">Посилання з’явиться перед заняттям</span>'}
+        ${joinUrl ? `<button type="button" class="btn btn--secondary btn--block class-join" data-external="${escapeHtml(joinUrl)}">Приєднатися до заняття ${externalIcon()}</button>` : '<span class="class-link-pending">Посилання з’явиться перед заняттям</span>'}
       </section>` : ''}
 
       <button type="button" class="next-step card-action" ${lesson ? `data-lesson="${lesson.id}"` : 'data-tab="learn"'} aria-label="${lesson ? `Відкрити урок: ${escapeHtml(lesson.title)}` : 'До навчання'}">
@@ -415,7 +434,7 @@ function home() {
         <span class="round-arrow" aria-hidden="true">${arrowIcon()}</span>
       </button>
 
-      ${homeData.homeworkDue ? `<button class="homework-pulse" data-homework="${homeData.homeworkDue.id}"><span>HOMEWORK · ${homeworkStateLabel(homeData.homeworkDue.state)}</span><strong>${escapeHtml(homeData.homeworkDue.title)}</strong><small>${homeData.homeworkDue.dueAt ? `До ${escapeHtml(formatClassTime(homeData.homeworkDue.dueAt, data.schedule.timezone))}` : 'Без дедлайну'}</small>${arrowIcon()}</button>` : ''}
+      ${homeData.homeworkDue ? `<button type="button" class="homework-pulse" data-homework="${homeData.homeworkDue.id}"><span>HOMEWORK · ${escapeHtml(homeworkStatus(homeData.homeworkDue).label.toUpperCase())}</span><strong>${escapeHtml(homeData.homeworkDue.title)}</strong><small>${homeData.homeworkDue.dueAt ? `До ${escapeHtml(formatClassTime(homeData.homeworkDue.dueAt, data.schedule.timezone))}` : 'Без дедлайну'}</small>${arrowIcon()}</button>` : ''}
 
       <div class="signal-strip" aria-label="Твоя статистика">
         <div><span class="signal-mark bolt">ϟ</span><strong>${homeData.viewer.streak}</strong><small>дні поспіль</small></div>
@@ -423,7 +442,7 @@ function home() {
         <div><span class="signal-mark">XP</span><strong>${homeData.viewer.xp}</strong><small>досвід</small></div>
       </div>
 
-      <div class="section-head"><div><span class="section-kicker">STARTUP LAB</span><h2>Ти зараз будуєш</h2></div><button class="text-link" data-tab="project">До проєкту ${arrowIcon()}</button></div>
+      <div class="section-head"><div><span class="section-kicker">STARTUP LAB</span><h2>Ти зараз будуєш</h2></div><button type="button" class="btn btn--ghost btn--sm" data-tab="project">До проєкту ${arrowIcon()}</button></div>
       <button type="button" class="project-preview card-action" data-tab="project" aria-label="Відкрити мій проєкт">
         <span class="preview-rail" aria-hidden="true">${Array.from({ length: projectData?.stage.total ?? 5 }, (_, index) => `<i class="${index < (projectData?.stage.position ?? 0) ? 'done' : ''}"></i>`).join('')}</span>
         <span class="preview-copy"><span>MVP · ЕТАП ${projectData?.stage.position ?? 0} З ${projectData?.stage.total ?? 5}</span><strong class="card-title">${escapeHtml(projectData?.title ?? 'Створи перший проєкт')}</strong><span class="card-description">${escapeHtml(projectData?.tasks.find(task => task.status === 'in_progress')?.title ?? 'Сформулюй свою ідею')}</span><span class="card-action-label">Відкрити проєкт</span></span>
@@ -453,9 +472,9 @@ function learn() {
         ${recoveries.map(item => `<article class="recovery-card ${item.status}">
           <div class="recovery-card-head"><span>ПРОПУЩЕНЕ ЗАНЯТТЯ</span><small>${escapeHtml(formatClassTime(item.startsAt,data.schedule.timezone))}</small></div>
           <h3>${escapeHtml(item.lessonTitle || item.title)}</h3><p>${escapeHtml(item.description)}</p>
-          ${item.materials.length ? `<div class="recovery-materials">${item.materials.map(material => material.url ? `<button data-external="${escapeHtml(material.url)}">${escapeHtml(material.title)} ${externalIcon()}</button>` : `<span>${escapeHtml(material.title)}</span>`).join('')}</div>` : '<small class="recovery-empty">Матеріали ще готує викладач.</small>'}
+          ${item.materials.length ? `<div class="recovery-materials">${item.materials.map(material => safeHttpsUrl(material.url) ? `<button type="button" class="btn btn--secondary btn--row btn--block" data-external="${escapeHtml(safeHttpsUrl(material.url))}"><span class="btn-label">${escapeHtml(material.title)}</span>${externalIcon()}</button>` : `<span class="recovery-material-pending">${escapeHtml(material.title)}</span>`).join('')}</div>` : '<small class="recovery-empty">Матеріали ще готує викладач.</small>'}
           ${item.homework ? `<div class="recovery-task"><span>ЩО ЗРОБИТИ САМОСТІЙНО</span><strong>${escapeHtml(item.homework.title)}</strong><p>${escapeHtml(item.homework.instructions)}</p></div>` : ''}
-          <div class="recovery-actions">${item.homework ? `<button class="recovery-homework" data-homework="${item.homework.id}">Відкрити домашнє завдання ${arrowIcon()}</button>` : ''}${item.mentorSlotId ? `<button class="recovery-mentor" data-recovery-mentor="${item.mentorSlotId}">Записатися до ментора</button>` : ''}</div>
+          ${item.homework || item.mentorSlotId ? `<div class="recovery-actions">${item.homework ? `<button type="button" class="btn btn--primary btn--row recovery-homework" data-homework="${item.homework.id}"><span class="btn-label">Відкрити домашнє завдання</span>${arrowIcon()}</button>` : ''}${item.mentorSlotId ? `<button type="button" class="btn btn--outline recovery-mentor" data-recovery-mentor="${item.mentorSlotId}">Записатися до ментора</button>` : ''}</div>` : ''}
         </article>`).join('')}
       </section>` : ''}
       ${lessonRows.length ? `<section class="module-overview">
@@ -476,7 +495,7 @@ function learn() {
       </div>
       <section class="homework-route">
         <div class="section-head compact-head"><div><span class="section-kicker">ПІСЛЯ ЗАНЯТТЯ</span><h2>Домашня практика</h2></div><span class="tiny-badge">${homework.filter(item=>item.state!=='completed').length} АКТИВНІ</span></div>
-        ${homework.map(item => `<button class="homework-row ${item.state}" data-homework="${item.id}"><span class="homework-status">${homeworkStateLabel(item.state)}</span><strong>${escapeHtml(item.title)}</strong><small>${item.latestSubmission?.review ? `${item.latestSubmission.review.score}/10 · ${effortLabel(item.latestSubmission.review.effort)}` : item.dueAt ? `До ${formatClassTime(item.dueAt,data.schedule.timezone)}` : 'Без дедлайну'}</small>${arrowIcon()}</button>`).join('')}
+        ${homework.map(item => `<button type="button" class="homework-row ${item.state}" data-homework="${item.id}"><span class="homework-status">${escapeHtml(homeworkStatus(item).label.toUpperCase())}</span><strong>${escapeHtml(item.title)}</strong><small>${item.latestSubmission?.review ? `${item.latestSubmission.review.score}/10 · ${effortLabel(item.latestSubmission.review.effort)}` : item.dueAt ? `До ${formatClassTime(item.dueAt,data.schedule.timezone)}` : 'Без дедлайну'}</small>${arrowIcon()}</button>`).join('')}
       </section>
       <button type="button" class="mentor-dock card-action" data-tab="profile" aria-label="Допомога ментора — обрати час у профілі">
         ${portalMarkup('mini')}
@@ -501,7 +520,7 @@ function project() {
         <div class="project-meter"><div><span>ГОТОВНІСТЬ</span><strong>${projectData.completionPercent}%</strong></div><i><b style="width:${projectData.completionPercent}%"></b></i></div>
       </section>
       <div class="stage-tags">${projectData.tags.map((tag,index)=>`${index?'<i></i>':''}<span>${escapeHtml(tag)}</span>`).join('')}</div>
-      <div class="section-head"><div><span class="section-kicker">СПРИНТ 01</span><h2>Збираємо основу</h2></div><button class="tiny-badge" id="editProject" type="button" aria-controls="projectEditor" aria-expanded="false">Редагувати проєкт</button></div>
+      <div class="section-head"><div><span class="section-kicker">СПРИНТ 01</span><h2>Збираємо основу</h2></div><button class="btn btn--outline btn--sm" id="editProject" type="button" aria-controls="projectEditor" aria-expanded="false">Редагувати проєкт</button></div>
       <div class="build-path">
         ${tasks.map(task => {
           const status = task.status === 'completed' ? 'done' : ['in_progress','available','pending_review','needs_revision'].includes(task.status) ? 'current' : 'locked';
@@ -512,19 +531,19 @@ function project() {
             <span class="build-reward">${status === 'done' ? `+${task.xpReward} XP` : status === 'current' ? '<span class="stage-direction">Відповідь нижче</span>' : stateIcon('locked')}</span>
           </article>`}).join('')}
       </div>
-      ${currentTask?`<form class="project-editor" id="projectStageSubmit" data-project-id="${projectData.id}" data-task-id="${currentTask.id}" data-version="${currentTask.version??1}"><h3>Етап ${currentTask.number}: ${escapeHtml(currentTask.title)}</h3><p>${escapeHtml(currentTask.description)}</p>${currentTask.feedback?`<p class="stage-feedback">Коментар викладача: ${escapeHtml(currentTask.feedback)}</p>`:''}<label>Твоя відповідь<textarea name="contentText" maxlength="20000" required ${currentTask.status==='pending_review'?'disabled':''}>${escapeHtml(currentTask.contentText??'')}</textarea></label><p class="stage-review-status">${currentTask.status==='pending_review'?'Відповідь на перевірці. Наступний етап відкриє викладач.':'Наступний етап відкриється після підтвердження викладачем.'}</p><button class="primary-btn compact" ${currentTask.status==='pending_review'?'disabled':''}>${currentTask.status==='pending_review'?'На перевірці':'Надіслати на перевірку'}</button></form>`:''}
-      <section class="project-notes"><h2>Нотатки й посилання проєкту</h2><p>Тут можна зберігати ідеї, результати й посилання та отримувати коментарі викладача.</p>${(projectData.notes??[]).map(note=>`<article class="project-editor"><p>${escapeHtml(note.contentText)}</p>${note.contentUrl?`<a href="${escapeHtml(note.contentUrl)}" target="_blank" rel="noopener noreferrer">Відкрити посилання проєкту ↗</a>`:''}${note.replies.map(reply=>`<blockquote><strong>${escapeHtml(reply.teacherName)}</strong><p>${escapeHtml(reply.contentText)}</p></blockquote>`).join('')}</article>`).join('')}<form class="project-editor" id="projectNoteForm" data-project-id="${projectData.id}" data-version="${projectData.notes?.length??0}"><label>Нотатка<textarea name="contentText" maxlength="20000" placeholder="Ідея, результат чи питання до викладача…"></textarea></label><label>Посилання HTTPS<input type="url" name="contentUrl" maxlength="2048" placeholder="https://…"></label><button class="secondary-btn compact">Зберегти нотатку</button></form></section>
+      ${currentTask?`<form class="project-editor" id="projectStageSubmit" data-project-id="${projectData.id}" data-task-id="${currentTask.id}" data-version="${currentTask.version??1}"><h3>Етап ${currentTask.number}: ${escapeHtml(currentTask.title)}</h3><p>${escapeHtml(currentTask.description)}</p>${currentTask.feedback?`<p class="stage-feedback">Коментар викладача: ${escapeHtml(currentTask.feedback)}</p>`:''}<label>Твоя відповідь<textarea name="contentText" maxlength="20000" required ${currentTask.status==='pending_review'?'disabled':''}>${escapeHtml(currentTask.contentText??'')}</textarea></label><p class="stage-review-status">${currentTask.status==='pending_review'?'Відповідь на перевірці. Наступний етап відкриє викладач.':'Наступний етап відкриється після підтвердження викладачем.'}</p><button type="submit" class="btn btn--primary btn--lg btn--block" ${currentTask.status==='pending_review'?'disabled':''}>${currentTask.status==='pending_review'?'На перевірці':`Надіслати на перевірку ${arrowIcon()}`}</button></form>`:''}
+      <section class="project-notes"><h2>Нотатки й посилання проєкту</h2><p>Тут можна зберігати ідеї, результати й посилання та отримувати коментарі викладача.</p>${(projectData.notes??[]).map(note=>`<article class="project-editor"><p>${escapeHtml(note.contentText)}</p>${safeHttpsUrl(note.contentUrl)?`<button type="button" class="btn btn--ghost btn--sm" data-external="${escapeHtml(safeHttpsUrl(note.contentUrl))}">Відкрити посилання проєкту ${externalIcon()}</button>`:''}${note.replies.map(reply=>`<blockquote><strong>${escapeHtml(reply.teacherName)}</strong><p>${escapeHtml(reply.contentText)}</p></blockquote>`).join('')}</article>`).join('')}<form class="project-editor" id="projectNoteForm" data-project-id="${projectData.id}" data-version="${projectData.notes?.length??0}"><label>Нотатка<textarea name="contentText" maxlength="20000" placeholder="Ідея, результат чи питання до викладача…"></textarea></label><label>Посилання HTTPS<input type="url" name="contentUrl" maxlength="2048" placeholder="https://…"></label><button type="submit" class="btn btn--secondary btn--block">Зберегти нотатку</button></form></section>
       <section class="workspace-dock">
         <div class="workspace-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 8-4 4 4 4M15 8l4 4-4 4M14 5l-4 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
         <div><span>CODE WORKSPACE</span><h3>Продовжити збірку</h3><p>Повна web-версія з кодом і preview.</p></div>
-        <button class="secondary-btn compact" id="openCode" ${projectData.workspaceUrl ? '' : 'disabled'}>Відкрити робочий простір ${externalIcon()}</button>
+        ${projectData.workspaceUrl ? `<button type="button" class="btn btn--secondary btn--block" id="openCode">Відкрити робочий простір ${externalIcon()}</button>` : '<p class="workspace-pending">Посилання на робочий простір додасть викладач.</p>'}
       </section>
-      <form class="project-editor" id="projectEditor" data-project-id="${projectData.id}" hidden><label>Назва<input name="title" value="${escapeHtml(projectData.title)}" maxlength="120" required></label><label>Короткий опис<textarea name="summary" maxlength="1000">${escapeHtml(projectData.summary)}</textarea></label><button class="secondary-btn compact">Зберегти зміни</button></form>
+      <form class="project-editor" id="projectEditor" data-project-id="${projectData.id}" hidden><label>Назва<input name="title" value="${escapeHtml(projectData.title)}" maxlength="120" required></label><label>Короткий опис<textarea name="summary" maxlength="1000">${escapeHtml(projectData.summary)}</textarea></label><button type="submit" class="btn btn--secondary btn--block">Зберегти зміни</button></form>
     </section>`;
 }
 
 function projectEmpty() {
-  return `<section class="page project-page"><div class="page-title"><span class="section-kicker">STARTUP LAB</span><span class="zone-code">ZONE 03 · LAB</span><h1>Мій проєкт</h1><p>Тут ідея перетворюється на продукт.</p></div><section class="project-empty">${portalMarkup('medium lab-engine','01','START')}<h2>Запусти перший проєкт</h2><p>Опиши одну проблему та ідею рішення. Перший етап надішлеш викладачу; наступні відкриються після перевірки.</p><form id="createProject"><label>Назва<input name="title" maxlength="120" required></label><label>Короткий опис<textarea name="summary" maxlength="1000"></textarea></label><button class="primary-btn">Створити проєкт ${arrowIcon()}</button></form></section></section>`;
+  return `<section class="page project-page"><div class="page-title"><span class="section-kicker">STARTUP LAB</span><span class="zone-code">ZONE 03 · LAB</span><h1>Мій проєкт</h1><p>Тут ідея перетворюється на продукт.</p></div><section class="project-empty">${portalMarkup('medium lab-engine','01','START')}<h2>Запусти перший проєкт</h2><p>Опиши одну проблему та ідею рішення. Перший етап надішлеш викладачу; наступні відкриються після перевірки.</p><form id="createProject"><label>Назва<input name="title" maxlength="120" required></label><label>Короткий опис<textarea name="summary" maxlength="1000"></textarea></label><button type="submit" class="btn btn--primary btn--lg btn--block">Створити проєкт ${arrowIcon()}</button></form></section></section>`;
 }
 
 function portfolio() {
@@ -543,7 +562,7 @@ function portfolio() {
       <div class="portfolio-list">
         ${projects.length ? projects.map(item => `<article class="portfolio-project"><div class="portfolio-project-signal"><span>BUILD</span><strong>${escapeHtml(item.title.slice(0,2).toUpperCase())}</strong><i></i></div><div><span>${item.completionDate ? 'ЗАВЕРШЕНО' : 'В РОБОТІ'}</span><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.shortDescription)}</p><blockquote>${escapeHtml(item.reflection || 'Рефлексія з’явиться після наступного кроку.')}</blockquote><div class="skill-chips">${[...item.skills,...item.technologies].slice(0,5).map(skill=>`<small>${escapeHtml(skill)}</small>`).join('')}</div></div></article>`).join('') : '<section class="portfolio-empty"><h2>Твій перший проєкт уже близько</h2><p>Додай його свідомо, коли буде що показати й про що розповісти.</p></section>'}
       </div>
-      ${activeProject && !alreadyAdded ? `<button class="primary-btn portfolio-add" data-add-portfolio="${activeProject.id}">Додати до портфоліо: ${escapeHtml(activeProject.title)} ${arrowIcon()}</button>` : ''}
+      ${activeProject && !alreadyAdded ? `<button type="button" class="btn btn--primary btn--lg btn--block portfolio-add" data-add-portfolio="${activeProject.id}">Додати до портфоліо: ${escapeHtml(activeProject.title)} ${arrowIcon()}</button>` : ''}
       <div class="section-head"><div><span class="section-kicker">НАВИЧКИ</span><h2>Що вже вмієш</h2></div></div>
       <div class="skill-field">${(portfolioData?.skills ?? []).map(item=>`<article><span>LV ${item.level}</span><strong>${escapeHtml(item.title)}</strong><i><b style="width:${item.level*20}%"></b></i></article>`).join('')}</div>
     </section>`;
@@ -551,24 +570,160 @@ function portfolio() {
 
 function homeworkPage() {
   const homework = currentHomework ?? data.homework?.[0];
-  if (!homework) return `<section class="page homework-page"><button class="lesson-back" data-back="homework">← ${backLabel('homework')}</button><div class="page-title"><h1>Домашніх завдань поки немає</h1></div></section>`;
+  if (!homework) return `<section class="page homework-page">${backButton('homework')}<div class="page-title"><h1>Домашніх завдань поки немає</h1></div></section>`;
   const submission = homework.latestSubmission;
   const review = submission?.review;
   const resources = (homework.resources ?? []).map(resource => ({ ...resource, url: safeHttpsUrl(resource.url) })).filter(resource => resource.url);
   const videos = resources.filter(isHomeworkVideoResource);
   const materials = resources.filter(resource => !isHomeworkVideoResource(resource));
-  const disabled=homework.withdrawn?'disabled':'';
-  const canSubmit = !submission || submission.status === 'needs_revision' || submission.status === 'in_progress';
+  const canSubmit = homework.canSubmit ?? (!submission || submission.status === 'needs_revision' || submission.status === 'in_progress');
+  const status = homeworkStatus(homework);
+  const timezone = data.schedule?.timezone;
   return `<section class="page homework-page">
-    <button class="lesson-back" data-back="homework">← ${backLabel('homework')}</button>
-    <div class="page-title"><span class="section-kicker">HOMEWORK · ${homeworkStateLabel(homework.state)}</span><span class="zone-code">+${homework.xpReward} XP ЗА ЗАВЕРШЕННЯ</span><h1>${escapeHtml(homework.title)}</h1><p>${escapeHtml(homework.instructions)}</p></div>
-    <section class="homework-brief"><div><span>ДЕДЛАЙН</span><strong>${homework.dueAt ? escapeHtml(formatClassTime(homework.dueAt,data.schedule.timezone)) : 'Без дедлайну'}</strong></div><div><span>ПОВ’ЯЗАНЕ ЗАНЯТТЯ</span><strong>${escapeHtml(homework.classTitle ?? 'Самостійна практика')}</strong></div></section>
-    ${videos.length ? `<section class="lesson-section homework-videos"><span class="section-kicker">ВІДЕО ДО ЗАВДАННЯ</span><div class="recovery-materials">${videos.map(resource => `<button type="button" class="secondary-btn homework-video-btn" data-external="${escapeHtml(resource.url)}">${videoIcon()} Відео — ${escapeHtml(resource.title)} ${externalIcon()}</button>`).join('')}</div></section>` : ''}
-    ${materials.length ? `<section class="lesson-section homework-materials"><span class="section-kicker">МАТЕРІАЛИ ДО ЗАВДАННЯ</span><div class="recovery-materials">${materials.map(resource => `<button type="button" class="secondary-btn" data-external="${escapeHtml(resource.url)}">${escapeHtml(resource.title)} ${externalIcon()}</button>`).join('')}</div></section>` : ''}
+    ${backButton('homework')}
+    <header class="hw-header">
+      <div class="hw-header-top"><span class="section-kicker">ДОМАШНЄ ЗАВДАННЯ</span><span class="status-pill" data-tone="${status.tone}">${escapeHtml(status.label)}</span></div>
+      <h1>${escapeHtml(homework.title)}</h1>
+      <dl class="hw-meta">
+        <div><dt>Дедлайн</dt><dd>${homework.dueAt ? escapeHtml(formatClassTime(homework.dueAt, timezone)) : 'Без дедлайну'}</dd></div>
+        <div><dt>Заняття</dt><dd>${escapeHtml(homework.classTitle ?? 'Самостійна практика')}</dd></div>
+        <div><dt>Нагорода</dt><dd>+${homework.xpReward} XP</dd></div>
+      </dl>
+    </header>
+    <section class="hw-card hw-task" aria-labelledby="hwTaskTitle"><h2 class="hw-card-title" id="hwTaskTitle">Завдання</h2><p class="hw-text">${escapeHtml(homework.instructions)}</p></section>
+    ${videos.length ? `<section class="lesson-section homework-videos"><span class="section-kicker">ВІДЕО ДО ЗАВДАННЯ</span><div class="hw-link-list">${videos.map(resource => `<button type="button" class="btn btn--secondary btn--row btn--block homework-video-btn" data-external="${escapeHtml(resource.url)}"><span class="btn-label">${videoIcon()}<span>Відео — ${escapeHtml(resource.title)}</span></span>${externalIcon()}</button>`).join('')}</div></section>` : ''}
+    ${materials.length ? `<section class="lesson-section homework-materials"><span class="section-kicker">МАТЕРІАЛИ ДО ЗАВДАННЯ</span><div class="hw-link-list">${materials.map(resource => `<button type="button" class="btn btn--secondary btn--row btn--block homework-material-btn" data-external="${escapeHtml(resource.url)}"><span class="btn-label">${escapeHtml(resource.title)}</span>${externalIcon()}</button>`).join('')}</div></section>` : ''}
     ${review ? `<section class="teacher-feedback ${review.status}"><div class="feedback-score"><strong>${review.score}</strong><small>/10</small></div><div><span>ВІДГУК ВИКЛАДАЧА</span><h2>${escapeHtml(effortLabel(review.effort))}</h2><p>${escapeHtml(review.feedback)}</p></div></section>` : ''}
-    ${submission ? `<section class="attempt-history"><span>СПРОБА ${submission.attemptNumber}</span><strong>${homeworkStateLabel(submission.status)}</strong><p>${escapeHtml(submission.studentComment || submission.contentText)}</p></section>` : ''}
+    ${submission ? homeworkAttemptMarkup(submission, timezone) : ''}
     ${homework.withdrawn?'<p class="withdrawn-homework" role="status">Завдання більше не активне для вашої групи. Введений текст збережено на цій сторінці.</p>':''}
-    ${canSubmit ? `<form class="homework-submit" id="homeworkSubmit" data-homework-id="${homework.id}"><span class="section-kicker">${submission?.status==='needs_revision'?'ДОПРАЦЮЙ І НАДІШЛИ ЩЕ РАЗ':'ТВОЯ РОБОТА'}</span><label>Результат<textarea name="contentText" ${disabled} maxlength="20000" required placeholder="Опиши, що зробив…"></textarea></label><label>Посилання HTTPS — за потреби<input name="contentUrl" ${disabled} type="url" inputmode="url" placeholder="https://…"></label><label>Коментар викладачу<textarea name="studentComment" ${disabled} maxlength="2000" placeholder="Що було складно або цікаво?"></textarea></label><button class="primary-btn" ${disabled}>Надіслати роботу ${arrowIcon()}</button></form>` : '<p class="submission-confirmation">Роботу надіслано. Історія спроб збережена.</p>'}
+    ${canSubmit ? homeworkFormMarkup(homework, submission) : homeworkSentMarkup(status)}
+  </section>`;
+}
+
+// Upload state lives outside the DOM so re-renders and background refreshes never lose a file.
+// Uploaded files are server-side drafts; only the "leave out" choice is kept in sessionStorage.
+const homeworkUploads = new Map();       // homeworkId → files being uploaded or failed
+const homeworkExcludedFiles = new Map(); // homeworkId → ids of earlier-attempt files left out of the next attempt
+const homeworkFileNotices = new Map();   // homeworkId → { type, text }
+const FILE_KINDS = { pdf: 'pdf', doc: 'doc', docx: 'doc', pptx: 'slides', xlsx: 'sheet', txt: 'text', png: 'image', jpg: 'image', jpeg: 'image', zip: 'archive' };
+
+/** Earlier-attempt files the student left out; kept for this app session so a reload keeps the choice. */
+function excludedFileIds(id) {
+  if (!homeworkExcludedFiles.has(id)) {
+    let saved = [];
+    try { saved = JSON.parse(globalThis.sessionStorage?.getItem(`aiss:homework-excluded:${id}`) ?? '[]'); } catch {}
+    homeworkExcludedFiles.set(id, new Set(Array.isArray(saved) ? saved : []));
+  }
+  return homeworkExcludedFiles.get(id);
+}
+
+function saveExcludedFileIds(id) {
+  const ids = [...excludedFileIds(id)];
+  try {
+    if (ids.length) sessionStorage.setItem(`aiss:homework-excluded:${id}`, JSON.stringify(ids));
+    else sessionStorage.removeItem(`aiss:homework-excluded:${id}`);
+  } catch {}
+}
+
+/** Files of the next attempt: kept earlier-attempt files, saved drafts, then uploads in flight. */
+function homeworkFileEntries(homework) {
+  const excluded = excludedFileIds(homework.id);
+  const previous = homework.latestSubmission?.status === 'needs_revision' ? homework.latestSubmission.attachments ?? [] : [];
+  return [
+    ...previous.filter(file => !excluded.has(file.id)).map(file => ({ ...file, key: file.id, state: 'ready', carried: true })),
+    ...(homework.draftFiles ?? []).map(file => ({ ...file, key: file.id, state: 'ready' })),
+    ...(homeworkUploads.get(homework.id) ?? []).map(item => ({ key: item.key, id: item.serverId, name: item.name, extension: item.extension, size: item.size, state: item.state, progress: item.progress, error: item.error, retryable: item.retryable }))
+  ];
+}
+
+function homeworkFormStatusText(homework) {
+  const entries = homeworkFileEntries(homework);
+  const busy = entries.filter(entry => ['queued', 'uploading', 'verifying'].includes(entry.state)).length;
+  const failed = entries.filter(entry => entry.state === 'error');
+  const ready = entries.filter(entry => entry.state === 'ready').length;
+  if (busy) return `Завантажуємо ${busy} ${plural(busy, 'файл', 'файли', 'файлів')}. Надіслати можна після завершення.`;
+  if (failed.length) return `${failed.length} ${plural(failed.length, 'файл', 'файли', 'файлів')} з помилкою. ${failed.some(entry => entry.retryable) ? 'Повтори завантаження або прибери зі списку.' : 'Прибери зі списку, щоб надіслати роботу.'}`;
+  if (ready) return `${ready} ${plural(ready, 'файл', 'файли', 'файлів')} ${plural(ready, 'готовий', 'готові', 'готові')} до відправки і ${plural(ready, 'збережений', 'збережені', 'збережені')} на сервері.`;
+  return 'Додай відповідь, посилання або файл.';
+}
+
+function fileItemMarkup(entry, { removable = true } = {}) {
+  const extension = String(entry.extension ?? '').toLowerCase();
+  const name = escapeHtml(entry.name ?? 'Файл');
+  const busy = ['queued', 'uploading', 'verifying'].includes(entry.state);
+  const percent = Math.round((entry.progress ?? 0) * 100);
+  const stateText = entry.state === 'ready'
+    ? (entry.url ? (entry.carried ? 'З попередньої спроби' : 'Завантажено') : 'Посилання тимчасово недоступне')
+    : { queued: 'У черзі', uploading: `Завантаження ${percent}%`, verifying: 'Перевіряємо файл', error: 'Не завантажено' }[entry.state];
+  const label = busy ? 'Скасувати завантаження' : entry.carried ? 'Не надсилати повторно' : 'Видалити';
+  return `<li class="file-item" data-state="${entry.state}" data-file-key="${escapeHtml(entry.key)}">
+    <span class="file-icon" data-kind="${FILE_KINDS[extension] ?? 'file'}" aria-hidden="true">${escapeHtml(extension.toUpperCase().slice(0, 4))}</span>
+    <span class="file-body">
+      <span class="file-name">${name}</span>
+      <span class="file-meta">${escapeHtml(extension.toUpperCase())} · ${formatFileSize(entry.size)}</span>
+      <span class="file-state">${stateText}</span>
+      ${busy ? `<span class="file-progress" role="progressbar" aria-label="Завантаження: ${name}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${entry.state === 'verifying' ? 100 : percent}"><i style="width:${entry.state === 'verifying' ? 100 : percent}%"></i></span>` : ''}
+      ${entry.state === 'error' ? `<span class="file-error" role="alert">${escapeHtml(entry.error || 'Не вдалося завантажити файл.')}</span>${entry.retryable ? `<button type="button" class="btn btn--outline btn--sm file-retry" data-file-retry="${escapeHtml(entry.key)}">${retryIcon()}Повторити</button>` : ''}` : ''}
+    </span>
+    <span class="file-actions">
+      ${entry.state === 'ready' && entry.url ? `<button type="button" class="btn btn--icon btn--ghost btn--sm" data-file-open data-file-url="${escapeHtml(entry.url)}" data-file-expires="${escapeHtml(entry.urlExpiresAt ?? '')}" aria-label="Відкрити ${name}" title="Відкрити">${openFileIcon()}</button>` : ''}
+      ${removable ? `<button type="button" class="btn btn--icon btn--ghost btn--sm file-remove" data-file-remove="${escapeHtml(entry.key)}" aria-label="${label}: ${name}" title="${label}">${busy ? closeIcon() : trashIcon()}</button>` : ''}
+    </span>
+  </li>`;
+}
+
+function homeworkFilesInner(homework, disabled = false) {
+  const policy = data.fileUploads;
+  const entries = homeworkFileEntries(homework);
+  const attached = entries.filter(entry => entry.state !== 'error').length;
+  const full = attached >= policy.maxFiles;
+  const notice = homeworkFileNotices.get(homework.id);
+  return `<div class="hw-files-head"><span class="field-label" id="homeworkFilesLabel">Файли</span><span class="hw-files-count">${attached} / ${policy.maxFiles}</span></div>
+    <div class="hw-dropzone" data-dropzone>
+      <input type="file" id="homeworkFileInput" class="visually-hidden" multiple accept="${HOMEWORK_FILE_ACCEPT}" tabindex="-1" aria-hidden="true">
+      <button type="button" class="btn btn--outline btn--block hw-attach" id="homeworkAttach" aria-describedby="homeworkFilesHint"${full || disabled ? ' disabled' : ''}>${paperclipIcon()}${full ? 'Ліміт файлів досягнуто' : 'Прикріпити файл'}</button>
+      <p class="hw-files-hint" id="homeworkFilesHint">PDF, DOCX, DOC, PPTX, XLSX, TXT, PNG, JPG, ZIP · до ${formatFileSize(policy.maxFileBytes)} кожен, разом до ${formatFileSize(policy.maxTotalBytes)}</p>
+    </div>
+    ${notice ? `<p class="hw-files-notice" data-state="${notice.type}" role="${notice.type === 'error' ? 'alert' : 'status'}">${escapeHtml(notice.text)}</p>` : ''}
+    ${entries.length ? `<ul class="file-list" aria-labelledby="homeworkFilesLabel">${entries.map(entry => fileItemMarkup(entry, { removable: !disabled })).join('')}</ul>` : ''}`;
+}
+
+function homeworkFormMarkup(homework, submission) {
+  const policy = data.fileUploads;
+  const disabled = homework.withdrawn ? ' disabled' : '';
+  const revision = submission?.status === 'needs_revision';
+  return `<form class="hw-card hw-form" id="homeworkSubmit" data-homework-id="${escapeHtml(homework.id)}" novalidate>
+    <div class="hw-card-head"><h2 class="hw-card-title">${revision ? 'Допрацюй і надішли ще раз' : 'Твоя робота'}</h2>${revision ? '<p class="hw-card-note">Файли попередньої спроби вже додано. Прибери зайві або додай нові.</p>' : ''}</div>
+    <label class="field"><span class="field-label">Відповідь</span><textarea name="contentText" rows="5" maxlength="20000" placeholder="Опиши, що зробив і що вийшло"${disabled}></textarea></label>
+    <label class="field"><span class="field-label">Посилання <span class="field-hint">за потреби</span></span><input name="contentUrl" type="url" inputmode="url" autocomplete="url" maxlength="2048" placeholder="https://"${disabled}></label>
+    ${policy?.enabled
+      ? `<div class="hw-files" id="homeworkFiles" data-homework-id="${escapeHtml(homework.id)}">${homeworkFilesInner(homework, Boolean(homework.withdrawn))}</div>`
+      : `<div class="hw-files hw-files--off"><span class="field-label">Файли</span><p class="hw-files-note">${escapeHtml(policy?.reason ?? 'Прикріплення файлів зараз недоступне. Надішли роботу текстом або посиланням.')}</p></div>`}
+    <label class="field"><span class="field-label">Коментар викладачу <span class="field-hint">за потреби</span></span><textarea name="studentComment" rows="3" maxlength="2000" placeholder="Що було складно або цікаво?"${disabled}></textarea></label>
+    <div class="hw-form-footer">
+      <p class="hw-form-status" id="homeworkFormStatus">${escapeHtml(homeworkFormStatusText(homework))}</p>
+      <button type="submit" class="btn btn--primary btn--lg hw-submit"${disabled}>Надіслати домашнє завдання ${arrowIcon()}</button>
+    </div>
+  </form>`;
+}
+
+function homeworkAttemptMarkup(submission, timezone) {
+  const link = safeHttpsUrl(submission.contentUrl);
+  const files = submission.attachments ?? [];
+  return `<section class="hw-card hw-attempt" aria-labelledby="hwAttemptTitle">
+    <div class="hw-card-head"><h2 class="hw-card-title" id="hwAttemptTitle">Спроба ${submission.attemptNumber}</h2>${submission.submittedAt ? `<p class="hw-card-note">Надіслано ${escapeHtml(formatClassTime(submission.submittedAt, timezone))}</p>` : ''}</div>
+    ${submission.contentText ? `<p class="hw-text">${escapeHtml(submission.contentText)}</p>` : ''}
+    ${link ? `<button type="button" class="btn btn--secondary btn--row btn--block" data-external="${escapeHtml(link)}"><span class="btn-label">Посилання на роботу</span>${externalIcon()}</button>` : ''}
+    ${files.length ? `<ul class="file-list" aria-label="Файли спроби ${submission.attemptNumber}">${files.map(file => fileItemMarkup({ ...file, key: file.id, state: 'ready' }, { removable: false })).join('')}</ul>` : ''}
+    ${submission.studentComment ? `<p class="hw-comment"><span>Коментар викладачу</span>${escapeHtml(submission.studentComment)}</p>` : ''}
+  </section>`;
+}
+
+function homeworkSentMarkup(status) {
+  const done = status.tone === 'done';
+  return `<section class="hw-card hw-sent" data-tone="${status.tone}" role="status">
+    <span class="hw-sent-icon" aria-hidden="true">${checkIcon()}</span>
+    <div><strong>${done ? 'Роботу перевірено' : 'Роботу надіслано'}</strong><p>${done ? 'Відгук викладача та історія спроб збережені.' : 'Викладач перевірить її найближчим часом. Якщо роботу повернуть на доопрацювання, тут з’явиться форма для нової спроби.'}</p></div>
   </section>`;
 }
 
@@ -584,20 +739,18 @@ function ai() {
       </header>
       <p class="ai-intro">Ментор уже знає твій урок і етап проєкту. Обери напрям або напиши своє питання.</p>
       <div class="suggestions">
-        <button data-prompt="Допоможи мені перевірити мою ідею"><span>01</span>Перевірити ідею</button>
-        <button data-prompt="Поясни тему простіше"><span>02</span>Пояснити тему</button>
-        <button data-prompt="Підкажи, що робити далі з проєктом"><span>03</span>Наступний крок</button>
+        <button type="button" class="suggestion" data-prompt="Допоможи мені перевірити мою ідею"><span>01</span>Перевірити ідею</button>
+        <button type="button" class="suggestion" data-prompt="Поясни тему простіше"><span>02</span>Пояснити тему</button>
+        <button type="button" class="suggestion" data-prompt="Підкажи, що робити далі з проєктом"><span>03</span>Наступний крок</button>
       </div>
       <div class="chat" id="chat" aria-live="polite">
         ${aiMessages.map(message => `<div class="message ${message.role === 'assistant' ? 'ai-msg' : 'user-msg'}">${message.role === 'assistant' ? `<div class="msg-avatar">${svgIcon('ai')}</div>` : ''}<p>${escapeHtml(message.content)}</p></div>`).join('')}
         <div class="ai-context" aria-label="Контекст AI ментора синхронізовано"><span>КОНТЕКСТ ПІДКЛЮЧЕНО</span><div><b>УРОК ${lessonData?.number ?? '—'}</b><i></i><em></em><i></i><b>MVP ${projectData?.completionPercent ?? 0}%</b></div><small>Ментор бачить твій поточний маршрут</small></div>
       </div>
       <form class="composer" id="composer" data-conversation="${conversation?.id ?? ''}">
-        <button type="button" class="attach" disabled aria-label="Додавання файлів поки недоступне" aria-describedby="attachmentHint">+</button>
         <input id="aiInput" autocomplete="off" aria-label="Повідомлення AI ментору" placeholder="Запитай про урок або проєкт…">
-        <button class="send" aria-label="Надіслати">${arrowIcon()}</button>
+        <button type="submit" class="btn btn--icon btn--primary send" aria-label="Надіслати">${arrowIcon()}</button>
       </form>
-      <p class="attach-hint" id="attachmentHint">Додавання файлів поки недоступне.</p>
       <p class="ai-note">AI допомагає думати, але не робить проєкт замість тебе.</p>
     </section>`;
 }
@@ -631,16 +784,16 @@ function profile() {
 }
 
 function lessonPage() {
-  if (!currentLesson) return `<section class="page lesson-page"><div class="page-title"><h1>Урок не знайдено</h1></div><button class="primary-btn" data-tab="learn">До маршруту</button></section>`;
+  if (!currentLesson) return `<section class="page lesson-page"><div class="page-title"><h1>Урок не знайдено</h1></div><button type="button" class="btn btn--primary btn--lg" data-tab="learn">До маршруту ${arrowIcon()}</button></section>`;
   const lesson = currentLesson;
   return `<section class="page lesson-page">
-    <button class="lesson-back" data-back="lesson">← ${backLabel('lesson')}</button>
+    ${backButton('lesson')}
     <div class="page-title"><span class="section-kicker">УРОК ${lesson.number} · ${escapeHtml(lesson.moduleTitle)}</span><span class="zone-code">${lesson.estimatedMinutes} ХВ · +${lesson.xpReward} XP</span><h1>${escapeHtml(lesson.title)}</h1><p>${escapeHtml(lesson.summary)}</p></div>
     ${lesson.content.explanation ? `<section class="lesson-console"><span>КЛЮЧОВА ІДЕЯ</span><h2>${escapeHtml(lesson.content.conceptName)}</h2><p>${escapeHtml(lesson.content.explanation)}</p></section>` : ''}
     ${lesson.content.examples.length ? `<section class="lesson-section"><span class="section-kicker">ПРИКЛАДИ</span>${lesson.content.examples.map(example => `<article><i></i><p>${escapeHtml(example)}</p></article>`).join('')}</section>` : ''}
     ${lesson.content.task.prompt ? `<section class="lesson-task"><span class="section-kicker">ТВІЙ ХІД</span><h2>${escapeHtml(lesson.content.task.prompt)}</h2><p>${escapeHtml(lesson.content.task.hint)}</p></section>` : ''}
     ${lesson.completionReview?.feedback?`<p class="lesson-review-feedback">Коментар викладача: ${escapeHtml(lesson.completionReview.feedback)}</p>`:''}
-    <section class="lesson-next"><div><span>ДАЛІ</span><p>${escapeHtml(lesson.content.nextStep)}</p></div>${lesson.state === 'completed' ? `<button class="primary-btn" data-tab="learn">Повернутися</button>` : `<button class="primary-btn" id="completeLesson" data-lesson="${lesson.id}" ${lesson.completionReview?.status==='pending_review'?'disabled':''}>${lesson.completionReview?.status==='pending_review'?'Очікує підтвердження викладача':'Надіслати на підтвердження'} ${arrowIcon()}</button>`}</section>
+    <section class="lesson-next"><div><span>ДАЛІ</span><p>${escapeHtml(lesson.content.nextStep)}</p></div>${lesson.state === 'completed' ? `<button type="button" class="btn btn--primary btn--lg" data-tab="learn">Повернутися до маршруту</button>` : `<button type="button" class="btn btn--primary btn--lg" id="completeLesson" data-lesson="${lesson.id}" ${lesson.completionReview?.status==='pending_review'?'disabled':''}>${lesson.completionReview?.status==='pending_review'?'Очікує підтвердження викладача':`Надіслати на підтвердження ${arrowIcon()}`}</button>`}</section>
   </section>`;
 }
 
@@ -654,6 +807,20 @@ function externalIcon() {
 
 function videoIcon() {
   return '<svg class="arrow-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 11 7-11 7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
+}
+
+// A function declaration, not a const: the header template calls closeIcon() before this line runs.
+function uiIcon(path) { return `<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`; }
+function backIcon() { return uiIcon('<path d="M15 6l-6 6 6 6"/>'); }
+function closeIcon() { return uiIcon('<path d="M6 6l12 12M18 6 6 18"/>'); }
+function trashIcon() { return uiIcon('<path d="M4.5 7h15M10 11v6M14 11v6M6.5 7l.9 12.1A1.9 1.9 0 0 0 9.3 21h5.4a1.9 1.9 0 0 0 1.9-1.9L17.5 7M9.5 7V4.8c0-.4.4-.8.8-.8h3.4c.4 0 .8.4.8.8V7"/>'); }
+function paperclipIcon() { return uiIcon('<path d="m20 11.5-7.8 7.8a5 5 0 0 1-7.1-7.1l8.2-8.2a3.4 3.4 0 0 1 4.8 4.8l-8.2 8.2a1.7 1.7 0 0 1-2.4-2.4l7.4-7.4"/>'); }
+function retryIcon() { return uiIcon('<path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4.5h-4.5"/>'); }
+function checkIcon() { return uiIcon('<path d="m5 12.5 4.5 4.5L19 7.5"/>'); }
+function openFileIcon() { return uiIcon('<path d="M7 17 17 7M8.5 7H17v8.5"/>'); }
+
+function backButton(page) {
+  return `<button type="button" class="btn btn--ghost btn--sm btn--back" data-back="${page}">${backIcon()}<span>${escapeHtml(backLabel(page))}</span></button>`;
 }
 
 function artifactIcon(type) {
@@ -689,7 +856,7 @@ function loadingView(label = 'Завантажуємо твій маршрут')
 function errorView(message, title = 'Не вдалося увійти', retry = initialize, backPage = null) {
   errorReturnPage = backPage;
   view.removeAttribute('aria-busy');
-  view.innerHTML = `<section class="system-state error-state">${backPage ? `<button class="lesson-back" id="errorBack">← ${backLabel(backPage)}</button>` : ''}<div class="state-signal"></div><span>CONNECTION</span><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p><button class="primary-btn" id="retryBoot">Спробувати ще раз</button></section>`;
+  view.innerHTML = `<section class="system-state error-state">${backPage ? `<button type="button" class="btn btn--ghost btn--sm btn--back" id="errorBack">${backIcon()}<span>${escapeHtml(backLabel(backPage))}</span></button>` : ''}<div class="state-signal"></div><span>CONNECTION</span><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p><button type="button" class="btn btn--primary btn--lg" id="retryBoot">${retryIcon()}Спробувати ще раз</button></section>`;
   document.querySelector('#retryBoot')?.addEventListener('click', retry);
   document.querySelector('#errorBack')?.addEventListener('click', () => goBack(backPage));
   updateTelegramBackButton();
@@ -747,9 +914,219 @@ function haptic(type = 'impact') {
   try {
     if (!tg?.HapticFeedback) return;
     if (type === 'selection') tg.HapticFeedback.selectionChanged();
+    else if (type === 'success' || type === 'error') tg.HapticFeedback.notificationOccurred(type);
     else tg.HapticFeedback.impactOccurred('light');
   } catch {}
 }
+
+// ---- Homework files -------------------------------------------------------------------------
+
+function homeworkById(id) {
+  return data?.homework?.find(item => item.id === id) ?? (currentHomework?.id === id ? currentHomework : null);
+}
+
+/** Applies a change to every in-memory copy of one homework (the list entry and the open page). */
+function updateHomework(id, change) {
+  for (const homework of new Set([data?.homework?.find(item => item.id === id), currentHomework?.id === id ? currentHomework : null])) if (homework) change(homework);
+}
+
+function homeworkQueue(id) {
+  if (!homeworkUploads.has(id)) homeworkUploads.set(id, []);
+  return homeworkUploads.get(id);
+}
+
+function setHomeworkNotice(id, type, text) {
+  if (text) homeworkFileNotices.set(id, { type, text }); else homeworkFileNotices.delete(id);
+}
+
+/** Re-renders only the file area, so typed text, focus and scroll stay where they are. */
+function refreshHomeworkFiles(id, { focus } = {}) {
+  const homework = homeworkById(id);
+  if (!homework || active !== 'homework' || currentHomework?.id !== id) return;
+  const host = view.querySelector('#homeworkFiles');
+  if (host) {
+    const focusedKey = document.activeElement?.closest?.('[data-file-key]')?.dataset.fileKey;
+    host.innerHTML = homeworkFilesInner(homework, Boolean(homework.withdrawn));
+    const target = focus ? host.querySelector(focus) : focusedKey ? host.querySelector(`[data-file-key="${CSS.escape(focusedKey)}"] button`) : null;
+    target?.focus({ preventScroll: true });
+  }
+  const status = view.querySelector('#homeworkFormStatus');
+  if (status) status.textContent = homeworkFormStatusText(homework);
+  const title = view.querySelector('.hw-header .status-pill');
+  if (title) { const next = homeworkStatus(homework); title.textContent = next.label; title.dataset.tone = next.tone; }
+}
+
+function updateUploadProgress(id, item) {
+  const row = view.querySelector(`#homeworkFiles [data-file-key="${CSS.escape(item.key)}"]`);
+  if (!row) return;
+  const percent = Math.round(item.progress * 100);
+  row.querySelector('.file-state')?.replaceChildren(item.state === 'verifying' ? 'Перевіряємо файл' : `Завантаження ${percent}%`);
+  const bar = row.querySelector('.file-progress');
+  bar?.setAttribute('aria-valuenow', String(item.state === 'verifying' ? 100 : percent));
+  bar?.querySelector('i')?.style.setProperty('width', `${item.state === 'verifying' ? 100 : percent}%`);
+}
+
+function addHomeworkFiles(id, files) {
+  const homework = homeworkById(id), policy = data?.fileUploads;
+  if (!homework || !policy?.enabled || homework.withdrawn || actionGate.has(`homework:submit:${id}`)) return;
+  const attached = homeworkFileEntries(homework).filter(entry => entry.state !== 'error');
+  const { accepted, rejected } = checkSelection(files, policy, { count: attached.length, totalBytes: attached.reduce((sum, entry) => sum + (entry.size || 0), 0) });
+  setHomeworkNotice(id, 'error', rejected.length ? `Не додано: ${rejected.join('; ')}.` : '');
+  const queue = homeworkQueue(id);
+  for (const { file, extension } of accepted) {
+    queue.push({ key: crypto.randomUUID(), file, name: file.name, extension, size: file.size, state: 'queued', progress: 0, error: '', retryable: true, serverId: null, target: null, xhr: null, cancelled: false });
+  }
+  refreshHomeworkFiles(id);
+  if (accepted.length) pumpHomeworkUploads(id);
+  else if (rejected.length) haptic('error');
+}
+
+/** Uploads one file at a time; each run is in the action gate, so background refreshes wait. */
+function pumpHomeworkUploads(id) {
+  const running = actionGate.run(`homework:uploads:${id}`, async () => {
+    let item;
+    while ((item = homeworkQueue(id).find(entry => entry.state === 'queued'))) await uploadHomeworkFile(id, item);
+  });
+  running.finally(() => { if (homeworkQueue(id).some(entry => entry.state === 'queued') && !actionGate.has(`homework:uploads:${id}`)) pumpHomeworkUploads(id); });
+}
+
+async function uploadHomeworkFile(id, item) {
+  const show = (state, progress = item.progress) => { item.state = state; item.progress = progress; refreshHomeworkFiles(id); };
+  try {
+    if (!item.target || item.target.expired || Date.parse(item.target.expiresAt) - Date.now() < 60_000) {
+      if (item.serverId) { const stale = item.serverId; item.serverId = null; api.discardUpload(id, stale).catch(() => {}); }
+      show('uploading', 0);
+      const reserved = await api.reserveUpload(id, { name: item.name, size: item.size });
+      if (item.cancelled) { api.discardUpload(id, reserved.file.id).catch(() => {}); return; }
+      item.serverId = reserved.file.id;
+      item.target = { ...reserved.upload, expiresAt: reserved.expiresAt };
+    }
+    show('uploading', 0);
+    await sendFile(item.target, item.file, { onStart: xhr => { item.xhr = xhr; }, onProgress: value => { item.progress = value; updateUploadProgress(id, item); } });
+    item.xhr = null;
+    if (item.cancelled) return;
+    show('verifying', 1);
+    // Only the server's confirmation turns the row into "Завантажено".
+    const ready = await api.completeUpload(id, item.serverId);
+    if (item.cancelled) { api.discardUpload(id, ready.id).catch(() => {}); return; }
+    const queue = homeworkQueue(id);
+    queue.splice(queue.indexOf(item), 1);
+    updateHomework(id, homework => { homework.draftFiles = [...(homework.draftFiles ?? []).filter(file => file.id !== ready.id), ready]; });
+    refreshHomeworkFiles(id);
+  } catch (error) {
+    item.xhr = null;
+    if (item.cancelled || error.aborted) return;
+    if (error.expired) item.target = { ...item.target, expired: true };
+    // The server already removed a rejected or truncated upload; a retry starts from a new reservation.
+    if (['FILE_CONTENT_MISMATCH', 'FILE_SIZE_MISMATCH', 'ATTACHMENT_NOT_FOUND'].includes(error.code)) { item.serverId = null; item.target = null; }
+    item.error = error.message || 'Не вдалося завантажити файл.';
+    item.retryable = !isFinalUploadError(error);
+    show('error');
+    haptic('error');
+  }
+}
+
+function retryHomeworkUpload(id, key) {
+  const item = homeworkQueue(id).find(entry => entry.key === key);
+  if (!item || item.state !== 'error' || actionGate.has(`homework:submit:${id}`)) return;
+  item.state = 'queued'; item.error = ''; item.progress = 0;
+  refreshHomeworkFiles(id, { focus: `[data-file-key="${CSS.escape(key)}"] .file-remove` });
+  pumpHomeworkUploads(id);
+}
+
+async function removeHomeworkFile(id, key, button) {
+  if (actionGate.has(`homework:submit:${id}`)) return;
+  const queue = homeworkQueue(id), local = queue.find(item => item.key === key);
+  if (local) {
+    local.cancelled = true;
+    local.xhr?.abort();
+    queue.splice(queue.indexOf(local), 1);
+    if (local.serverId) api.discardUpload(id, local.serverId).catch(() => {});
+    setHomeworkNotice(id, 'status', `«${local.name}» прибрано.`);
+    refreshHomeworkFiles(id, { focus: '#homeworkAttach' });
+    return;
+  }
+  const homework = homeworkById(id);
+  if (!homework) return;
+  if (!homework.draftFiles?.some(file => file.id === key)) {
+    // A file from the returned attempt: it stays in that attempt, only the next one leaves it out.
+    const file = homework.latestSubmission?.attachments?.find(item => item.id === key);
+    if (!file) return;
+    excludedFileIds(id).add(key);
+    saveExcludedFileIds(id);
+    setHomeworkNotice(id, 'status', `«${file.name}» не буде в новій спробі. У попередній спробі файл залишиться.`);
+    refreshHomeworkFiles(id, { focus: '#homeworkAttach' });
+    return;
+  }
+  await actionGate.run(`homework:file:remove:${key}`, async () => {
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    try {
+      await api.discardUpload(id, key);
+      const name = homework.draftFiles.find(file => file.id === key)?.name ?? 'Файл';
+      updateHomework(id, item => { item.draftFiles = (item.draftFiles ?? []).filter(file => file.id !== key); });
+      setHomeworkNotice(id, 'status', `«${name}» видалено.`);
+      refreshHomeworkFiles(id, { focus: '#homeworkAttach' });
+    } catch (error) {
+      setHomeworkNotice(id, 'error', `Не вдалося видалити файл. ${error.message}`);
+      refreshHomeworkFiles(id);
+    }
+  });
+}
+
+async function openHomeworkFile(button) {
+  const expires = Date.parse(button.dataset.fileExpires ?? '');
+  if (Number.isFinite(expires) && expires - Date.now() < 15_000) {
+    // Signed links are short-lived. Telegram opens links only from a tap, so fetch fresh links and
+    // ask for one more tap instead of opening after the request.
+    button.disabled = true;
+    try {
+      data.homework = await api.homework();
+      if (currentHomework) currentHomework = data.homework.find(item => item.id === currentHomework.id) ?? currentHomework;
+      if (currentHomework) setHomeworkNotice(currentHomework.id, 'status', 'Посилання на файли оновлено. Натисни «Відкрити» ще раз.');
+      if (active === 'homework') render('homework', false);
+    } catch (error) {
+      button.disabled = false;
+      if (currentHomework) { setHomeworkNotice(currentHomework.id, 'error', error.message); refreshHomeworkFiles(currentHomework.id); }
+    }
+    return;
+  }
+  let url;
+  try { url = new URL(button.dataset.fileUrl ?? '', location.href); } catch { return; }
+  if (url.protocol === 'https:') openExternal(url.href);
+  else if (url.origin === location.origin) window.open(url.href, '_blank', 'noopener,noreferrer');
+}
+
+// One delegated listener for every file control: the file area is re-rendered often.
+view.addEventListener('click', event => {
+  const control = event.target.closest?.('#homeworkAttach, [data-file-open], [data-file-remove], [data-file-retry]');
+  if (!control || !view.contains(control) || control.disabled) return;
+  const homeworkId = control.closest('[data-homework-id]')?.dataset.homeworkId ?? currentHomework?.id;
+  if (control.id === 'homeworkAttach') { view.querySelector('#homeworkFileInput')?.click(); return; }
+  if (control.hasAttribute('data-file-open')) { openHomeworkFile(control); return; }
+  if (control.dataset.fileRemove) { removeHomeworkFile(homeworkId, control.dataset.fileRemove, control); return; }
+  if (control.dataset.fileRetry) retryHomeworkUpload(homeworkId, control.dataset.fileRetry);
+});
+view.addEventListener('change', event => {
+  if (event.target.id !== 'homeworkFileInput') return;
+  const input = event.target, files = [...input.files];
+  input.value = '';
+  if (files.length) addHomeworkFiles(input.closest('[data-homework-id]').dataset.homeworkId, files);
+});
+for (const type of ['dragenter', 'dragover']) view.addEventListener(type, event => {
+  const zone = event.target.closest?.('[data-dropzone]');
+  if (!zone || zone.querySelector('#homeworkAttach')?.disabled || !event.dataTransfer?.types.includes('Files')) return;
+  event.preventDefault();
+  zone.classList.add('is-dragover');
+});
+view.addEventListener('dragleave', event => { const zone = event.target.closest?.('[data-dropzone]'); if (zone && !zone.contains(event.relatedTarget)) zone.classList.remove('is-dragover'); });
+view.addEventListener('drop', event => {
+  const zone = event.target.closest?.('[data-dropzone]');
+  if (!zone) return;
+  event.preventDefault();
+  zone.classList.remove('is-dragover');
+  if (!zone.querySelector('#homeworkAttach')?.disabled) addHomeworkFiles(zone.closest('[data-homework-id]').dataset.homeworkId, [...event.dataTransfer.files]);
+});
 
 function render(tab, updateHistory = true) {
   if (!data) return;
@@ -907,12 +1284,26 @@ function wirePage() {
     }, { successText: 'Проєкт додано до портфоліо' });
   });
 
-  const homeworkForm = document.querySelector('#homeworkSubmit');
+  const homeworkForm = view.querySelector('#homeworkSubmit');
   homeworkForm?.addEventListener('submit', event => {
-    event.preventDefault(); const values = new FormData(homeworkForm), contentUrl = String(values.get('contentUrl') ?? '').trim(), button = homeworkForm.querySelector('button');
-    runAction(button, `homework:submit:${homeworkForm.dataset.homeworkId}`, 'Надсилаємо…', () => api.submitHomework(homeworkForm.dataset.homeworkId, { contentText: String(values.get('contentText') ?? ''), ...(contentUrl ? { contentUrl } : {}), studentComment: String(values.get('studentComment') ?? '') }), async () => {
+    event.preventDefault();
+    const homeworkId = homeworkForm.dataset.homeworkId, homework = homeworkById(homeworkId), button = homeworkForm.querySelector('.hw-submit');
+    if (!homework || button.disabled) return;
+    const values = new FormData(homeworkForm);
+    const contentText = String(values.get('contentText') ?? '').trim(), contentUrl = String(values.get('contentUrl') ?? '').trim(), studentComment = String(values.get('studentComment') ?? '').trim();
+    const entries = homeworkFileEntries(homework);
+    if (entries.some(entry => ['queued', 'uploading', 'verifying'].includes(entry.state))) { showActionStatus(button, 'error', 'Дочекайся, поки всі файли завантажаться.'); return; }
+    if (entries.some(entry => entry.state === 'error')) { showActionStatus(button, 'error', 'Є файл з помилкою. Повтори його завантаження або прибери зі списку.'); return; }
+    if (contentUrl && !safeHttpsUrl(contentUrl)) { showActionStatus(button, 'error', 'Посилання має починатися з https://'); homeworkForm.elements.contentUrl.focus(); return; }
+    const attachmentIds = entries.filter(entry => entry.state === 'ready' && entry.id).map(entry => entry.id);
+    if (!contentText && !contentUrl && !attachmentIds.length) { showActionStatus(button, 'error', 'Додай відповідь, посилання або хоча б один файл.'); homeworkForm.elements.contentText.focus(); return; }
+    // The same key is reused on retry, so a request that reached the server is never stored twice.
+    const clientRequestId = homeworkForm.dataset.requestId ?? (homeworkForm.dataset.requestId = crypto.randomUUID());
+    runAction(button, `homework:submit:${homeworkId}`, 'Надсилаємо…', () => api.submitHomework(homeworkId, { contentText, ...(contentUrl ? { contentUrl } : {}), studentComment, attachmentIds, clientRequestId }), async () => {
+      haptic('success');
+      excludedFileIds(homeworkId).clear(); saveExcludedFileIds(homeworkId); homeworkFileNotices.delete(homeworkId);
       data.homework = await api.homework(); data.home.homeworkDue = data.homework.find(item => item.state !== 'completed') ?? null;
-      if (homeworkForm.isConnected) { currentHomework = data.homework.find(item => item.id === homeworkForm.dataset.homeworkId); render('homework', false); }
+      if (homeworkForm.isConnected) { currentHomework = data.homework.find(item => item.id === homeworkId) ?? currentHomework; render('homework', false); }
     }, { successText: 'Роботу надіслано' });
   });
 

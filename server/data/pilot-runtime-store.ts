@@ -148,6 +148,31 @@ export interface PilotClassSession extends ClassSessionDto {
 export interface PilotHomeworkSubmission extends HomeworkSubmissionDto {
   studentId: string;
   homeworkId: string;
+  /** Files sent with this attempt. A file may carry over into a later attempt. */
+  attachmentIds?: string[];
+  /** Client key of the submit action; a repeated request returns this attempt instead of a new one. */
+  clientRequestId?: string;
+}
+
+/**
+ * Metadata of a private homework file. The bytes live in object storage under `pathname`; this
+ * record ties them to one student and one homework. `pending` means an upload URL was issued and
+ * the bytes have not been verified yet.
+ */
+export interface PilotHomeworkFile {
+  id: string;
+  studentId: string;
+  homeworkId: string;
+  pathname: string;
+  originalName: string;
+  extension: string;
+  mimeType: string;
+  size: number;
+  status: 'pending' | 'ready';
+  createdAt: string;
+  uploadedAt: string | null;
+  /** Pending uploads expire; their storage object is removed by the next sweep. */
+  expiresAt: string | null;
 }
 
 export interface PilotAttendanceRecord {
@@ -179,6 +204,7 @@ export interface PilotRuntimeState {
   attendance: PilotAttendanceRecord[];
   homework: TeacherHomeworkDto[];
   submissions: PilotHomeworkSubmission[];
+  homeworkFiles: PilotHomeworkFile[];
   portfolioProjects: Record<string, PortfolioDto['projects']>;
   portfolioVisibility: Record<string, 'private' | 'shareable' | 'public'>;
   teacherNotes: TeacherPrivateNoteDto[];
@@ -321,6 +347,7 @@ export function createPilotRuntimeState(options: { includeDemoContent?: boolean 
     attendance: [],
     homework: options.includeDemoContent ? homework : [],
     submissions: [],
+    homeworkFiles: [],
     portfolioProjects: studentRecord(() => []),
     portfolioVisibility: Object.fromEntries(PILOT_STUDENTS.map(student => [PILOT_PORTFOLIO_IDS[student.id]!, 'private'])),
     teacherNotes: [],
@@ -411,6 +438,7 @@ export function migratePilotRuntimeState(input: PilotRuntimeState | (Partial<Pil
     notification.readAt??=null;
   }
   state.parentContactRequests=state.parentContactRequests??[];
+  state.homeworkFiles=state.homeworkFiles??[];
   state.userStatus=state.userStatus??seed.userStatus;
   for(const person of Object.values(state.directory)){
     person.status=state.userStatus[person.id]??person.status;

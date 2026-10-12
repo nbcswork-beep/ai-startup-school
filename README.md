@@ -49,4 +49,6 @@ Students see only actual sessions and published homework assigned to their activ
 
 Group membership, attendance and automatic cross-device refresh are documented in [docs/GROUP-SYNCHRONIZATION.md](docs/GROUP-SYNCHRONIZATION.md). Creating or editing a group never generates lessons; schedule each real lesson explicitly.
 
+Students can attach files to homework; they are stored in a private Vercel Blob store, kept as drafts until sent, and listed for teachers in Teacher OS. Storage setup, limits and security checks are in [docs/HOMEWORK-FILES.md](docs/HOMEWORK-FILES.md). Student App buttons and states follow [docs/STUDENT-UI.md](docs/STUDENT-UI.md).
+
 Lesson credit and project stages require Teacher approval. Students submit written stage responses, project notes and HTTPS links; Teachers can return work with feedback or approve the next stage. See [docs/TEACHER-APPROVAL.md](docs/TEACHER-APPROVAL.md) for APIs, migration and test steps.

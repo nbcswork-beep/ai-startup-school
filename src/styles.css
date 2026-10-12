@@ -43,10 +43,6 @@ button {
   touch-action: manipulation;
 }
 
-button:active {
-  transform: scale(0.975);
-}
-
 input::placeholder,
 textarea::placeholder {
   color: var(--faint);
@@ -93,17 +89,6 @@ input:focus-visible {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.6;
-}
-
-.lesson-back {
-  min-height: 44px;
-  padding: 0;
-  border: 0;
-  color: var(--cyan);
-  background: transparent;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
 }
 
 .lesson-console,
@@ -180,8 +165,6 @@ input:focus-visible {
 }
 .project-empty textarea,
 .project-editor textarea { min-height: 84px; }
-.workspace-dock button:disabled { opacity: .48; cursor: not-allowed; }
-.section-head #editProject { min-height: 44px; padding-inline: 14px; }
 .error-message { border-color: rgba(var(--pink-rgb), .4); }
 
 .app-shell {
@@ -290,31 +273,6 @@ input:focus-visible {
   gap: 8px;
 }
 
-.icon-btn,
-.avatar {
-  width: 44px;
-  height: 44px;
-  border-radius: 14px;
-  border: 1px solid var(--line);
-  color: var(--text);
-  background: rgba(var(--surface-rgb), 0.58);
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-}
-
-.icon-btn svg {
-  width: 20px;
-  height: 20px;
-}
-
-.avatar {
-  background: var(--pink);
-  color: var(--ink);
-  border-color: transparent;
-  font-weight: 900;
-}
-
 .notification {
   position: relative;
 }
@@ -391,19 +349,6 @@ input:focus-visible {
   font: 800 18px/1.2 Unbounded, sans-serif;
 }
 
-.notification-close {
-  width: 44px;
-  height: 44px;
-  flex: 0 0 auto;
-  border: 1px solid var(--line);
-  border-radius: 13px;
-  color: var(--text);
-  background: rgba(var(--lavender-rgb), 0.035);
-  font-size: 24px;
-  line-height: 1;
-  cursor: pointer;
-}
-
 .notification-panel-tools {
   min-height: 44px;
   margin-top: 9px;
@@ -415,22 +360,6 @@ input:focus-visible {
   color: var(--muted);
   font-size: 10px;
   font-weight: 600;
-}
-
-.notification-panel-tools button {
-  min-height: 44px;
-  padding: 0 2px 0 12px;
-  border: 0;
-  color: var(--pink);
-  background: transparent;
-  font-size: 10px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.notification-panel-tools button:disabled {
-  color: var(--faint);
-  cursor: default;
 }
 
 .notification-list {
@@ -720,23 +649,6 @@ p {
   line-height: 1.5;
 }
 
-.primary-btn {
-  min-height: 46px;
-  padding: 0 15px;
-  border: 0;
-  border-radius: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 11px;
-  background: var(--pink);
-  color: var(--ink);
-  font-size: 11px;
-  font-weight: 900;
-  cursor: pointer;
-  box-shadow: 0 10px 26px rgba(var(--midnight-rgb), 0.24);
-}
-
 .arrow-icon {
   width: 19px;
   height: 19px;
@@ -1020,8 +932,7 @@ p {
   line-height: 1.4;
 }
 
-.round-arrow,
-.mentor-dock > button {
+.round-arrow {
   width: 44px;
   height: 44px;
   padding: 0;
@@ -1092,25 +1003,6 @@ p {
   font-size: 17px;
   line-height: 1.2;
   letter-spacing: -0.045em;
-}
-
-.text-link {
-  min-height: 44px;
-  padding: 0;
-  border: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  background: transparent;
-  color: var(--pink);
-  font-size: 9px;
-  font-weight: 900;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.text-link .arrow-icon {
-  width: 16px;
 }
 
 .tiny-badge {
@@ -1776,12 +1668,6 @@ p {
   font-size: 8px;
 }
 
-.primary-btn.compact {
-  min-height: 44px;
-  grid-column: 1 / -1;
-  width: 100%;
-}
-
 .ai-page {
   min-height: calc(100dvh - 164px - var(--safe-top) - var(--safe-bottom));
   display: flex;
@@ -1816,30 +1702,6 @@ p {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 7px;
-}
-
-.suggestions button {
-  min-width: 0;
-  min-height: 70px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 15px;
-  color: var(--text);
-  background: rgba(var(--surface-rgb), 0.64);
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: space-between;
-  text-align: left;
-  font-size: 9px;
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.suggestions button span {
-  color: var(--cyan);
-  font-family: Unbounded, sans-serif;
-  font-size: 8px;
 }
 
 .chat {
@@ -1976,28 +1838,6 @@ p {
 
 .composer input::placeholder {
   color: var(--faint);
-}
-
-.attach,
-.send {
-  width: 44px;
-  height: 44px;
-  border: 0;
-  border-radius: 13px;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-}
-
-.attach {
-  color: var(--muted);
-  background: rgba(var(--lavender-rgb), 0.06);
-  font-size: 20px;
-}
-
-.send {
-  color: var(--ink);
-  background: var(--pink);
 }
 
 .ai-note {
@@ -2380,9 +2220,7 @@ p {
 .homework-status,
 .portfolio-beacon > div > span,
 .portfolio-project > div > span,
-.homework-brief span,
-.teacher-feedback span,
-.attempt-history > span {
+.teacher-feedback span {
   color: var(--cyan);
   font-size: 7.5px;
   font-weight: 900;
@@ -2391,25 +2229,21 @@ p {
 
 .class-copy h2 { margin: 5px 0; font-size: 14px; line-height: 1.3; }
 .class-copy p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
-.class-join,
 .class-link-pending {
   position: relative;
   z-index: 1;
   grid-column: 1 / -1;
-  min-height: 46px;
-  border: 0;
+  min-height: 48px;
+  padding: 12px 14px;
   border-radius: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  color: var(--surface);
-  background: var(--pink);
-  font-size: 10px;
-  font-weight: 900;
+  color: var(--muted);
+  background: rgba(var(--lavender-rgb), .05);
+  font-size: 13px;
+  text-align: center;
 }
-.class-join .arrow-icon { width: 17px; }
-.class-link-pending { color: var(--muted); background: rgba(var(--lavender-rgb), .05); }
 
 .homework-pulse {
   width: 100%;
@@ -2445,22 +2279,11 @@ p {
 .recovery-card-head small { color: var(--muted); font: 700 8px/1.4 Inter, sans-serif; letter-spacing: 0; }
 .recovery-card h3 { margin: 10px 0 5px; font-size: 14px; }
 .recovery-card > p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.55; }
-.recovery-materials { display: grid; gap: 6px; margin-top: 13px; }
-.recovery-materials button,
-.recovery-materials span { min-height: 44px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 11px; display: flex; align-items: center; justify-content: space-between; color: var(--text); background: rgba(var(--lavender-rgb), .035); font-size: 9px; text-align: left; }
-.recovery-materials .arrow-icon { width: 16px; color: var(--cyan); }
 .recovery-empty { display: block; margin-top: 12px; color: var(--muted); font-size: 8px; }
 .recovery-task { margin-top: 13px; padding: 11px; border-left: 2px solid var(--pink); background: rgba(var(--lavender-rgb), .025); }
 .recovery-task span { display: block; color: var(--pink); font-size: 7px; font-weight: 900; letter-spacing: .1em; }
 .recovery-task strong { display: block; margin-top: 5px; font-size: 10px; }
 .recovery-task p { margin: 4px 0 0; color: var(--muted); font-size: 8px; line-height: 1.5; }
-.recovery-actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: 13px; }
-.recovery-actions button { min-height: 44px; padding: 9px 12px; border-radius: 12px; font-size: 8px; font-weight: 800; }
-.recovery-homework { border: 0; display: flex; align-items: center; justify-content: space-between; color: var(--ink); background: var(--cyan); text-align: left; }
-.recovery-homework .arrow-icon { width: 16px; }
-.recovery-mentor { border: 1px solid var(--line-strong); color: var(--text); background: transparent; }
-.recovery-mentor.booked { color: var(--cyan); }
-@media (max-width: 420px) { .recovery-actions { grid-template-columns: 1fr; } }
 .compact-head { min-height: 54px; margin: 0; }
 .schedule-row {
   min-height: 68px;
@@ -2538,24 +2361,15 @@ p {
 .portfolio-project blockquote { margin-top:13px; padding-left:10px; border-left:1px solid var(--pink); color:rgba(var(--lavender-rgb), .82); }
 .skill-chips { display:flex;flex-wrap:wrap;gap:5px;margin-top:14px; }
 .skill-chips small { padding:5px 7px;border:1px solid var(--line);border-radius:8px;color:var(--cyan);font-size:6.5px;font-weight:800; }
-.portfolio-add { width:100%; margin:18px 0 26px; }
 .skill-field { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--line);border-bottom:1px solid var(--line); }
 .skill-field article { min-height:90px;padding:15px 12px;display:grid;align-content:center;gap:6px; }
 .skill-field article:nth-child(odd){border-right:1px solid var(--line)}.skill-field article:nth-child(n+3){border-top:1px solid var(--line)}
 .skill-field span{color:var(--cyan);font-size:7px;font-weight:900}.skill-field strong{font-size:10px}.skill-field i{height:3px;background:var(--line);border-radius:3px}.skill-field b{display:block;height:100%;background:linear-gradient(90deg,var(--cyan),var(--violet));}
 
-.homework-brief { display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin:16px 0 22px; }
-.homework-brief > div { min-height:92px;padding:15px 13px;display:grid;align-content:center;gap:7px; }.homework-brief>div+div{border-left:1px solid var(--line)}
-.homework-brief strong { font-size:10px;line-height:1.45; }
 .teacher-feedback { min-height:156px;margin-bottom:18px;padding:18px;border:1px solid rgba(var(--cyan-rgb), .24);border-radius:23px;display:grid;grid-template-columns:68px 1fr;gap:15px;background:rgba(var(--cyan-rgb), .045); }
 .teacher-feedback.needs_revision { border-color:rgba(var(--pink-rgb), .3);background:rgba(var(--pink-rgb), .045); }
 .feedback-score { width:64px;height:64px;border:1px solid var(--line-strong);border-radius:19px;display:flex;align-items:baseline;justify-content:center;padding-top:18px;color:var(--pink); }
 .feedback-score strong{font:800 25px/1 Unbounded,sans-serif}.feedback-score small{font-size:8px}.teacher-feedback h2{margin:5px 0;font-size:13px}.teacher-feedback p{margin:0;color:var(--muted);font-size:9px;line-height:1.55}
-.attempt-history { margin:16px 0;padding:14px 3px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:1fr auto;gap:5px; }.attempt-history strong{color:var(--pink);font-size:8px}.attempt-history p{grid-column:1/-1;margin:3px 0;color:var(--muted);font-size:9px;line-height:1.5}
-.homework-submit { margin-top:24px;padding:18px;border:1px solid var(--line-strong);border-radius:23px;background:rgba(var(--surface-strong-rgb), .68);display:grid;gap:14px; }
-.homework-submit label { display:grid;gap:7px;color:var(--muted);font-size:8px;font-weight:700; }
-.homework-submit textarea,.homework-submit input { width:100%;min-height:48px;padding:12px;border:1px solid var(--line);border-radius:13px;outline:0;color:var(--text);background:rgba(var(--midnight-rgb), .58);font-size:10px;resize:vertical; }.homework-submit textarea{min-height:88px}.homework-submit .primary-btn{width:100%}
-.submission-confirmation { padding:18px;border:1px solid rgba(var(--cyan-rgb), .22);border-radius:18px;color:var(--cyan);font-size:10px;line-height:1.5;text-align:center; }
 
 .mentor-booking { margin-top:20px;padding:16px;border:1px solid var(--line-strong);border-radius:23px;background:rgba(var(--surface-strong-rgb), .7); }
 .mentor-slots { display:grid;gap:8px; }
@@ -2955,8 +2769,7 @@ p {
 /* Book palette states; all existing dimensions, layout and interactions are retained. */
 ::selection { color: var(--on-purple); background: var(--violet); }
 .app-shell { background: radial-gradient(ellipse 90% 36% at 110% 8%, rgba(var(--purple-rgb), .16), transparent 66%), radial-gradient(ellipse 88% 28% at -20% 49%, rgba(var(--pink-rgb), .08), transparent 70%), var(--ink); }
-.primary-btn, .avatar, .brand-symbol, .big-avatar, .send { color: var(--on-accent); background: var(--pink); }
-.primary-btn { box-shadow: 0 10px 26px rgba(var(--midnight-rgb), .24); }
+.brand-symbol, .big-avatar { color: var(--on-accent); background: var(--pink); }
 .brand-name b { color: var(--pink); }
 .brand-symbol { box-shadow: 0 8px 24px rgba(var(--midnight-rgb), .24); }
 .bottom-nav { background: var(--surface); border-top-color: var(--line); }
@@ -2966,7 +2779,6 @@ p {
 .notification-panel { background: var(--surface-strong); border-color: var(--line-strong); }
 .notification-list { scrollbar-color: var(--control-border) var(--surface); }
 .notification-item.unread .notification-type { border-color: var(--pink); }
-.notification-panel-tools button { color: var(--attention); }
 .notification-empty.error strong, .error-state h1 { color: var(--attention); }
 .error-state .state-signal { border-color: var(--pink); box-shadow: inset 0 0 0 10px rgba(var(--pink-rgb), .08); }
 .error-message p { border-color: var(--pink); color: var(--attention); background: var(--surface); }
@@ -2979,9 +2791,7 @@ p {
 .lesson-node.locked, .build-step.locked, .artifact.locked, .recovery-card.completed, .homework-row.completed { opacity: 1; color: var(--muted); }
 .lesson-node.locked .lesson-copy small { color: var(--faint); }
 .artifact.locked .artifact-glyph { color: var(--faint); background: var(--surface-raised); }
-.primary-btn:disabled, .primary-btn[aria-disabled="true"], .workspace-dock button:disabled, .send:disabled { opacity: 1; color: var(--disabled-text); background: var(--disabled-surface); }
-.notification-panel-tools button:disabled { color: var(--disabled-text); }
-.project-empty :is(input,textarea), .project-editor :is(input,textarea), .homework-submit :is(input,textarea), .composer { border-color: var(--control-border); background: var(--ink); }
+.project-empty :is(input,textarea), .project-editor :is(input,textarea), .composer { border-color: var(--control-border); background: var(--ink); }
 input, textarea { caret-color: var(--text); }
 input:disabled, textarea:disabled { opacity: 1; color: var(--disabled-text); background: var(--disabled-surface); border-color: var(--line-strong); }
 input:focus-visible, textarea:focus-visible, .composer:focus-within { border-color: var(--cyan); outline-color: var(--cyan); }
@@ -2994,14 +2804,4 @@ input:-webkit-autofill, textarea:-webkit-autofill { -webkit-text-fill-color: var
 .teacher-feedback span, .lesson-console > span, .lesson-task .section-kicker { color: var(--violet); }
 .feedback-score { border-color: var(--violet); }
 .stage-feedback, .lesson-review-feedback { color: var(--attention); }
-.mentor-slot.booked { border-color: var(--cyan); color: var(--cyan); background: var(--surface); }
-.primary-btn:active:enabled, .send:active:enabled { color: var(--on-accent); background: var(--accent-active); }
-.icon-btn:active:enabled, .notification-close:active:enabled { background: var(--surface-hover); }
-@media (hover: hover) {
-  .primary-btn:hover:enabled, .send:hover:enabled { color: var(--on-accent); background: var(--accent-hover); }
-  .lesson-back:hover:enabled, .project-editor a:hover, .notification-panel-tools button:hover:enabled { color: var(--attention); }
-  .icon-btn:hover:enabled, .notification-close:hover:enabled, .profile-links button:hover:enabled, .mentor-slot:hover:enabled, .recovery-mentor:hover:enabled { background: var(--surface-hover); border-color: var(--cyan); }
-  .nav-item:hover:enabled { color: var(--text); background: var(--surface-hover); }
-  .notification-item:hover:enabled, .lesson-node:not(.current):not(.locked):hover { background: var(--surface); }
-  .lesson-node.current:hover, .build-step.current:hover { background: var(--accent-hover); }
-}
+/* Interaction states for buttons and interactive cards live in student-controls.css. */
