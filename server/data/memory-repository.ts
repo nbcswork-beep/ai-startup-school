@@ -5,7 +5,8 @@ import { MemorySessionStore, type SessionStore } from '../auth/session-store.js'
 import type { AppRepository } from './repository.js';
 import { MemoryMentoringStore, type MentoringStore, type StoredMentorBooking } from './mentoring-store.js';
 import { DEV_IDS, PILOT, PILOT_STUDENTS, PILOT_TEACHERS, SEEDED_LESSONS } from './seed.js';
-import { MemoryPilotRuntimeStore, PILOT_PORTFOLIO_IDS, type PilotDirectoryPerson, type PilotDirectoryRole, type PilotProject, type PilotRuntimeState, type PilotRuntimeStore } from './pilot-runtime-store.js';
+import { MemoryPilotRuntimeStore, PILOT_PORTFOLIO_IDS, type PilotDirectoryPerson, type PilotDirectoryRole, type PilotHomeworkFile, type PilotProject, type PilotRuntimeState, type PilotRuntimeStore } from './pilot-runtime-store.js';
+import type { FileLinkSigner, HomeworkSubmitInput, HomeworkUploadLimits, HomeworkUploadReservationInput } from './repository.js';
 import {
   absenceWindow, catchUpSince, classReminderWindow, entityStamp, evaluateDelivery,
   homeworkAssignedWindow, homeworkDeadlineWindow, homeworkOverdueWindow, reviewedWindow,
@@ -26,6 +27,7 @@ import type {
   ClassSessionDto,
   EffortLevel,
   HomeDto,
+  HomeworkFileDto,
   HomeworkSubmissionDto,
   HomeworkSummaryDto,
   LearningDto,
@@ -58,6 +60,9 @@ import type {
 
 type InternalProject = PilotProject;
 type InternalConversation = AiConversationDto & { summary: string; messages: AiMessageDto[]; clientMessageIds: Set<string> };
+/** File DTOs waiting for a signed link, paired with their storage pathname. */
+type FileLinkSink = Array<[HomeworkFileDto, string]>;
+const SUBMITTABLE_STATES = new Set(['needs_revision', 'in_progress']);
 type NotificationCandidate={recipientUserId:string;type:string;relatedEntityId:string|null;scheduledFor:string;dueAt:string;expiresAt:string;entityStamp:string|null;idempotencyKey:string;safeMetadata:{text:string;buttonText?:string;buttonUrl?:string;callbackData?:string;studentId?:string;weekKey?:string}};
 
 export interface MemoryRepositoryOptions {
@@ -90,6 +95,10 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function formatMegabytes(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))} МБ`;
+}
+
 export class MemoryRepository implements AppRepository {
   private users = new Map<string, AuthUser>([
     ...PILOT_STUDENTS.map(student => [student.id, { id: student.id, displayName: student.fullName, status: 'active' as const }] as const),
@@ -117,6 +126,7 @@ export class MemoryRepository implements AppRepository {
   private conversations = new Map<string, InternalConversation[]>();
   private readonly requireSeededTelegramIdentity: boolean;
   private readonly legacyWebEmails=new Set<string>();
+  private fileLinkSigner: FileLinkSigner | null = null;
 
   constructor(private readonly workspaceUrl?: string, options: MemoryRepositoryOptions = {}) {
     this.sessionStore = options.sessionStore ?? new MemorySessionStore();
@@ -256,24 +266,135 @@ export class MemoryRepository implements AppRepository {
     this.requireRole(userId,'student');
     const state = await this.runtimeStore.read();
     const submissions = state.submissions.filter(item => item.studentId === userId);
-    return state.homework.filter(item => item.status === 'published' && item.groupId===state.directory[userId]?.groupId && state.groups.some(g=>g.id===item.groupId&&g.status==='active')).map(homework => {
+    const sink: FileLinkSink = [];
+    const list = state.homework.filter(item => this.isStudentHomework(state, userId, item.id)).map(homework => {
       const latest = submissions.filter(item => item.homeworkId === homework.id).sort((a,b)=>b.attemptNumber-a.attemptNumber)[0] ?? null;
       const session = state.classSessions.find(item => item.id === homework.classSessionId);
-      return { id:homework.id,title:homework.title,instructions:homework.instructions,publishedAt:homework.publishAt??'',dueAt:homework.dueAt,xpReward:homework.xpReward,classTitle:session?.title??null,state:latest?.status??'not_started',latestSubmission:latest ? this.submissionDto(latest) : null,resources:structuredClone(homework.resources??[]) };
+      return { id:homework.id,title:homework.title,instructions:homework.instructions,publishedAt:homework.publishAt??'',dueAt:homework.dueAt,xpReward:homework.xpReward,classTitle:session?.title??null,state:latest?.status??'not_started',latestSubmission:latest ? this.submissionDto(latest, state, sink) : null,resources:structuredClone(homework.resources??[]),
+        canSubmit:!latest || SUBMITTABLE_STATES.has(latest.status),
+        draftFiles:this.draftFiles(state, userId, homework.id).filter(file => file.status === 'ready').map(file => this.fileDto(file, sink)) };
     });
+    await this.signFiles(sink);
+    return list;
   }
 
-  async submitHomework(userId: string, homeworkId: string, input: { contentText: string; contentUrl?: string; studentComment?: string }): Promise<HomeworkSubmissionDto> {
+  async submitHomework(userId: string, homeworkId: string, input: HomeworkSubmitInput): Promise<HomeworkSubmissionDto> {
     this.requireRole(userId,'student');
     const id=randomUUID(), submittedAt=nowIso();
     const created = await this.runtimeStore.mutate(state => {
-      if (!state.homework.some(item => item.id === homeworkId && item.status === 'published' && item.groupId===state.directory[userId]?.groupId && state.groups.some(g=>g.id===item.groupId&&g.status==='active'))) throw new AppError('HOMEWORK_NOT_FOUND', 404, 'Домашнє завдання не знайдено');
-      const attemptNumber = state.submissions.filter(item => item.studentId===userId && item.homeworkId===homeworkId).length + 1;
-      const submission = { id, studentId:userId, homeworkId, attemptNumber, submittedAt, studentComment:input.studentComment??'', contentText:input.contentText, contentUrl:input.contentUrl??null, status:'submitted' as const, review:null };
+      if (!this.isStudentHomework(state, userId, homeworkId)) throw new AppError('HOMEWORK_NOT_FOUND', 404, 'Домашнє завдання не знайдено');
+      const attempts = state.submissions.filter(item => item.studentId===userId && item.homeworkId===homeworkId);
+      // A repeated click or a retried request returns the attempt that was already stored.
+      const repeated = input.clientRequestId ? attempts.find(item => item.clientRequestId === input.clientRequestId) : undefined;
+      if (repeated) return { submission: repeated, files: state.homeworkFiles };
+      const attachmentIds = [...new Set(input.attachmentIds ?? [])];
+      const files = attachmentIds.map(fileId => state.homeworkFiles.find(file => file.id === fileId && file.studentId === userId && file.homeworkId === homeworkId));
+      if (files.some(file => !file)) throw new AppError('ATTACHMENT_NOT_FOUND', 400, 'Один із файлів не знайдено. Онови сторінку й прикріпи його ще раз.');
+      if (files.some(file => file!.status !== 'ready')) throw new AppError('ATTACHMENT_NOT_READY', 409, 'Дочекайся, поки всі файли завантажаться.');
+      if (input.limits) this.assertAttachmentLimits(files as PilotHomeworkFile[], input.limits);
+      if (!input.contentText.trim() && !input.contentUrl && !attachmentIds.length) throw new AppError('SUBMISSION_EMPTY', 400, 'Додай відповідь, посилання або файл.');
+      const submission = { id, studentId:userId, homeworkId, attemptNumber:attempts.length + 1, submittedAt, studentComment:input.studentComment??'', contentText:input.contentText, contentUrl:input.contentUrl??null, status:'submitted' as const, review:null,
+        attachmentIds, ...(input.clientRequestId ? { clientRequestId:input.clientRequestId } : {}) };
       state.submissions.push(submission);
-      return submission;
+      return { submission, files: state.homeworkFiles };
     });
-    return this.submissionDto(created);
+    const sink: FileLinkSink = [];
+    const dto = this.submissionDto(created.submission, { homeworkFiles: created.files }, sink);
+    await this.signFiles(sink);
+    return dto;
+  }
+
+  setFileLinkSigner(signer: FileLinkSigner | null): void { this.fileLinkSigner = signer; }
+
+  async reserveHomeworkUpload(userId: string, homeworkId: string, input: HomeworkUploadReservationInput, limits: HomeworkUploadLimits, now: Date): Promise<{ file: HomeworkFileDto; expiredPathnames: string[] }> {
+    this.requireRole(userId,'student');
+    let expiredPathnames: string[] = [];
+    const file = await this.runtimeStore.mutate(state => {
+      // Abandoned uploads (URL issued, bytes never confirmed) are swept in small batches.
+      const stale = state.homeworkFiles.filter(item => item.status === 'pending' && item.expiresAt !== null && Date.parse(item.expiresAt) < now.getTime()).slice(0, 25);
+      const staleIds = new Set(stale.map(item => item.id));
+      state.homeworkFiles = state.homeworkFiles.filter(item => !staleIds.has(item.id));
+      expiredPathnames = stale.map(item => item.pathname);
+      if (!this.isStudentHomework(state, userId, homeworkId)) throw new AppError('HOMEWORK_NOT_FOUND', 404, 'Домашнє завдання не знайдено');
+      const draft = this.draftFiles(state, userId, homeworkId);
+      if (draft.length >= limits.maxFiles) throw new AppError('ATTACHMENT_LIMIT', 409, `Можна прикріпити не більше ${limits.maxFiles} файлів.`);
+      if (draft.reduce((sum, item) => sum + item.size, 0) + input.size > limits.maxTotalBytes) throw new AppError('ATTACHMENT_TOTAL_LIMIT', 413, `Разом файли мають займати не більше ${formatMegabytes(limits.maxTotalBytes)}.`);
+      const record: PilotHomeworkFile = { ...input, studentId:userId, homeworkId, status:'pending', createdAt:now.toISOString(), uploadedAt:null };
+      state.homeworkFiles.push(record);
+      return record;
+    });
+    return { file: this.fileDto(file, []), expiredPathnames };
+  }
+
+  async getHomeworkUpload(userId: string, homeworkId: string, uploadId: string): Promise<{ pathname: string; extension: string; mimeType: string; size: number; status: 'pending' | 'ready' }> {
+    this.requireRole(userId,'student');
+    const file = (await this.runtimeStore.read()).homeworkFiles.find(item => item.id === uploadId && item.studentId === userId && item.homeworkId === homeworkId);
+    if (!file) throw new AppError('ATTACHMENT_NOT_FOUND', 404, 'Файл не знайдено');
+    return { pathname:file.pathname, extension:file.extension, mimeType:file.mimeType, size:file.size, status:file.status };
+  }
+
+  async completeHomeworkUpload(userId: string, homeworkId: string, uploadId: string): Promise<HomeworkFileDto> {
+    this.requireRole(userId,'student');
+    const uploadedAt = nowIso();
+    const file = await this.runtimeStore.mutate(state => {
+      const record = state.homeworkFiles.find(item => item.id === uploadId && item.studentId === userId && item.homeworkId === homeworkId);
+      if (!record) throw new AppError('ATTACHMENT_NOT_FOUND', 404, 'Файл не знайдено');
+      if (record.status === 'pending') { record.status = 'ready'; record.uploadedAt = uploadedAt; record.expiresAt = null; }
+      return record;
+    });
+    const sink: FileLinkSink = [];
+    const dto = this.fileDto(file, sink);
+    await this.signFiles(sink);
+    return dto;
+  }
+
+  async discardHomeworkUpload(userId: string, homeworkId: string, uploadId: string): Promise<{ pathname: string | null }> {
+    this.requireRole(userId,'student');
+    return this.runtimeStore.mutate(state => {
+      const record = state.homeworkFiles.find(item => item.id === uploadId && item.studentId === userId && item.homeworkId === homeworkId);
+      if (!record) return { pathname: null };
+      if (state.submissions.some(item => item.attachmentIds?.includes(record.id))) throw new AppError('ATTACHMENT_ALREADY_SENT', 409, 'Цей файл уже надіслано з попередньою спробою, тому його не можна видалити.');
+      state.homeworkFiles = state.homeworkFiles.filter(item => item.id !== record.id);
+      return { pathname: record.pathname };
+    });
+  }
+
+  private isStudentHomework(state: PilotRuntimeState, userId: string, homeworkId: string): boolean {
+    return state.homework.some(item => item.id === homeworkId && item.status === 'published' && item.groupId===state.directory[userId]?.groupId && state.groups.some(g=>g.id===item.groupId&&g.status==='active'));
+  }
+
+  private assertAttachmentLimits(files: PilotHomeworkFile[], limits: HomeworkUploadLimits): void {
+    if (files.length > limits.maxFiles) throw new AppError('ATTACHMENT_LIMIT', 400, `Можна надіслати не більше ${limits.maxFiles} файлів.`);
+    if (files.reduce((sum, file) => sum + file.size, 0) > limits.maxTotalBytes) throw new AppError('ATTACHMENT_TOTAL_LIMIT', 413, `Разом файли мають займати не більше ${formatMegabytes(limits.maxTotalBytes)}.`);
+  }
+
+  /** Files of this student and homework that no attempt has sent yet. */
+  private draftFiles(state: Pick<PilotRuntimeState, 'homeworkFiles' | 'submissions'>, userId: string, homeworkId: string): PilotHomeworkFile[] {
+    const sent = new Set(state.submissions.flatMap(item => item.attachmentIds ?? []));
+    return state.homeworkFiles.filter(file => file.studentId === userId && file.homeworkId === homeworkId && !sent.has(file.id))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  private fileDto(file: PilotHomeworkFile, sink: FileLinkSink): HomeworkFileDto {
+    const dto: HomeworkFileDto = { id:file.id, name:file.originalName, extension:file.extension, mimeType:file.mimeType, size:file.size, uploadedAt:file.uploadedAt, url:null, urlExpiresAt:null };
+    if (file.status === 'ready') sink.push([dto, file.pathname]);
+    return dto;
+  }
+
+  private attachmentDtos(files: PilotHomeworkFile[], attempt: { attachmentIds?: string[] }, sink: FileLinkSink): HomeworkFileDto[] {
+    return (attempt.attachmentIds ?? []).flatMap(fileId => {
+      const file = files.find(item => item.id === fileId);
+      return file ? [this.fileDto(file, sink)] : [];
+    });
+  }
+
+  /** Fills short-lived download links. A failed signature leaves `url` null; the UI says so. */
+  private async signFiles(sink: FileLinkSink): Promise<void> {
+    const signer = this.fileLinkSigner;
+    if (!signer || !sink.length) return;
+    await Promise.all(sink.map(async ([dto, pathname]) => {
+      try { const link = await signer(pathname); dto.url = link.url; dto.urlExpiresAt = link.expiresAt; } catch {}
+    }));
   }
 
   async getLearning(userId: string): Promise<LearningDto> {
@@ -540,7 +661,9 @@ export class MemoryRepository implements AppRepository {
       state.attendance.filter(a=>sessionIds.has(a.sessionId)&&(staff||a.studentId===userId)),
       state.submissions.filter(s=>homeworkIds.has(s.homeworkId)&&(staff||s.studentId===userId)),
       Object.entries(state.lessonProgress).filter(([id])=>staff ? ids.has(state.directory[id]?.groupId??'') : id===userId),
-      Object.values(state.directory).filter(p=>p.groupId&&ids.has(p.groupId)).map(p=>[p.id,p.status,p.groupId,p.version])
+      Object.values(state.directory).filter(p=>p.groupId&&ids.has(p.groupId)).map(p=>[p.id,p.status,p.groupId,p.version]),
+      // A student's own uploaded drafts, so another device shows them without a reload.
+      staff ? [] : state.homeworkFiles.filter(f=>f.studentId===userId&&f.status==='ready').map(f=>f.id)
     ])).digest('hex')};
   }
   async updateHomework(userId:string,homeworkId:string,input:{expectedVersion:number;title?:string;instructions?:string;dueAt?:string|null;status?:'draft'|'published'|'unpublished'|'archived'},correlationId:string):Promise<void>{
@@ -665,7 +788,8 @@ export class MemoryRepository implements AppRepository {
         homeworkIds:rawHomework.filter(h=>h.classSessionId===item.id).map(h=>h.id),
         attendance:[...new Set([...currentIds,...historicalIds])].map(id=>{const a=state.attendance.find(a=>a.sessionId===item.id&&a.studentId===id);return{studentId:id,studentName:state.directory[id]?.displayName??'Учень',isCurrentMember:currentIds.includes(id),...this.completionReview(state.lessonProgress[id]?.[item.id]),status:a?.status??null,suggestedStatus:null,note:a?.note??'',confirmedAt:a?.confirmedAt??null};})};
     }).sort((a,b)=>Date.parse(a.startsAt)-Date.parse(b.startsAt));
-    const submissions=rawSubmissions.flatMap(attempt=>{const h=rawHomework.find(h=>h.id===attempt.homeworkId),p=state.directory[attempt.studentId];if(!h||!p)return[];return[{id:attempt.id,homeworkId:h.id,homeworkTitle:h.title,groupId:h.groupId,groupName:visible.find(g=>g.id===h.groupId)!.name,studentId:p.id,studentName:p.displayName,attemptNumber:attempt.attemptNumber,submittedAt:attempt.submittedAt,studentComment:attempt.studentComment,contentText:attempt.contentText,contentUrl:attempt.contentUrl,status:attempt.status,review:structuredClone(attempt.review),attachments:[],previousAttempts:rawSubmissions.filter(a=>a.studentId===p.id&&a.homeworkId===h.id&&a.attemptNumber<attempt.attemptNumber).map(a=>this.submissionDto(a))}];}).sort((a,b)=>Date.parse(b.submittedAt??'')-Date.parse(a.submittedAt??''));
+    const fileLinks:FileLinkSink=[];
+    const submissions=rawSubmissions.flatMap(attempt=>{const h=rawHomework.find(h=>h.id===attempt.homeworkId),p=state.directory[attempt.studentId];if(!h||!p)return[];return[{id:attempt.id,homeworkId:h.id,homeworkTitle:h.title,groupId:h.groupId,groupName:visible.find(g=>g.id===h.groupId)!.name,studentId:p.id,studentName:p.displayName,attemptNumber:attempt.attemptNumber,submittedAt:attempt.submittedAt,studentComment:attempt.studentComment,contentText:attempt.contentText,contentUrl:attempt.contentUrl,status:attempt.status,review:structuredClone(attempt.review),attachments:[],files:this.attachmentDtos(state.homeworkFiles,attempt,fileLinks),previousAttempts:rawSubmissions.filter(a=>a.studentId===p.id&&a.homeworkId===h.id&&a.attemptNumber<attempt.attemptNumber).map(a=>this.submissionDto(a,state,fileLinks))}];}).sort((a,b)=>Date.parse(b.submittedAt??'')-Date.parse(a.submittedAt??''));
     const homework=rawHomework.map(h=>({...h,groupName:visible.find(g=>g.id===h.groupId)!.name,submissionCount:rawSubmissions.filter(a=>a.homeworkId===h.id).length,reviewCount:rawSubmissions.filter(a=>a.homeworkId===h.id&&a.review).length,needsRevisionCount:rawSubmissions.filter(a=>a.homeworkId===h.id&&a.status==='needs_revision').length}));
     const days=['Неділя','Понеділок','Вівторок','Середа','Четвер','П’ятниця','Субота'];
     const groups=visible.map(group=>{const people=students.filter(p=>p.groupId===group.id),classes=sessions.filter(s=>s.groupId===group.id),ids=new Set(classes.map(s=>s.id)),attendance=state.attendance.filter(a=>ids.has(a.sessionId));return{...group,courseTitle:PILOT.courseTitle,studentCount:people.length,sessionCount:classes.filter(s=>!['cancelled','archived'].includes(s.status)).length,
@@ -676,6 +800,7 @@ export class MemoryRepository implements AppRepository {
       nextClassAt:group.status==='active'?classes.find(s=>isUpcomingSession(s))?.startsAt??null:null,recentHomework:homework.find(h=>h.groupId===group.id)?.title??null};});
     const teacher=state.directory[userId]!,isMentor=teacher.roles.includes('mentor'),today=new Date().toISOString().slice(0,10);
     const reports=structuredClone(state.teacherReports.filter(r=>groupIds.has(r.groupId)));
+    await this.signFiles(fileLinks);
     return{teacher:{id:userId,name:teacher.displayName,title:isMentor?'Викладач · Ментор':'Викладач',timezone:PILOT.timezone},
       metrics:{todayClasses:sessions.filter(s=>s.startsAt.slice(0,10)===today&&isUpcomingSession(s)).length,awaitingReview:submissions.filter(s=>s.status==='submitted'&&!s.review).length,resubmitted:submissions.filter(s=>s.attemptNumber>1&&s.status==='submitted').length,mentorToday:isMentor?mentorBookings.filter(b=>b.startsAt.slice(0,10)===today).length:0,reportsPending:reports.filter(r=>['draft','ready_for_review'].includes(r.status)).length},
       groups,sessions,homework,submissions,students,mentor:{mentorId:isMentor?PILOT.mentorId:null,availability:isMentor?mentorAvailability.map(a=>({...a,status:mentorBookings.some(b=>b.availabilityId===a.id&&['reserved','confirmed','rescheduled'].includes(b.status))?'booked' as const:a.status})):[],bookings:isMentor?mentorBookings:[]},reports,
@@ -1130,9 +1255,9 @@ export class MemoryRepository implements AppRepository {
     return structuredClone(dto);
   }
 
-  private submissionDto(item:PilotRuntimeState['submissions'][number]):HomeworkSubmissionDto {
-    const {studentId:_studentId,homeworkId:_homeworkId,...dto}=item;
-    return structuredClone(dto);
+  private submissionDto(item:PilotRuntimeState['submissions'][number],state:Pick<PilotRuntimeState,'homeworkFiles'>,sink:FileLinkSink):HomeworkSubmissionDto {
+    const {studentId:_studentId,homeworkId:_homeworkId,attachmentIds:_attachmentIds,clientRequestId:_clientRequestId,...dto}=item;
+    return {...structuredClone(dto),attachments:this.attachmentDtos(state.homeworkFiles,item,sink)};
   }
 
   private progressPercent(state:PilotRuntimeState,userId:string):number {

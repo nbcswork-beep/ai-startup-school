@@ -18,3 +18,7 @@ Reviews contain:
 `review_homework_submission` validates authorization and values. A trigger writes every insert/change to `homework_review_events`. Reviews may return work for another attempt.
 
 Grades never award XP, change levels, lock lessons, rank students, or control course progression. XP continues through idempotent `xp_events` tied to participation, completion, and creation.
+
+## Student file attachments (pilot runtime)
+
+Students attach PDF, DOCX, DOC, PPTX, XLSX, TXT, PNG, JPG/JPEG and ZIP files to an attempt. Files are stored in a private Vercel Blob store; the pilot runtime state keeps only metadata. Uploaded files are saved as drafts until the attempt is sent, a returned attempt can keep, drop or add files, and Teacher OS lists them with download links. Architecture, limits, security checks and the one-time storage setup are in [HOMEWORK-FILES.md](HOMEWORK-FILES.md).

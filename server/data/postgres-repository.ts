@@ -16,6 +16,14 @@ import type { PilotRuntimeState } from './pilot-runtime-store.js';
 type Db = Pick<PoolClient, 'query'>;
 
 export class PostgresRepository implements AppRepository {
+  // Homework files are implemented for the pilot runtime store only. The Postgres backend reports
+  // them as unavailable instead of accepting uploads it cannot attach.
+  setFileLinkSigner(): void {}
+  async reserveHomeworkUpload(..._args:Parameters<AppRepository['reserveHomeworkUpload']>):ReturnType<AppRepository['reserveHomeworkUpload']>{throw this.homeworkFilesUnavailable();}
+  async getHomeworkUpload(..._args:Parameters<AppRepository['getHomeworkUpload']>):ReturnType<AppRepository['getHomeworkUpload']>{throw this.homeworkFilesUnavailable();}
+  async completeHomeworkUpload(..._args:Parameters<AppRepository['completeHomeworkUpload']>):ReturnType<AppRepository['completeHomeworkUpload']>{throw this.homeworkFilesUnavailable();}
+  async discardHomeworkUpload(..._args:Parameters<AppRepository['discardHomeworkUpload']>):ReturnType<AppRepository['discardHomeworkUpload']>{throw this.homeworkFilesUnavailable();}
+  private homeworkFilesUnavailable(): AppError { return new AppError('FILE_UPLOADS_UNAVAILABLE', 503, 'Завантаження файлів недоступне для цього сховища даних'); }
   async academicRevision(..._args:Parameters<AppRepository['academicRevision']>):ReturnType<AppRepository['academicRevision']>{throw this.groupManagementUnavailable();}
   async updateHomework(..._args:Parameters<AppRepository['updateHomework']>):ReturnType<AppRepository['updateHomework']>{throw this.groupManagementUnavailable();}
   async deleteHomework(..._args:Parameters<AppRepository['deleteHomework']>):ReturnType<AppRepository['deleteHomework']>{throw this.groupManagementUnavailable();}
@@ -164,7 +172,8 @@ export class PostgresRepository implements AppRepository {
     });
   }
 
-  async submitHomework(userId: string, homeworkId: string, input: { contentText: string; contentUrl?: string; studentComment?: string }): Promise<HomeworkSubmissionDto> {
+  async submitHomework(userId: string, homeworkId: string, input: { contentText: string; contentUrl?: string; studentComment?: string; attachmentIds?: string[] }): Promise<HomeworkSubmissionDto> {
+    if (input.attachmentIds?.length) throw this.homeworkFilesUnavailable();
     return this.withUser(userId, async db => {
       await db.query(`select id from public.homework where id=$1 for update`, [homeworkId]);
       const result = await db.query(`insert into public.homework_submissions(homework_id,student_id,attempt_number,submitted_at,student_comment,content_text,content_url,status)

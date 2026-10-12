@@ -1,6 +1,7 @@
 import type { FastifyInstance, preHandlerHookHandler } from 'fastify';
 import { z } from 'zod';
-import type { AppRepository } from '../data/repository.js';
+import type { AppRepository, HomeworkSubmitInput } from '../data/repository.js';
+import type { FileUploadPolicyDto } from '../types/domain.js';
 import { AppError } from '../errors/app-error.js';
 import type { AiMentorService } from '../services/ai-mentor-service.js';
 import { requireRole } from '../middleware/authenticate.js';
@@ -11,11 +12,18 @@ const projectInput = z.object({ title: z.string().trim().min(2).max(120), summar
 const projectUpdate = projectInput.partial().refine(value => Object.keys(value).length > 0, 'At least one field is required');
 const messageInput = z.object({ content: z.string().trim().min(1).max(4000), clientMessageId: z.string().uuid().optional() });
 const safeHttpsUrl = z.string().url().refine(value => new URL(value).protocol === 'https:', 'Only HTTPS URLs are allowed');
-const homeworkSubmission = z.object({ contentText: z.string().trim().min(1).max(20_000), contentUrl: safeHttpsUrl.optional(), studentComment: z.string().trim().max(2000).optional() });
+// The text may be empty when files or a link carry the work; the repository rejects an empty attempt.
+const homeworkSubmission = z.object({
+  contentText: z.string().trim().max(20_000).default(''),
+  contentUrl: safeHttpsUrl.optional(),
+  studentComment: z.string().trim().max(2000).optional(),
+  attachmentIds: z.array(uuid).max(20).optional(),
+  clientRequestId: uuid.optional()
+});
 const portfolioInput = z.object({ reflection: z.string().trim().max(3000).optional(), learned: z.string().trim().max(3000).optional() });
 const notificationsReadInput = z.object({ notificationIds: z.array(uuid).max(50).default([]) });
 
-export function registerStudentRoutes(app: FastifyInstance, repository: AppRepository, ai: AiMentorService, authenticate: preHandlerHookHandler): void {
+export function registerStudentRoutes(app: FastifyInstance, repository: AppRepository, ai: AiMentorService, authenticate: preHandlerHookHandler, uploads: FileUploadPolicyDto): void {
   const secured = { preHandler: [authenticate,requireRole('student')] };
   app.get('/api/v1/me', secured, async request => repository.getProfile(request.auth.userId));
   app.get('/api/v1/profile', secured, async request => repository.getProfile(request.auth.userId));
@@ -27,7 +35,7 @@ export function registerStudentRoutes(app: FastifyInstance, repository: AppRepos
       repository.getProfile(userId), repository.listConversations(userId), repository.getSchedule(userId),
       repository.listHomework(userId), repository.getPortfolio(userId), repository.listMissedLessonRecoveries(userId), repository.listStudentNotifications(userId)
     ]);
-    return { home, learning, projects, profile, conversations, schedule, homework, portfolio, recoveries, notifications };
+    return { home, learning, projects, profile, conversations, schedule, homework, portfolio, recoveries, notifications, fileUploads: uploads };
   });
   app.get('/api/v1/notifications', secured, async request => repository.listStudentNotifications(request.auth.userId));
   app.post('/api/v1/notifications/read', secured, async request => {
@@ -50,12 +58,17 @@ export function registerStudentRoutes(app: FastifyInstance, repository: AppRepos
     if (!homework) throw new AppError('HOMEWORK_NOT_FOUND', 404, 'Домашнє завдання не знайдено');
     return homework;
   });
-  app.post('/api/v1/homework/:homeworkId/submissions', secured, async (request, reply) => {
+  app.post('/api/v1/homework/:homeworkId/submissions', { ...secured, config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { homeworkId } = z.object({ homeworkId: uuid }).parse(request.params);
     const parsed = homeworkSubmission.parse(request.body);
-    const input: { contentText: string; contentUrl?: string; studentComment?: string } = { contentText: parsed.contentText };
+    const input: HomeworkSubmitInput = { contentText: parsed.contentText, limits: { maxFiles: uploads.maxFiles, maxTotalBytes: uploads.maxTotalBytes } };
     if (parsed.contentUrl !== undefined) input.contentUrl = parsed.contentUrl;
     if (parsed.studentComment !== undefined) input.studentComment = parsed.studentComment;
+    if (parsed.attachmentIds?.length) {
+      if (!uploads.enabled) throw new AppError('FILE_STORAGE_UNAVAILABLE', 503, uploads.reason ?? 'Завантаження файлів недоступне');
+      input.attachmentIds = parsed.attachmentIds;
+    }
+    if (parsed.clientRequestId !== undefined) input.clientRequestId = parsed.clientRequestId;
     return reply.status(201).send(await repository.submitHomework(request.auth.userId, homeworkId, input));
   });
   app.get('/api/v1/portfolio', secured, async request => repository.getPortfolio(request.auth.userId));

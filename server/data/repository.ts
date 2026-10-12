@@ -41,6 +41,31 @@ import type {
 } from '../types/domain.js';
 import type { PilotRuntimeState } from './pilot-runtime-store.js';
 import type { GroupInput } from './group-model.js';
+import type { HomeworkFileDto } from '../types/domain.js';
+
+export interface HomeworkSubmitInput {
+  contentText: string;
+  contentUrl?: string;
+  studentComment?: string;
+  /** Uploaded draft files, or files of an earlier attempt that the student keeps. */
+  attachmentIds?: string[];
+  clientRequestId?: string;
+  limits?: HomeworkUploadLimits;
+}
+
+export interface HomeworkUploadLimits { maxFiles: number; maxTotalBytes: number }
+
+export interface HomeworkUploadReservationInput {
+  id: string;
+  originalName: string;
+  extension: string;
+  mimeType: string;
+  size: number;
+  pathname: string;
+  expiresAt: string;
+}
+
+export type FileLinkSigner = (pathname: string) => Promise<{ url: string; expiresAt: string }>;
 
 export interface AppRepository {
   academicRevision(userId:string):Promise<{revision:string}>;
@@ -69,7 +94,14 @@ export interface AppRepository {
   getHome(userId: UserId): Promise<HomeDto>;
   getSchedule(userId: UserId): Promise<ScheduleDto>;
   listHomework(userId: UserId): Promise<HomeworkSummaryDto[]>;
-  submitHomework(userId: UserId, homeworkId: string, input: { contentText: string; contentUrl?: string; studentComment?: string }): Promise<HomeworkSubmissionDto>;
+  submitHomework(userId: UserId, homeworkId: string, input: HomeworkSubmitInput): Promise<HomeworkSubmissionDto>;
+  /** Signs short-lived download links for file DTOs. Set once by the app when storage exists. */
+  setFileLinkSigner(signer: FileLinkSigner | null): void;
+  reserveHomeworkUpload(userId: UserId, homeworkId: string, input: HomeworkUploadReservationInput, limits: HomeworkUploadLimits, now: Date): Promise<{ file: HomeworkFileDto; expiredPathnames: string[] }>;
+  getHomeworkUpload(userId: UserId, homeworkId: string, uploadId: string): Promise<{ pathname: string; extension: string; mimeType: string; size: number; status: 'pending' | 'ready' }>;
+  completeHomeworkUpload(userId: UserId, homeworkId: string, uploadId: string): Promise<HomeworkFileDto>;
+  /** Removes a draft file. `pathname` is null when an earlier attempt still references the object. */
+  discardHomeworkUpload(userId: UserId, homeworkId: string, uploadId: string): Promise<{ pathname: string | null }>;
   getLearning(userId: UserId): Promise<LearningDto>;
   getLesson(userId: UserId, lessonId: string): Promise<LessonDto | null>;
   reviewLessonCompletion(userId:UserId,sessionId:string,studentId:string,input:import('../types/domain.js').AcademicReviewInput,correlationId:string):Promise<void>;

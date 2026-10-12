@@ -21,8 +21,10 @@ import { MemoryLoginAttemptLimiter, type LoginAttemptLimiter } from './auth/sess
 import { registerTelegramWebhookRoutes, type TelegramWebhookHandler } from './routes/telegram-webhook.js';
 import { registerNotificationWorkerRoute } from './routes/notification-worker.js';
 import { NotificationWorker, TelegramNotificationSender, type NotificationSender } from './services/telegram-notification-service.js';
+import { createFileStorage, type FileStorage } from './storage/file-storage.js';
+import { fileLinkSigner, registerHomeworkFileRoutes, uploadPolicy } from './routes/homework-files.js';
 
-export async function buildApp(deps: { env: AppEnv; repository: AppRepository; jwt: JwtService; aiProvider: AiProvider; loginLimiter?: LoginAttemptLimiter; telegramWebhookHandler?: TelegramWebhookHandler; notificationSender?:NotificationSender }) {
+export async function buildApp(deps: { env: AppEnv; repository: AppRepository; jwt: JwtService; aiProvider: AiProvider; loginLimiter?: LoginAttemptLimiter; telegramWebhookHandler?: TelegramWebhookHandler; notificationSender?:NotificationSender; fileStorage?: FileStorage | null }) {
   const app = Fastify({ logger: deps.env.NODE_ENV === 'test' ? false : { level: deps.env.LOG_LEVEL,redact:{paths:['req.headers.authorization','req.headers.cookie','req.headers.x-telegram-bot-api-secret-token','res.headers.set-cookie','body.initData','body.refreshToken','body.password','body.token'],censor:'[REDACTED]'} }, trustProxy: deps.env.TRUST_PROXY, bodyLimit: 32_768 });
   await app.register(cookie);
   await app.register(cors, {
@@ -44,7 +46,22 @@ export async function buildApp(deps: { env: AppEnv; repository: AppRepository; j
   registerAuthRoutes(app, auth, deps.env);
   const authenticate=createAuthenticate(deps.jwt,deps.repository);
   app.get('/api/v1/academic-revision',{preHandler:[authenticate]},request=>deps.repository.academicRevision(request.auth.userId));
-  registerStudentRoutes(app, deps.repository, new AiMentorService(deps.repository, deps.aiProvider), authenticate);
+  const fileStorage = deps.fileStorage !== undefined ? deps.fileStorage : createFileStorage({
+    blobConfigured: Boolean(deps.env.BLOB_STORE_ID || deps.env.BLOB_READ_WRITE_TOKEN),
+    nodeEnv: deps.env.NODE_ENV,
+    deployEnvironment: deps.env.deployEnvironment,
+    localDirectory: deps.env.LOCAL_UPLOAD_DIR ?? '.data/homework-uploads'
+  });
+  const fileConfig = {
+    storage: fileStorage,
+    maxFileBytes: deps.env.HOMEWORK_UPLOAD_MAX_FILE_MB * 1024 * 1024,
+    maxFiles: deps.env.HOMEWORK_UPLOAD_MAX_FILES,
+    maxTotalBytes: deps.env.HOMEWORK_UPLOAD_MAX_TOTAL_MB * 1024 * 1024,
+    pathPrefix: deps.env.FILE_STORAGE_PREFIX ?? deps.env.deployEnvironment
+  };
+  deps.repository.setFileLinkSigner(fileStorage ? fileLinkSigner(fileStorage) : null);
+  registerStudentRoutes(app, deps.repository, new AiMentorService(deps.repository, deps.aiProvider), authenticate, uploadPolicy(fileConfig));
+  registerHomeworkFileRoutes(app, deps.repository, authenticate, fileConfig);
   registerTeacherRoutes(app,deps.repository,authenticate);
   registerGuardianRoutes(app,deps.repository,authenticate);
   registerAdminRoutes(app,deps.repository,authenticate,deps.env);

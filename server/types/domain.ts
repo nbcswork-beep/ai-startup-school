@@ -217,6 +217,28 @@ export interface HomeworkReviewDto {
   reviewedAt: string;
 }
 
+/** A private file a student attached to homework. `url` is a short-lived signed link. */
+export interface HomeworkFileDto {
+  id: string;
+  name: string;
+  extension: string;
+  mimeType: string;
+  size: number;
+  uploadedAt: string | null;
+  url: string | null;
+  urlExpiresAt: string | null;
+}
+
+export interface FileUploadPolicyDto {
+  enabled: boolean;
+  /** Why uploads are off for this deployment, shown to the student instead of a dead button. */
+  reason: string | null;
+  maxFileBytes: number;
+  maxFiles: number;
+  maxTotalBytes: number;
+  extensions: string[];
+}
+
 export interface HomeworkSubmissionDto {
   id: string;
   attemptNumber: number;
@@ -226,6 +248,7 @@ export interface HomeworkSubmissionDto {
   contentUrl: string | null;
   status: HomeworkState;
   review: HomeworkReviewDto | null;
+  attachments?: HomeworkFileDto[];
 }
 
 export interface HomeworkSummaryDto {
@@ -239,6 +262,10 @@ export interface HomeworkSummaryDto {
   state: HomeworkState;
   latestSubmission: HomeworkSubmissionDto | null;
   resources?: ClassMaterialDto[];
+  /** True when a first attempt or a teacher-requested revision can be sent. */
+  canSubmit?: boolean;
+  /** Uploaded files not yet sent with an attempt. They survive reloads. */
+  draftFiles?: HomeworkFileDto[];
 }
 
 export interface PortfolioProjectDto {
@@ -397,6 +424,8 @@ export interface TeacherSubmissionDto {
   status: HomeworkState;
   review: HomeworkReviewDto | null;
   attachments: ClassMaterialDto[];
+  /** Files the student uploaded with this attempt. */
+  files?: HomeworkFileDto[];
   previousAttempts: HomeworkSubmissionDto[];
 }
 
