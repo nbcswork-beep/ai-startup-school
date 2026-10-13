@@ -449,6 +449,41 @@ describe('AI assistant — student chat and honest token accounting', () => {
     expect((await student.call('POST', `/api/v1/ai/attachments/${attachment.id}/complete`)).statusCode).toBe(404);
   });
 
+  it('downloads separately labelled files from new and previously saved replies without regenerating', async () => {
+    const { as, aiStore } = school();
+    const admin = await as(ADMIN);
+    await configure(admin);
+    await admin.call('POST', `/api/v1/admin/ai/tokens/students/${STUDENT}`, { op: 'add', amount: 200_000 });
+    const student = await as(STUDENT);
+    const answer = 'MOKA Coffee\n📄 `index.html`\n\n```html\n<h1>MOKA</h1>\n```\n### **style.css**\n```css\nbody { color: brown; }\n```';
+    const reply = await student.send(answer);
+    const metadata = { fileCount: 2, paths: ['index.html', 'style.css'] };
+    expect(reply.done.message.archive).toEqual(metadata);
+    const conversationId = reply.done.conversationId;
+    // Older messages were stored without archive metadata. Do not rewrite or regenerate them.
+    const { archive: _archive, ...legacy } = reply.done.message;
+    legacy.id = randomUUID();
+    await aiStore.appendMessages(conversationId, [legacy], 400);
+    const callsBefore = mock.chatRequests().length;
+    const balanceBefore = (await student.call('GET', '/api/v1/ai/me')).json().balance.available;
+    const history = await student.call('GET', `/api/v1/ai/conversations/${conversationId}`);
+    expect(history.json().messages.find((message: { id: string }) => message.id === legacy.id).archive).toEqual(metadata);
+    expect((await aiStore.getMessages(conversationId, 400)).find(message => message.id === legacy.id)?.archive).toBeUndefined();
+    for (const messageId of [reply.done.message.id, legacy.id]) {
+      const link = await student.call('POST', `/api/v1/ai/conversations/${conversationId}/messages/${messageId}/archive`);
+      expect(link.statusCode).toBe(200);
+      expect(link.json().fileCount).toBe(2);
+      const download = await student.app.inject({ method: 'GET', url: link.json().url });
+      expect(download.statusCode).toBe(200);
+      expect(extractArchiveText(download.rawPayload).files).toEqual([
+        { path: 'index.html', text: '<h1>MOKA</h1>\n' },
+        { path: 'style.css', text: 'body { color: brown; }\n' }
+      ]);
+    }
+    expect(mock.chatRequests()).toHaveLength(callsBefore);
+    expect((await student.call('GET', '/api/v1/ai/me')).json().balance.available).toBe(balanceBefore);
+  });
+
   it('accepts only real ZIP archives with readable text', async () => {
     const { as } = school();
     const admin = await as(ADMIN);

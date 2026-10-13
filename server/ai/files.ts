@@ -90,7 +90,7 @@ export function renderAttachment(name: string, files: ArchiveTextFile[], skipped
 
 const FENCE = /^(\s{0,3})(`{3,}|~{3,})[ \t]*([^\n`]*)$/;
 
-function pathFromInfo(info: string): string | null {
+function pathFromInfo(info: string): string | null | undefined {
   const attribute = /\b(?:file|filename|title|path)\s*=\s*["']?([^"'\s]+)["']?/i.exec(info);
   if (attribute?.[1]) return safeArchivePath(attribute[1]);
   for (const token of info.split(/\s+/).filter(Boolean)) {
@@ -101,17 +101,48 @@ function pathFromInfo(info: string): string | null {
       return safeArchivePath(candidate);
     }
   }
-  return null;
+  return undefined;
 }
 
-/** Files the model wrote as fenced blocks that name a path, e.g. ```js src/app.js. Later blocks win. */
+/** Only a standalone file label immediately above a block may supply its missing path. */
+function pathFromLabel(line: string): string | null {
+  let label = line.trim()
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, '')
+    .replace(/^(?:📄|📁)\s*/, '')
+    .replace(/:\s*$/, '').trim();
+  const unwrap = () => {
+    for (let i = 0; i < 3; i += 1) {
+      const wrapped = /^(\*\*|__|`)(.+)\1$/.exec(label);
+      if (!wrapped) break;
+      label = wrapped[2]!.trim();
+    }
+  };
+  unwrap();
+  label = label.replace(/^(?:file|filename|файл)\s*:\s*/i, '').replace(/:\s*$/, '').trim();
+  unwrap();
+  // Do not guess names from prose, links, commands, or the code itself.
+  if (!/^[\p{L}\p{N}_.\-/\\]+\.[\p{L}\p{N}]{1,10}$/u.test(label)) return null;
+  if (/^(node|vue|next|nuxt|react|three|d3)\.js$/i.test(label)) return null;
+  return safeArchivePath(label);
+}
+
+/** Named fenced blocks or blocks with a standalone file label above them. Later blocks win. */
 export function parseAnswerFiles(text: string): Array<{ path: string; content: string }> {
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
   const files = new Map<string, string>();
   let total = 0;
+  let labelPath: string | null = null;
   for (let index = 0; index < lines.length; index += 1) {
     const open = FENCE.exec(lines[index]!);
-    if (!open) continue;
+    if (!open) {
+      if (lines[index]!.trim()) labelPath = pathFromLabel(lines[index]!);
+      continue;
+    }
+    const explicitPath = pathFromInfo(open[3] ?? '');
+    // An explicitly unsafe path must not fall back to a different name above the block.
+    const path = explicitPath === undefined ? labelPath : explicitPath;
+    labelPath = null;
     const marker = open[2]!;
     const body: string[] = [];
     let closed = false;
@@ -123,7 +154,6 @@ export function parseAnswerFiles(text: string): Array<{ path: string; content: s
     }
     index = cursor;
     if (!closed) continue;
-    const path = pathFromInfo(open[3] ?? '');
     if (!path) continue;
     const content = `${body.join('\n')}\n`;
     const size = Buffer.byteLength(content);

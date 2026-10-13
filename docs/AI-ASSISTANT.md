@@ -55,6 +55,8 @@ Everything lives in Upstash Redis under `AI_REDIS_PREFIX` (default `SESSION_REDI
 
 **AI → student.** The system prompt tells the model to write each file as a code block whose info string names the path (```` ```js src/app.js ````).
 - When an answer contains such blocks, the message gets a «Завантажити ZIP» button.
+- If the model puts a standalone filename directly above a language-only block (for example, `📄 index.html`), that label is also accepted. Markdown headings, numbered labels, and inline-code/bold filenames are supported; prose and unsafe paths are not inferred as filenames. Blocks must be closed.
+- Reopening a conversation recomputes archive metadata for saved answers, so older replies in this format can be downloaded without generating or charging for another answer. Stored messages are not rewritten.
 - The server builds the ZIP from that message on demand: paths sanitised, up to 100 files and 2 MB.
 - It serves the ZIP through a signed link that expires in 10 minutes and names one message of one student. The link carries no session, because Telegram's own downloader fetches it.
 - Inside Telegram the app calls `WebApp.downloadFile` (Bot API 8.0). The response carries `Content-Disposition: attachment` and `Access-Control-Allow-Origin: https://web.telegram.org`, as Telegram asks. In a browser it is an ordinary download.

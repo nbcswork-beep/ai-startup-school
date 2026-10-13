@@ -26,7 +26,9 @@ const FILE_RULES = [
   'Правила інтерфейсу чату:',
   '- Учень може прикріпити ZIP-архів. Його текстові файли приходять у повідомленні між рядками «--- файл: шлях ---» і «--- кінець файлу ---».',
   '- Коли учень просить файли, проєкт або архів, пиши кожен файл окремим блоком коду, а після трьох зворотних апострофів вказуй мову і шлях, наприклад: ```js src/app.js',
-  '- Інтерфейс сам збере такі блоки в ZIP-архів із кнопкою «Завантажити ZIP». Не вигадуй посилань на завантаження і не кажи, що не можеш надіслати файли.'
+  '- Інтерфейс сам збере такі блоки в ZIP-архів із кнопкою «Завантажити ZIP» після завершення відповіді. Не вигадуй посилань на завантаження і не кажи, що не можеш надіслати файли.',
+  '- Для сайту використовуй заголовки блоків ```html index.html, ```css style.css та ```js script.js. Назва лише над блоком не замінює шлях у його заголовку. Кожен блок має містити повний вміст файлу та закриватися трьома зворотними апострофами.',
+  '- Створення ZIP виконує цей застосунок: тобі достатньо надати файли у вказаному форматі. Не пропонуй учневі вручну копіювати файли й пакувати архів; поясни, що готовий ZIP можна завантажити кнопкою під відповіддю.'
 ].join('\n');
 
 export interface ChatInput {
@@ -117,7 +119,14 @@ export class AiChatService {
 
   async getConversation(studentId: string, conversationId: string) {
     const conversation = await this.requireConversation(studentId, conversationId);
-    return { conversation, messages: await this.ai.store.getMessages(conversationId, MESSAGE_CAP) };
+    const messages = (await this.ai.store.getMessages(conversationId, MESSAGE_CAP)).map(message => {
+      if (message.role !== 'assistant') return message;
+      // Recompute for older replies too, without rewriting history or generating another answer.
+      const { archive: _archive, ...rest } = message;
+      const files = parseAnswerFiles(message.content);
+      return { ...rest, ...(files.length ? { archive: { fileCount: files.length, paths: files.slice(0, 30).map(file => file.path) } } : {}) };
+    });
+    return { conversation, messages };
   }
 
   async renameConversation(studentId: string, conversationId: string, title: string) {
