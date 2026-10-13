@@ -3,7 +3,6 @@ import { createJwtService } from './auth/jwt-service.js';
 import { loadEnv } from './config/env.js';
 import { MemoryRepository } from './data/memory-repository.js';
 import { PostgresRepository } from './data/postgres-repository.js';
-import { MockAiProvider } from './services/ai-provider.js';
 import { buildApp } from './app.js';
 import { RedisRestLoginAttemptLimiter, RedisRestSessionStore } from './auth/session-store.js';
 import { RedisRestPilotRuntimeStore } from './data/pilot-runtime-store.js';
@@ -30,7 +29,7 @@ const jwt = await createJwtService(env);
 const loginLimiter = env.UPSTASH_REDIS_REST_URL && env.UPSTASH_REDIS_REST_TOKEN
   ? new RedisRestLoginAttemptLimiter(env.UPSTASH_REDIS_REST_URL, env.UPSTASH_REDIS_REST_TOKEN, env.SESSION_REDIS_PREFIX)
   : undefined;
-const app = await buildApp({ env, repository, jwt, aiProvider: new MockAiProvider(), ...(loginLimiter ? { loginLimiter } : {}) });
+const app = await buildApp({ env, repository, jwt, ...(loginLimiter ? { loginLimiter } : {}) });
 
 try {
   await app.listen({ host: env.HOST, port: env.PORT });

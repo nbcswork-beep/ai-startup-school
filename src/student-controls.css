@@ -173,20 +173,20 @@
 
 /* 3. Interactive cards ------------------------------------------------------------------------ */
 .card-action, .lesson-node, .homework-row, .homework-pulse, .notification-item,
-.profile-links button, .mentor-slot, .suggestion, .nav-item, .brand {
+.profile-links button, .mentor-slot, .nav-item, .brand {
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
   transition: background-color var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease), color var(--dur-base) var(--ease);
 }
-:is(.card-action, .lesson-node, .homework-row, .homework-pulse, .notification-item, .profile-links button, .mentor-slot, .suggestion, .nav-item, .brand):focus-visible {
+:is(.card-action, .lesson-node, .homework-row, .homework-pulse, .notification-item, .profile-links button, .mentor-slot, .nav-item, .brand):focus-visible {
   outline: var(--focus-ring);
   outline-offset: 2px;
 }
-:is(.card-action, .lesson-node, .homework-row, .homework-pulse, .notification-item, .profile-links button, .mentor-slot, .suggestion, .nav-item):active { transform: none; }
-:is(.lesson-node, .mentor-slot, .suggestion, .notification-item):disabled { cursor: default; }
+:is(.card-action, .lesson-node, .homework-row, .homework-pulse, .notification-item, .profile-links button, .mentor-slot, .nav-item):active { transform: none; }
+:is(.lesson-node, .mentor-slot, .notification-item):disabled { cursor: default; }
 input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 @media (hover: hover) {
-  :is(.card-action, .homework-row, .homework-pulse, .profile-links button, .mentor-slot, .suggestion):hover:enabled { background: var(--surface-hover); border-color: var(--control-border); }
+  :is(.card-action, .homework-row, .homework-pulse, .profile-links button, .mentor-slot):hover:enabled { background: var(--surface-hover); border-color: var(--control-border); }
   .lesson-node.available:hover:enabled { background: var(--surface-hover); border-color: var(--cyan); }
   .lesson-node.current:hover:enabled { background: var(--accent-hover); }
   .notification-item:hover:enabled { background: var(--surface); }
@@ -245,30 +245,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visib
 .build-reward .stage-direction { display: block; max-width: 88px; font-size: 11px; line-height: 1.4; }
 .build-step.current { grid-template-columns: 44px minmax(0, 1fr) auto; }
 
-/* AI prompts are cards: number on top, label below. */
-.suggestions { gap: 10px; }
-.suggestion {
-  min-width: 0;
-  min-height: 72px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--btn-radius);
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--text);
-  background: rgba(var(--surface-rgb), .64);
-  font: 700 13px/1.35 Inter, system-ui, sans-serif;
-  text-align: left;
-  cursor: pointer;
-}
-.suggestion span { color: var(--cyan); font: 800 11px/1 Unbounded, sans-serif; }
-.suggestion:disabled { color: var(--disabled-text); background: var(--disabled-surface); }
-.composer { grid-template-columns: minmax(0, 1fr) 48px; gap: 8px; padding: 6px 6px 6px 14px; }
-.composer .action-feedback { grid-column: 1 / -1; }
-
 /* 4. Notifications ---------------------------------------------------------------------------- */
 .notification-panel-tools { flex-wrap: wrap; gap: 4px 12px; }
 .notification-panel-tools > span { font-size: 12px; }
@@ -280,7 +256,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visib
 
 /* 5. Fields ----------------------------------------------------------------------------------- */
 .project-empty label, .project-editor label { font-size: 13px; line-height: 1.5; letter-spacing: .02em; }
-.project-empty :is(input, textarea), .project-editor :is(input, textarea), .composer input {
+.project-empty :is(input, textarea), .project-editor :is(input, textarea) {
   min-height: var(--field-h); font-size: 16px; line-height: 1.5;
 }
 .field { display: grid; gap: var(--space-2); }
@@ -466,8 +442,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visib
 }
 @media (max-width: 379px) {
   .lesson-node { gap: 10px; grid-template-columns: 48px minmax(0, 1fr) 24px; }
-  .suggestions { grid-template-columns: 1fr; }
-  .suggestion { min-height: 48px; flex-direction: row; align-items: center; justify-content: flex-start; gap: 12px; }
   .mentor-dock { grid-template-columns: minmax(0, 1fr) 24px; }
   .mentor-dock .creation-engine { display: none; }
   .build-step.current { grid-template-columns: 44px minmax(0, 1fr); }

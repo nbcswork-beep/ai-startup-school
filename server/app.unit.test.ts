@@ -4,7 +4,6 @@ import type { FastifyInstance } from 'fastify';
 import { createJwtService } from './auth/jwt-service.js';
 import { loadEnv } from './config/env.js';
 import { MemoryRepository } from './data/memory-repository.js';
-import { MockAiProvider } from './services/ai-provider.js';
 import { buildApp } from './app.js';
 
 describe('HTTP API', () => {
@@ -12,7 +11,7 @@ describe('HTTP API', () => {
   afterEach(async()=>app?.close());
   it('rejects protected routes and serves a data-driven bootstrap after development login', async () => {
     const env=loadEnv({ NODE_ENV:'test',DATA_BACKEND:'memory',DEV_AUTH_ENABLED:'true',DEV_EPHEMERAL_JWT:'true',SESSION_TOKEN_PEPPER:'test-pepper' });
-    const jwt=await createJwtService(env); app=await buildApp({env,repository:createAssignedRepository(),jwt,aiProvider:new MockAiProvider()});
+    const jwt=await createJwtService(env); app=await buildApp({env,repository:createAssignedRepository(),jwt});
     expect((await app.inject({method:'GET',url:'/api/v1/bootstrap'})).statusCode).toBe(401);
     const login=await app.inject({method:'POST',url:'/api/v1/auth/development'});
     expect(login.statusCode).toBe(200);

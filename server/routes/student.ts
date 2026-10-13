@@ -3,14 +3,12 @@ import { z } from 'zod';
 import type { AppRepository, HomeworkSubmitInput } from '../data/repository.js';
 import type { FileUploadPolicyDto } from '../types/domain.js';
 import { AppError } from '../errors/app-error.js';
-import type { AiMentorService } from '../services/ai-mentor-service.js';
 import { requireRole } from '../middleware/authenticate.js';
 
 const uuid = z.string().uuid();
 const idempotency = z.object({ idempotencyKey: z.string().min(8).max(100) });
 const projectInput = z.object({ title: z.string().trim().min(2).max(120), summary: z.string().trim().max(1000).default('') });
 const projectUpdate = projectInput.partial().refine(value => Object.keys(value).length > 0, 'At least one field is required');
-const messageInput = z.object({ content: z.string().trim().min(1).max(4000), clientMessageId: z.string().uuid().optional() });
 const safeHttpsUrl = z.string().url().refine(value => new URL(value).protocol === 'https:', 'Only HTTPS URLs are allowed');
 // The text may be empty when files or a link carry the work; the repository rejects an empty attempt.
 const homeworkSubmission = z.object({
@@ -23,7 +21,7 @@ const homeworkSubmission = z.object({
 const portfolioInput = z.object({ reflection: z.string().trim().max(3000).optional(), learned: z.string().trim().max(3000).optional() });
 const notificationsReadInput = z.object({ notificationIds: z.array(uuid).max(50).default([]) });
 
-export function registerStudentRoutes(app: FastifyInstance, repository: AppRepository, ai: AiMentorService, authenticate: preHandlerHookHandler, uploads: FileUploadPolicyDto): void {
+export function registerStudentRoutes(app: FastifyInstance, repository: AppRepository, authenticate: preHandlerHookHandler, uploads: FileUploadPolicyDto): void {
   const secured = { preHandler: [authenticate,requireRole('student')] };
   app.get('/api/v1/me', secured, async request => repository.getProfile(request.auth.userId));
   app.get('/api/v1/profile', secured, async request => repository.getProfile(request.auth.userId));
@@ -130,19 +128,4 @@ export function registerStudentRoutes(app: FastifyInstance, repository: AppRepos
   });
 
   app.get('/api/v1/achievements', secured, async request => repository.listAchievements(request.auth.userId));
-  app.get('/api/v1/ai/conversations', secured, async request => repository.listConversations(request.auth.userId));
-  app.post('/api/v1/ai/conversations', secured, async (request, reply) => {
-    const body = z.object({ title: z.string().trim().min(1).max(120).optional() }).parse(request.body ?? {});
-    return reply.status(201).send(await repository.createConversation(request.auth.userId, body.title));
-  });
-  app.get('/api/v1/ai/conversations/:conversationId/messages', secured, async request => {
-    const { conversationId } = z.object({ conversationId: uuid }).parse(request.params);
-    const { limit, before } = z.object({ limit: z.coerce.number().int().min(1).max(100).default(30), before: z.string().datetime().optional() }).parse(request.query);
-    return repository.listMessages(request.auth.userId, conversationId, limit, before);
-  });
-  app.post('/api/v1/ai/conversations/:conversationId/messages', { ...secured, config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async request => {
-    const { conversationId } = z.object({ conversationId: uuid }).parse(request.params);
-    const body = messageInput.parse(request.body);
-    return ai.send(request.auth.userId, conversationId, body.content, body.clientMessageId);
-  });
 }

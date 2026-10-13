@@ -35,7 +35,7 @@ States are built in: hover (only on hover-capable pointers), pressed (1 px shift
 ## Interactive cards
 
 Whole-card actions (`.card-action`, `.lesson-node`, `.homework-row`, `.homework-pulse`,
-`.notification-item`, `.profile-links button`, `.mentor-slot`, `.suggestion`, `.nav-item`) share the same
+`.notification-item`, `.profile-links button`, `.mentor-slot`, `.nav-item`) share the same
 focus ring, hover surface and disabled cursor. A card is one button; arrows inside it are decoration.
 
 ## Fields
@@ -47,3 +47,7 @@ Optional fields add `<span class="field-hint">за потреби</span>` to the
 
 `homeworkStatus()` in `src/main.js` is the single vocabulary: Нове, Чернетка, На перевірці, Перевірено,
 На доопрацюванні. It drives the status pill, the Learning list and the Home card.
+
+## AI assistant screen
+
+`src/ai-chat.css` builds the chat on the same tokens: icon actions and code-copy buttons are 44 px, the composer field is 16 px text, and the screen follows the visual viewport so the composer stays above the phone keyboard. Answers are rendered by `src/ai-markdown.js` (escaped first, whitelist output).

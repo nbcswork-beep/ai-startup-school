@@ -9,7 +9,7 @@ Mobile-first Student App and education platform foundation for AI Startup School
 - Portfolio
 - Profile
 
-AI mentor infrastructure remains available for future contextual features but is not primary Student App navigation. V2 domain and security documentation starts at [docs/product-v2.md](docs/product-v2.md).
+Students have an AI assistant (top bar ✦ and Profile) that talks to real models through the school's own provider connections, with server-side token allowances managed in Admin OS. Setup, accounting rules and security: [docs/AI-ASSISTANT.md](docs/AI-ASSISTANT.md). V2 domain and security documentation starts at [docs/product-v2.md](docs/product-v2.md).
 
 ## Local run
 ```bash

@@ -5,7 +5,6 @@ import { buildApp } from './app.js';
 import { createJwtService } from './auth/jwt-service.js';
 import { loadEnv } from './config/env.js';
 import { MemoryRepository } from './data/memory-repository.js';
-import { MockAiProvider } from './services/ai-provider.js';
 import { DEV_IDS, PILOT } from './data/seed.js';
 
 const ADMIN='14000000-0000-4000-8000-000000000001';
@@ -14,7 +13,7 @@ const apps:FastifyInstance[]=[];
 async function fixture(userId:string){
   const env=loadEnv({NODE_ENV:'test',DATA_BACKEND:'memory',DEV_AUTH_ENABLED:'true',DEV_EPHEMERAL_JWT:'true',SESSION_TOKEN_PEPPER:'academic-test-only',DEV_USER_ID:userId});
   const repository=createAssignedRepository(),jwt=await createJwtService(env);
-  const app=await buildApp({env,repository,jwt,aiProvider:new MockAiProvider()});apps.push(app);
+  const app=await buildApp({env,repository,jwt});apps.push(app);
   const login=await app.inject({method:'POST',url:'/api/v1/auth/development'});
   const token=login.json().accessToken as string,principal=await jwt.verify(token);
   return{app,repository,headers:{authorization:`Bearer ${token}`},principal,cookie:String(login.headers['set-cookie']).split(';')[0]};

@@ -2,6 +2,7 @@ import {startAcademicSync} from './academic-sync.js';
 import { api } from './api.js';
 import { createActionGate, createNavigationGuard, navigationSection, performUiAction } from './student-interactions.js';
 import { HOMEWORK_FILE_ACCEPT, checkSelection, formatFileSize, isFinalUploadError, sendFile } from './homework-uploads.js';
+import { aiHandleBack, aiScreenMarkup, mountAiScreen } from './ai-chat.js';
 
 const tg = window.Telegram?.WebApp;
 
@@ -59,7 +60,7 @@ let firstName = 'Творець';
 let data = null;
 let currentLesson = null;
 let currentHomework = null;
-let aiMessages = [];
+let aiOrigin = 'home';
 let authError = '';
 let notificationPanelOpen = false;
 let notificationReturnFocus = null;
@@ -178,6 +179,7 @@ app.innerHTML = `
         <span class="brand-name">STARTUP <b>SCHOOL</b></span>
       </button>
       <div class="top-actions">
+        <button class="btn btn--icon btn--secondary ai-entry" type="button" data-tab="ai" aria-label="ШІ-асистент">${svgIcon('ai')}</button>
         <button class="btn btn--icon btn--secondary notification" id="notificationBell" type="button" aria-label="Сповіщення" aria-controls="studentNotifications" aria-expanded="false">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 8h18c0-1-3-1-3-8M10 21h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><i class="notification-dot" hidden></i>
         </button>
@@ -254,6 +256,7 @@ function closeMentorBooking() {
 
 function goBack(requestedPage) {
   if (notificationPanelOpen) { closeNotifications(); return; }
+  if (active === 'ai' && aiHandleBack()) return;
   if (closeMentorBooking()) return;
   const page = typeof requestedPage === 'string' ? requestedPage : errorReturnPage ?? (lessonRequest ? 'lesson' : active);
   const origin = detailOrigins[page];
@@ -261,7 +264,7 @@ function goBack(requestedPage) {
     returnScroll = origin.scroll;
     if (!lessonRequest && !errorReturnPage && history.state?.studentDetail === page) history.back();
     else render(origin.tab);
-  } else if (active === 'ai') render('profile');
+  } else if (active === 'ai') render(aiOrigin);
 }
 
 try { tg?.BackButton?.onClick(goBack); } catch {}
@@ -727,34 +730,6 @@ function homeworkSentMarkup(status) {
   </section>`;
 }
 
-function ai() {
-  const conversation = data.conversations[0];
-  const projectData = data.projects.find(item => item.status === 'active');
-  const lessonData = data.home.currentLesson;
-  return `
-    <section class="page ai-page">
-      <header class="ai-header">
-        <div class="ai-engine">${portalMarkup('small')}</div>
-        <div><span class="section-kicker">AI CORE · ONLINE</span><h1>Питай. Думай.<br><em>Створюй.</em></h1></div>
-      </header>
-      <p class="ai-intro">Ментор уже знає твій урок і етап проєкту. Обери напрям або напиши своє питання.</p>
-      <div class="suggestions">
-        <button type="button" class="suggestion" data-prompt="Допоможи мені перевірити мою ідею"><span>01</span>Перевірити ідею</button>
-        <button type="button" class="suggestion" data-prompt="Поясни тему простіше"><span>02</span>Пояснити тему</button>
-        <button type="button" class="suggestion" data-prompt="Підкажи, що робити далі з проєктом"><span>03</span>Наступний крок</button>
-      </div>
-      <div class="chat" id="chat" aria-live="polite">
-        ${aiMessages.map(message => `<div class="message ${message.role === 'assistant' ? 'ai-msg' : 'user-msg'}">${message.role === 'assistant' ? `<div class="msg-avatar">${svgIcon('ai')}</div>` : ''}<p>${escapeHtml(message.content)}</p></div>`).join('')}
-        <div class="ai-context" aria-label="Контекст AI ментора синхронізовано"><span>КОНТЕКСТ ПІДКЛЮЧЕНО</span><div><b>УРОК ${lessonData?.number ?? '—'}</b><i></i><em></em><i></i><b>MVP ${projectData?.completionPercent ?? 0}%</b></div><small>Ментор бачить твій поточний маршрут</small></div>
-      </div>
-      <form class="composer" id="composer" data-conversation="${conversation?.id ?? ''}">
-        <input id="aiInput" autocomplete="off" aria-label="Повідомлення AI ментору" placeholder="Запитай про урок або проєкт…">
-        <button type="submit" class="btn btn--icon btn--primary send" aria-label="Надіслати">${arrowIcon()}</button>
-      </form>
-      <p class="ai-note">AI допомагає думати, але не робить проєкт замість тебе.</p>
-    </section>`;
-}
-
 function profile() {
   const profileData = data.profile;
   const viewer = profileData.viewer;
@@ -776,6 +751,7 @@ function profile() {
         ${achievements.map((achievement, index) => { const type = achievement.earned ? achievement.artifactStyleKey : 'locked'; return `<article class="artifact ${type}"><span class="artifact-number">A-${String(index + 1).padStart(2, '0')}</span><div class="artifact-glyph"><i></i>${artifactIcon(type)}</div><span class="artifact-state">${achievement.earned ? 'ЗНАЙДЕНО' : 'НЕ ВІДКРИТО'}</span><strong>${escapeHtml(achievement.title)}</strong><small>${escapeHtml(achievement.description)}</small></article>`; }).join('')}
       </div>
       <div class="profile-links">
+        <button type="button" data-tab="ai"><span class="link-icon">${svgIcon('ai')}</span><span><strong>ШІ-асистент</strong><small>Уроки, ідеї, код — у кількох чатах</small></span>${arrowIcon()}</button>
         <button id="openNotificationsFromProfile" type="button"><span class="link-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 8h18c0-1-3-1-3-8M10 21h4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span><strong>Сповіщення</strong><small>Уроки та дедлайни</small></span>${arrowIcon()}</button>
         <button id="openMentorBooking" type="button" aria-controls="mentorBooking" aria-expanded="false"><span class="link-icon">1:1</span><span><strong>Допомога ментора</strong><small>${escapeHtml(profileData.mentor?.displayName ?? 'Обери зручний час')}</small></span>${arrowIcon()}</button>
       </div>
@@ -833,7 +809,7 @@ function artifactIcon(type) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${artifactPaths[type]}</svg>`;
 }
 
-const templates = { home, learn, project, portfolio, profile, lesson: lessonPage, homework: homeworkPage, ai };
+const templates = { home, learn, project, portfolio, profile, lesson: lessonPage, homework: homeworkPage, ai: aiScreenMarkup };
 
 function escapeHtml(str) {
   const amp = String.fromCharCode(38);
@@ -1141,7 +1117,9 @@ function render(tab, updateHistory = true) {
   renderTimer = setTimeout(() => {
     if (!navigationGuard.isCurrent(token)) return;
     const drafts=active===next?[...view.querySelectorAll('#homeworkSubmit,#projectStageSubmit,#projectEditor,#createProject,#projectNoteForm')].map(form=>({formId:form.id,key:form.dataset.homeworkId??form.dataset.taskId??form.dataset.projectId??'',version:form.dataset.version??'',requestId:form.dataset.requestId,hidden:form.hidden,fields:[...form.querySelectorAll('input[name],textarea[name]')].map(field=>({name:field.name,value:field.value,focused:document.activeElement===field,start:field.selectionStart,end:field.selectionEnd}))})):[];
+    if (next === 'ai' && active !== 'ai') aiOrigin = ['lesson', 'homework'].includes(active) ? detailOrigins[active]?.tab ?? 'home' : active;
     active = next;
+    document.documentElement.dataset.screen = active === 'ai' ? 'ai' : '';
     view.innerHTML = templates[active]();
     view.removeAttribute('aria-busy');
     document.querySelectorAll('.nav-item').forEach(item => {
@@ -1156,6 +1134,7 @@ function render(tab, updateHistory = true) {
     window.scrollTo({ top: scroll, behavior: 'auto' });
     view.classList.remove('leaving');
     wirePage();
+    if (active === 'ai') mountAiScreen(view.querySelector('#aiScreen'), { api, haptic, onBack: () => goBack() });
     for(const draft of drafts){const nextForm=view.querySelector('#'+draft.formId);if(!nextForm)continue;const key=nextForm.dataset.homeworkId??nextForm.dataset.taskId??nextForm.dataset.projectId??'';if(key!==draft.key||(['projectStageSubmit','projectNoteForm'].includes(draft.formId)&&nextForm.dataset.version!==draft.version))continue;if(draft.requestId)nextForm.dataset.requestId=draft.requestId;nextForm.hidden=draft.hidden;for(const item of draft.fields){const field=nextForm.elements.namedItem(item.name);if(field){field.value=item.value;if(item.focused&&!field.disabled){field.focus();if(item.start!==null)field.setSelectionRange(item.start,item.end);}}}}
 
     const targetHash = active === 'lesson' && currentLesson ? `#lesson=${currentLesson.id}` : active === 'homework' && currentHomework ? `#homework=${currentHomework.id}` : `#${active}`;
@@ -1207,34 +1186,6 @@ function wirePage() {
       if (active === 'lesson' && currentLesson?.id === id && button.isConnected) { currentLesson = lesson; render('lesson', false); }
     }, { successText: 'Надіслано на підтвердження' });
   });
-
-  const form = document.querySelector('#composer');
-  if (form) {
-    const input = document.querySelector('#aiInput'), chat = document.querySelector('#chat'), send = form.querySelector('.send');
-    const prompts = [...view.querySelectorAll('[data-prompt]')], key = `ai:send:${form.dataset.conversation}`;
-    const updateComposer = () => { const busy = actionGate.has(key); send.disabled = busy || !input.value.trim(); for (const prompt of prompts) prompt.disabled = busy; };
-    const submit = async rawText => {
-      const text = rawText?.trim();
-      if (!text || actionGate.has(key)) return;
-      chat.querySelector('.ai-context')?.remove();
-      const optimistic = document.createElement('div'); optimistic.className = 'message user-msg';
-      optimistic.innerHTML = `<p>${escapeHtml(text)}</p>`; chat.append(optimistic); chat.scrollTop = chat.scrollHeight;
-      const pending = runAction(send, key, '…', () => api.sendMessage(form.dataset.conversation, text, crypto.randomUUID()), result => {
-        aiMessages.push(result.userMessage, result.assistantMessage);
-        if (!chat.isConnected) return;
-        chat.insertAdjacentHTML('beforeend', `<div class="message ai-msg"><div class="msg-avatar">${svgIcon('ai')}</div><p>${escapeHtml(result.assistantMessage.content)}</p></div>`);
-        chat.scrollTop = chat.scrollHeight;
-      }, { keepDisabled: false, successText: 'Відповідь отримано', onStatus: (state, message) => showActionStatus(send, state, state === 'loading' ? 'Ментор готує відповідь…' : message) });
-      input.value = ''; updateComposer();
-      const result = await pending;
-      if (!result.ok && !result.committed && input.isConnected) { optimistic.remove(); input.value = text; }
-      if (input.isConnected) { updateComposer(); input.focus(); }
-    };
-    input.addEventListener('input', updateComposer);
-    form.onsubmit = event => { event.preventDefault(); submit(input.value); };
-    for (const button of prompts) button.onclick = () => submit(button.dataset.prompt);
-    updateComposer();
-  }
 
   const createForm = document.querySelector('#createProject');
   createForm?.addEventListener('submit', event => {
@@ -1354,8 +1305,6 @@ async function initialize() {
     try {
       await api.authenticate();
       await refreshData();
-      if (!data.conversations.length) data.conversations.push(await api.createConversation('Мій маршрут'));
-      aiMessages = await api.messages(data.conversations[0].id);
       await renderFromLocation();
     } catch (error) { authError = error.message; errorView(authError); }
   });

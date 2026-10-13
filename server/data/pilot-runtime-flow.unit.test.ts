@@ -5,7 +5,6 @@ import { buildApp } from '../app.js';
 import { createJwtService, type JwtService } from '../auth/jwt-service.js';
 import { MemorySessionStore } from '../auth/session-store.js';
 import { loadEnv } from '../config/env.js';
-import { MockAiProvider } from '../services/ai-provider.js';
 import { MemoryMentoringStore } from './mentoring-store.js';
 import { MemoryRepository } from './memory-repository.js';
 import { MemoryPilotRuntimeStore } from './pilot-runtime-store.js';
@@ -23,7 +22,7 @@ afterEach(async()=>{await Promise.all(apps.splice(0).map(app=>app.close()));});
 
 async function appFor(userId:string,runtime:MemoryPilotRuntimeStore,sessions:MemorySessionStore,mentoring=new MemoryMentoringStore()){
   const env=loadEnv({NODE_ENV:'test',DATA_BACKEND:'memory',DEV_AUTH_ENABLED:'true',DEV_USER_ID:userId,DEV_EPHEMERAL_JWT:'true',SESSION_TOKEN_PEPPER:'pilot-runtime-flow-pepper'});
-  const app=await buildApp({env,repository:createAssignedRepository(undefined,{runtimeStore:runtime,sessionStore:sessions,mentoringStore:mentoring}),jwt,aiProvider:new MockAiProvider()});
+  const app=await buildApp({env,repository:createAssignedRepository(undefined,{runtimeStore:runtime,sessionStore:sessions,mentoringStore:mentoring}),jwt});
   apps.push(app);
   const login=await app.inject({method:'POST',url:'/api/v1/auth/development'});
   return{app,login,headers:login.statusCode===200?{authorization:`Bearer ${login.json().accessToken as string}`}:{authorization:''}};

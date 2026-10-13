@@ -195,6 +195,8 @@ export class LocalDevFileStorage implements FileStorage {
   verify(token: string): DevStorageGrant | null {
     const [body, signature] = token.split('.');
     if (!body || !signature) return null;
+    // Only the canonical encoding counts, so a token has exactly one valid spelling.
+    if (Buffer.from(signature, 'base64url').toString('base64url') !== signature) return null;
     const expected = createHmac('sha256', this.secret).update(body).digest();
     const actual = Buffer.from(signature, 'base64url');
     if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null;

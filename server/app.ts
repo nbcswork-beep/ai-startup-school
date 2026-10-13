@@ -13,8 +13,12 @@ import { registerStudentRoutes } from './routes/student.js';
 import { registerTeacherRoutes } from './routes/teacher.js';
 import { registerGuardianRoutes } from './routes/guardian.js';
 import { registerAdminRoutes } from './routes/admin.js';
-import type { AiProvider } from './services/ai-provider.js';
-import { AiMentorService } from './services/ai-mentor-service.js';
+import { SecretBox } from './ai/secret-box.js';
+import { AiService } from './ai/service.js';
+import { AiChatService } from './ai/chat.js';
+import { MemoryAiStore, RedisAiStore, UpstashRestClient, type AiStore } from './ai/store.js';
+import type { ProviderAdapter, ProviderConnection } from './ai/adapters.js';
+import { createAiStreamHandler, registerAiRoutes } from './routes/ai.js';
 import { AuthService } from './services/auth-service.js';
 import { WebCredentialDirectory } from './auth/password-credentials.js';
 import { MemoryLoginAttemptLimiter, type LoginAttemptLimiter } from './auth/session-store.js';
@@ -24,7 +28,7 @@ import { NotificationWorker, TelegramNotificationSender, type NotificationSender
 import { createFileStorage, type FileStorage } from './storage/file-storage.js';
 import { fileLinkSigner, registerHomeworkFileRoutes, uploadPolicy } from './routes/homework-files.js';
 
-export async function buildApp(deps: { env: AppEnv; repository: AppRepository; jwt: JwtService; aiProvider: AiProvider; loginLimiter?: LoginAttemptLimiter; telegramWebhookHandler?: TelegramWebhookHandler; notificationSender?:NotificationSender; fileStorage?: FileStorage | null }) {
+export async function buildApp(deps: { env: AppEnv; repository: AppRepository; jwt: JwtService; aiStore?: AiStore; aiAdapterFactory?: (connection: ProviderConnection) => ProviderAdapter; aiNow?: () => Date; loginLimiter?: LoginAttemptLimiter; telegramWebhookHandler?: TelegramWebhookHandler; notificationSender?:NotificationSender; fileStorage?: FileStorage | null }) {
   const app = Fastify({ logger: deps.env.NODE_ENV === 'test' ? false : { level: deps.env.LOG_LEVEL,redact:{paths:['req.headers.authorization','req.headers.cookie','req.headers.x-telegram-bot-api-secret-token','res.headers.set-cookie','body.initData','body.refreshToken','body.password','body.token'],censor:'[REDACTED]'} }, trustProxy: deps.env.TRUST_PROXY, bodyLimit: 32_768 });
   await app.register(cookie);
   await app.register(cors, {
@@ -60,7 +64,23 @@ export async function buildApp(deps: { env: AppEnv; repository: AppRepository; j
     pathPrefix: deps.env.FILE_STORAGE_PREFIX ?? deps.env.deployEnvironment
   };
   deps.repository.setFileLinkSigner(fileStorage ? fileLinkSigner(fileStorage) : null);
-  registerStudentRoutes(app, deps.repository, new AiMentorService(deps.repository, deps.aiProvider), authenticate, uploadPolicy(fileConfig));
+  registerStudentRoutes(app, deps.repository, authenticate, uploadPolicy(fileConfig));
+  // AI assistant: provider keys sealed at rest, balances and chats in their own Redis namespace.
+  const aiStore = deps.aiStore ?? (deps.env.NODE_ENV !== 'test' && deps.env.UPSTASH_REDIS_REST_URL && deps.env.UPSTASH_REDIS_REST_TOKEN
+    ? new RedisAiStore(new UpstashRestClient(deps.env.UPSTASH_REDIS_REST_URL, deps.env.UPSTASH_REDIS_REST_TOKEN), deps.env.aiRedisPrefix)
+    : new MemoryAiStore());
+  const ai = new AiService({
+    store: aiStore,
+    secrets: SecretBox.fromEnv(deps.env),
+    roster: () => deps.repository.getAiRoster(),
+    allowLocalProviderUrls: deps.env.deployEnvironment === 'local',
+    log: (error, message) => app.log.error({ err: error }, message),
+    ...(deps.aiNow ? { now: deps.aiNow } : {}),
+    ...(deps.aiAdapterFactory ? { adapterFactory: deps.aiAdapterFactory } : {})
+  });
+  const aiChat = new AiChatService(ai);
+  registerAiRoutes(app, { repository: deps.repository, authenticate, ai, chat: aiChat });
+  app.decorate('aiStreamHandler', createAiStreamHandler({ jwt: deps.jwt, repository: deps.repository, chat: aiChat, origins: deps.env.origins }));
   registerHomeworkFileRoutes(app, deps.repository, authenticate, fileConfig);
   registerTeacherRoutes(app,deps.repository,authenticate);
   registerGuardianRoutes(app,deps.repository,authenticate);

@@ -5,7 +5,6 @@ import { buildApp } from '../app.js';
 import { createJwtService, type JwtService } from '../auth/jwt-service.js';
 import { MemorySessionStore } from '../auth/session-store.js';
 import { loadEnv } from '../config/env.js';
-import { MockAiProvider } from '../services/ai-provider.js';
 import { MemoryMentoringStore } from './mentoring-store.js';
 import { MemoryRepository } from './memory-repository.js';
 import { DEV_IDS, PILOT_STUDENTS } from './seed.js';
@@ -35,8 +34,7 @@ async function appFor(userId: string, sessions: MemorySessionStore, mentoring: M
   const app = await buildApp({
     env,
     repository: createAssignedRepository(undefined, { sessionStore: sessions, mentoringStore: mentoring }),
-    jwt,
-    aiProvider: new MockAiProvider()
+    jwt
   });
   apps.push(app);
   const login = await app.inject({ method: 'POST', url: '/api/v1/auth/development' });

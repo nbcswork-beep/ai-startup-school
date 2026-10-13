@@ -1,0 +1,731 @@
+// Admin OS · ШІ: providers and models, student token limits, purchased API resources, analytics.
+// Purchased provider resources and student allowances are separate figures everywhere on these pages.
+
+export const aiNav = [
+  ['ai-providers', 'ШІ · Провайдери', '✦'],
+  ['ai-tokens', 'ШІ · Токени', '◍'],
+  ['ai-resources', 'ШІ · Ресурс API', '◬'],
+  ['ai-analytics', 'ШІ · Аналітика', '▥']
+];
+
+const PRESETS = [[100_000, '100K'], [500_000, '500K'], [1_000_000, '1M'], [5_000_000, '5M']];
+const FAMILIES = [['gpt', 'GPT (OpenAI)'], ['claude', 'Claude (Anthropic)'], ['gemini', 'Gemini (Google)'], ['deepseek', 'DeepSeek'], ['qwen', 'Qwen'], ['llama', 'Llama'], ['mistral', 'Mistral'], ['other', 'Інша']];
+const LEDGER_LABELS = { grant: 'Видано', set: 'Новий баланс', reset: 'Обнулено', charge: 'Списано', block: 'Заблоковано', unblock: 'Розблоковано', monthly_on: 'Місячний ліміт увімкнено', monthly_off: 'Місячний ліміт вимкнено', monthly_renewal: 'Оновлення місячного ліміту', expired_reservation: 'Незавершений запит' };
+
+export function createAiAdmin(ctx) {
+  const { api, shell, openModal, toast, esc, fmt } = ctx;
+  const cache = {};
+  const ui = { analytics: { range: 'week', groupId: '', studentId: '', modelId: '' }, discovered: {} };
+  const numberFormat = new Intl.NumberFormat('uk-UA');
+  const num = value => value === null || value === undefined ? '—' : numberFormat.format(Math.round(Number(value) || 0));
+  const money = (amount, currency) => {
+    if (amount === null || amount === undefined) return '—';
+    try { return new Intl.NumberFormat('uk-UA', { style: 'currency', currency, maximumFractionDigits: amount < 1 ? 4 : 2 }).format(amount); }
+    catch { return `${amount} ${esc(currency)}`; }
+  };
+  const status = (value, label) => `<span class="status status--${esc(value)}">${esc(label)}</span>`;
+  const metric = (label, value, note = '') => `<div class="metric"><span>${esc(label)}</span><strong>${value}</strong><small>${note}</small></div>`;
+  const field = (label, name, value = '', type = 'text', extra = '') => `<label class="field"><span>${label}</span><input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;
+  const select = (label, name, options, selected = '', extra = '') => `<label class="field"><span>${label}</span><select name="${name}" ${extra}>${options.map(([value, text]) => `<option value="${esc(value)}" ${String(value) === String(selected ?? '') ? 'selected' : ''}>${esc(text)}</option>`).join('')}</select></label>`;
+  const intro = (text, extra = '') => `<div class="intro"><p>${esc(text)}</p>${extra}</div>`;
+  const loading = () => '<div class="panel ai-loading-panel"><p class="muted-copy">Завантажуємо дані з захищеного backend…</p></div>';
+  const failure = error => `<div class="panel"><div class="empty"><strong>Не вдалося завантажити</strong><p>${esc(error.message)}</p><button class="secondary" data-ai-action="reload">Спробувати ще раз</button></div></div>`;
+  // Package dates are calendar days stored at UTC midnight; show them as days, not times.
+  const day = value => value ? new Intl.DateTimeFormat('uk-UA', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(new Date(value)) : '—';
+  const numberOrNull = value => value === '' || value === null || value === undefined ? null : Number(value);
+
+  /** A read-only dialog on the shared modal layer, for results and journals. */
+  function showInfo(title, body) {
+    const layer = document.querySelector('#modal');
+    layer.innerHTML = `<div class="modal ai-info" role="dialog" aria-modal="true" aria-labelledby="aiInfoTitle"><div class="modal-head"><h2 id="aiInfoTitle">${esc(title)}</h2><button type="button" class="close" aria-label="Закрити">×</button></div>${body}<div class="modal-actions"><button type="button" class="secondary close-button">Закрити</button></div></div>`;
+    layer.classList.add('open');
+    const close = () => layer.classList.remove('open');
+    layer.querySelector('.close').onclick = close;
+    layer.querySelector('.close-button').onclick = close;
+    layer.onclick = event => { if (event.target === layer) close(); };
+    layer.querySelector('.close-button').focus();
+  }
+
+  /** Runs one action with a busy button and a toast, then reloads the page data. */
+  async function run(button, work, success) {
+    if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+    try {
+      const result = await work();
+      if (success) toast(typeof success === 'function' ? success(result) : success);
+      await reload();
+      return result;
+    } catch (error) {
+      toast(error.message, true);
+      return null;
+    } finally {
+      if (button?.isConnected) { button.disabled = false; button.removeAttribute('aria-busy'); }
+    }
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // Data
+
+  const loaders = {
+    'ai-providers': () => api.aiProviders(),
+    'ai-tokens': async () => {
+      const [tokens, ledger] = await Promise.all([api.aiTokens(), api.aiLedger(null, 60)]);
+      return { ...tokens, ledger: ledger.entries };
+    },
+    'ai-resources': async () => {
+      const [resources, providers] = await Promise.all([api.aiResources(), api.aiProviders()]);
+      return { ...resources, providerList: providers.providers };
+    },
+    'ai-analytics': () => api.aiAnalytics(ui.analytics)
+  };
+
+  let currentRoute = null;
+  // Live pages refresh on their own while visible and no dialog is open.
+  setInterval(() => {
+    if (!['ai-tokens', 'ai-resources', 'ai-analytics'].includes(currentRoute) || document.visibilityState !== 'visible' || document.querySelector('.modal-layer.open')) return;
+    void reload();
+  }, 30_000);
+  async function reload() {
+    const route = currentRoute;
+    if (!route || !loaders[route]) return;
+    try {
+      cache[route] = { data: await loaders[route](), error: null };
+    } catch (error) {
+      cache[route] = { data: cache[route]?.data ?? null, error };
+    }
+    if (currentRoute === route) paint(route);
+  }
+
+  function paint(route) {
+    const host = document.querySelector('#ai-root');
+    if (!host) return;
+    const entry = cache[route];
+    if (!entry) { host.innerHTML = loading(); return; }
+    if (!entry.data && entry.error) { host.innerHTML = failure(entry.error); return; }
+    const filter = host.querySelector('[data-filter]');
+    const kept = filter ? { value: filter.value, focused: document.activeElement === filter } : null;
+    host.innerHTML = ({ 'ai-providers': providersView, 'ai-tokens': tokensView, 'ai-resources': resourcesView, 'ai-analytics': analyticsView })[route](entry.data);
+    const nextFilter = host.querySelector('[data-filter]');
+    if (kept?.value && nextFilter) { nextFilter.value = kept.value; nextFilter.dispatchEvent(new Event('input', { bubbles: true })); }
+    if (kept?.focused) nextFilter?.focus();
+    if (route === 'ai-analytics') bindAnalyticsFilters();
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // Providers and models
+
+  const protocolLabel = protocol => protocol === 'anthropic' ? 'Anthropic Messages API' : 'OpenAI-compatible API';
+  const balanceLabel = source => ({ none: 'Не отримувати', openrouter: 'OpenRouter (/credits)', deepseek: 'DeepSeek (/user/balance)' })[source] ?? source;
+
+  function providerCard(provider, models) {
+    const check = provider.lastCheck;
+    const providerModels = models.filter(model => model.providerId === provider.id);
+    return `<article class="panel ai-provider">
+      <div class="panel-head">
+        <div><span class="kicker">${esc(protocolLabel(provider.protocol))}</span><h2>${esc(provider.name)}</h2><span class="code">${esc(provider.baseUrl)}</span></div>
+        ${status(provider.enabled ? 'active' : 'disabled', provider.enabled ? 'Увімкнено' : 'Вимкнено')}
+      </div>
+      <div class="ai-check ${check ? (check.ok ? 'is-ok' : 'is-fail') : ''}">
+        <strong>${check ? (check.ok ? 'Зʼєднання працює' : 'Помилка зʼєднання') : 'Ще не перевірено'}</strong>
+        ${check ? `<span>${esc(check.message)}</span><small>${fmt(check.at)}${check.latencyMs !== null ? ` · ${num(check.latencyMs)} мс` : ''}</small>` : '<span>Натисніть «Перевірити зʼєднання», щоб переконатися, що ключ і адреса правильні.</span>'}
+      </div>
+      <div class="ai-subhead">API-ключі</div>
+      <div class="ai-keys">${provider.keys.length ? provider.keys.map(key => `<div class="ai-key">
+        <div><strong>${esc(key.label)}</strong><span class="code">${key.hint ? `••••${esc(key.hint)}` : '••••'}</span></div>
+        ${status(key.enabled ? 'active' : 'disabled', key.enabled ? 'Активний' : 'Вимкнений')}
+        <div class="ai-row-actions"><button class="text-button" data-ai-action="key-toggle" data-provider="${provider.id}" data-key="${key.id}" data-enabled="${key.enabled}">${key.enabled ? 'Вимкнути' : 'Увімкнути'}</button><button class="text-button ai-danger-link" data-ai-action="key-delete" data-provider="${provider.id}" data-key="${key.id}" data-label="${esc(key.label)}">Видалити</button></div>
+      </div>`).join('') : '<p class="muted-copy">Ключів немає — провайдер не працюватиме, доки ви не додасте ключ.</p>'}</div>
+      ${provider.headers.length ? `<p class="muted-copy">Додаткові заголовки: ${provider.headers.map(header => `<span class="pill">${esc(header.name)}${header.hint ? ` ••••${esc(header.hint)}` : ''}</span>`).join(' ')}</p>` : ''}
+      <p class="muted-copy">Баланс у провайдера: ${provider.balanceSource === 'none' ? 'метод отримання не вибрано' : provider.syncedBalance ? `<strong class="ai-strong">${money(provider.syncedBalance.amount, provider.syncedBalance.currency)}</strong> · підтверджено провайдером ${fmt(provider.syncedBalance.at)}` : 'ще не синхронізовано'}</p>
+      <p class="muted-copy">Моделей підключено: ${providerModels.length}${providerModels.length ? ` (${providerModels.filter(model => model.enabled).length} увімкнено)` : ''}</p>
+      ${provider.recentErrors?.length ? `<details class="ai-errors"><summary>Останні помилки API (${provider.recentErrors.length})</summary>${provider.recentErrors.map(item => `<p><span class="code">${fmt(item.at)}</span> ${item.status ? `HTTP ${item.status} · ` : ''}${esc(item.code)} — ${esc(item.message)}</p>`).join('')}</details>` : ''}
+      <div class="ai-actions">
+        <button class="secondary" data-ai-action="provider-test" data-id="${provider.id}">Перевірити зʼєднання</button>
+        <button class="secondary" data-ai-action="provider-discover" data-id="${provider.id}">Моделі з API</button>
+        <button class="secondary" data-ai-action="key-new" data-id="${provider.id}">Додати ключ</button>
+        ${provider.balanceSource !== 'none' ? `<button class="secondary" data-ai-action="provider-balance" data-id="${provider.id}">Синхронізувати баланс</button>` : ''}
+        <button class="secondary" data-ai-action="provider-edit" data-id="${provider.id}">Редагувати</button>
+        <button class="secondary" data-ai-action="provider-toggle" data-id="${provider.id}" data-enabled="${provider.enabled}">${provider.enabled ? 'Вимкнути' : 'Увімкнути'}</button>
+        <button class="danger" data-ai-action="provider-delete" data-id="${provider.id}" data-name="${esc(provider.name)}">Видалити</button>
+      </div>
+    </article>`;
+  }
+
+  function priceLabel(model) {
+    const { inputPer1M, outputPer1M, currency } = model.pricing;
+    if (inputPer1M === null || outputPer1M === null) return '<small class="ai-warn">Тариф не задано</small>';
+    return `${money(inputPer1M, currency)} / ${money(outputPer1M, currency)}<small>вхід / вихід за 1M</small>`;
+  }
+
+  function providersView(data) {
+    const { providers, models, settings } = data;
+    const providerName = id => providers.find(item => item.id === id)?.name ?? '—';
+    const rows = models.map(model => `<tr>
+      <td><strong>${esc(model.label)}</strong><small class="code">${esc(model.apiModelId)}</small>${settings.defaultModelId === model.id ? '<span class="pill ai-pill-accent">За замовчуванням</span>' : ''}</td>
+      <td>${esc(providerName(model.providerId))}<small>${esc(FAMILIES.find(([id]) => id === model.family)?.[1] ?? model.family)}</small></td>
+      <td>${status(model.enabled ? 'active' : 'disabled', model.enabled ? 'Доступна учням' : 'Вимкнена')}<small>${model.verifiedAt ? `Перевірено ${fmt(model.verifiedAt)}` : 'Не перевірено запитом'}</small>${model.lastTestError ? `<small class="ai-warn">${esc(model.lastTestError)}</small>` : ''}</td>
+      <td>${num(model.maxInputTokens)} / ${num(model.maxOutputTokens)}<small>вхід / вихід, токенів</small></td>
+      <td>${priceLabel(model)}</td>
+      <td>${model.fallbackModelId ? esc(models.find(item => item.id === model.fallbackModelId)?.label ?? '—') : '—'}</td>
+      <td class="actions">
+        <button class="text-button" data-ai-action="model-test" data-id="${model.id}">Тест</button>
+        <button class="text-button" data-ai-action="model-toggle" data-id="${model.id}" data-enabled="${model.enabled}">${model.enabled ? 'Вимкнути' : 'Увімкнути'}</button>
+        ${settings.defaultModelId !== model.id && model.enabled ? `<button class="text-button" data-ai-action="model-default" data-id="${model.id}">Основна</button>` : ''}
+        <button class="text-button" data-ai-action="model-edit" data-id="${model.id}">Редагувати</button>
+        <button class="text-button ai-danger-link" data-ai-action="model-delete" data-id="${model.id}" data-name="${esc(model.label)}">Видалити</button>
+      </td>
+    </tr>`);
+    return `${data.secretsAvailable ? '' : '<div class="security-banner"><b>КЛЮЧІ НЕ ЗБЕРЕЖУТЬСЯ</b><p>На сервері не задано AI_SECRETS_KEY або SESSION_TOKEN_PEPPER — шифрувати API-ключі нічим.</p></div>'}
+      ${providers.length ? `<div class="ai-provider-grid">${providers.map(provider => providerCard(provider, models)).join('')}</div>` : `<div class="panel"><div class="empty"><strong>Провайдерів ще немає</strong><p>Додайте свій API: OpenAI-сумісний сервіс, агрегатор (наприклад OpenRouter), реселер із власним Base URL або Anthropic.</p><button class="primary" data-ai-action="provider-new">Додати провайдера</button></div></div>`}
+      <section class="panel ai-section">
+        <div class="panel-head"><div><span class="kicker">Моделі</span><h2>Моделі для учнів</h2><span>Учні бачать лише увімкнені моделі. Увімкнути можна тільки після успішного тестового запиту через ваш API.</span></div><button class="primary" data-ai-action="model-new" ${providers.length ? '' : 'disabled'}>Додати модель</button></div>
+        ${rows.length ? `<div class="table-wrap"><table><thead><tr><th>Модель</th><th>Провайдер</th><th>Стан</th><th>Ліміти</th><th>Тариф</th><th>Резервна</th><th></th></tr></thead><tbody>${rows.join('')}</tbody></table></div>` : '<p class="muted-copy">Моделей ще немає. Отримайте список з API провайдера або додайте ID моделі вручну.</p>'}
+      </section>
+      <section class="panel ai-section">
+        <div class="panel-head"><div><span class="kicker">Налаштування</span><h2>Поведінка асистента та обмеження</h2></div></div>
+        <form id="ai-settings" class="ai-settings">
+          <label class="field ai-wide"><span>Системна інструкція (не показується учням)</span><textarea name="systemPrompt" maxlength="8000" required>${esc(settings.systemPrompt)}</textarea></label>
+          ${select('Модель за замовчуванням', 'defaultModelId', [['', 'Перша доступна'], ...models.filter(model => model.enabled).map(model => [model.id, model.label])], settings.defaultModelId ?? '')}
+          ${field('Максимум символів у повідомленні', 'maxMessageChars', settings.maxMessageChars, 'number', 'min="200" max="32000" required')}
+          ${field('Запитів на хвилину на учня', 'requestsPerMinute', settings.requestsPerMinute, 'number', 'min="1" max="120" required')}
+          ${field('Одночасних відповідей на учня', 'maxConcurrentPerStudent', settings.maxConcurrentPerStudent, 'number', 'min="1" max="5" required')}
+          ${field('«Ліміт закінчується» нижче, токенів', 'lowBalanceTokens', settings.lowBalanceTokens, 'number', 'min="0" required')}
+          ${field('Попереджати про ресурс API нижче, %', 'resourceWarningPercent', settings.resourceWarningPercent, 'number', 'min="1" max="90" required')}
+          <div class="ai-wide ai-form-actions"><button class="primary" type="submit">Зберегти налаштування</button></div>
+        </form>
+      </section>`;
+  }
+
+  const providerForm = (provider = null) => `
+    ${field('Назва *', 'name', provider?.name ?? '', 'text', 'required maxlength="80" placeholder="Напр. OpenRouter школи"')}
+    ${select('Протокол *', 'protocol', [['openai', 'OpenAI-compatible (Chat Completions)'], ['anthropic', 'Anthropic Messages API']], provider?.protocol ?? 'openai')}
+    ${field('API Base URL *', 'baseUrl', provider?.baseUrl ?? '', 'url', 'required maxlength="500" placeholder="https://api.example.com/v1" spellcheck="false"')}
+    <p class="muted-copy">Приклади: https://api.openai.com/v1 · https://openrouter.ai/api/v1 · https://api.deepseek.com · https://dashscope-intl.aliyuncs.com/compatible-mode/v1 · https://api.anthropic.com</p>
+    ${provider ? '' : `${field('API Key *', 'apiKey', '', 'password', 'required minlength="8" maxlength="1000" autocomplete="off" spellcheck="false"')}${field('Назва ключа', 'keyLabel', '', 'text', 'maxlength="60" placeholder="Основний ключ"')}`}
+    <label class="field"><span>Додаткові заголовки авторизації — по одному на рядок, «Назва: значення»${provider ? '. Порожнє значення залишає збережене.' : ''}</span><textarea name="headers" spellcheck="false" placeholder="HTTP-Referer: https://school.example">${provider ? provider.headers.map(header => `${esc(header.name)}: `).join('\n') : ''}</textarea></label>
+    ${select('Баланс провайдера', 'balanceSource', [['none', 'Не отримувати'], ['openrouter', 'OpenRouter (/credits)'], ['deepseek', 'DeepSeek (/user/balance)']], provider?.balanceSource ?? 'none')}
+    <p class="muted-copy">Ключ шифрується на сервері й більше ніколи не показується — лише останні 4 символи.</p>`;
+
+  const parseHeaders = text => String(text ?? '').split('\n').map(line => line.trim()).filter(Boolean).map(line => {
+    const index = line.indexOf(':');
+    if (index < 1) throw new Error(`Рядок заголовка має бути у форматі «Назва: значення»: ${line.slice(0, 40)}`);
+    return { name: line.slice(0, index).trim(), value: line.slice(index + 1).trim() };
+  });
+
+  function modelForm(data, model = null) {
+    const providerOptions = data.providers.map(provider => [provider.id, provider.name]);
+    const discovered = ui.discovered[model?.providerId ?? data.providers[0]?.id] ?? [];
+    const others = data.models.filter(item => item.id !== model?.id).map(item => [item.id, item.label]);
+    return `${select('Провайдер *', 'providerId', providerOptions, model?.providerId ?? ui.lastProvider ?? data.providers[0]?.id, model ? 'disabled' : '')}
+      ${field('ID моделі в API *', 'apiModelId', model?.apiModelId ?? ui.prefillModel ?? '', 'text', 'required maxlength="200" spellcheck="false" list="ai-model-ids" placeholder="Точний ID, як у документації провайдера"')}
+      <datalist id="ai-model-ids">${discovered.map(item => `<option value="${esc(item.id)}">${esc(item.label)}</option>`).join('')}</datalist>
+      ${field('Назва для учнів', 'label', model?.label ?? '', 'text', 'maxlength="80" placeholder="Напр. GPT-4o mini"')}
+      ${select('Сімейство', 'family', FAMILIES, model?.family ?? 'other')}
+      <div class="ai-two">${field('Макс. токенів відповіді', 'maxOutputTokens', model?.maxOutputTokens ?? 2048, 'number', 'min="16" max="200000" required')}${field('Макс. токенів контексту', 'maxInputTokens', model?.maxInputTokens ?? 16000, 'number', 'min="512" max="2000000" required')}</div>
+      <fieldset><legend>Тариф провайдера за 1 млн токенів (для оцінки вартості; залиште порожнім, якщо невідомо)</legend>
+        <div class="ai-two">${field('Валюта', 'currency', model?.pricing.currency ?? 'USD', 'text', 'maxlength="3" pattern="[A-Za-z]{3}"')}${field('Вхідні', 'inputPer1M', model?.pricing.inputPer1M ?? '', 'number', 'min="0" step="any"')}</div>
+        <div class="ai-two">${field('Вихідні', 'outputPer1M', model?.pricing.outputPer1M ?? '', 'number', 'min="0" step="any"')}${field('Кешовані вхідні', 'cachedInputPer1M', model?.pricing.cachedInputPer1M ?? '', 'number', 'min="0" step="any"')}</div>
+      </fieldset>
+      ${select('Резервна модель (лише якщо ця не відповіла, до початку відповіді)', 'fallbackModelId', [['', 'Без резервної'], ...others], model?.fallbackModelId ?? '')}
+      ${model ? '' : '<p class="muted-copy">Модель зʼявиться у списку вимкненою. Щоб відкрити її учням, натисніть «Увімкнути» — сервер спершу надішле справжній тестовий запит.</p>'}`;
+  }
+
+  const modelPayload = form => ({
+    apiModelId: String(form.get('apiModelId')).trim(),
+    label: String(form.get('label') ?? '').trim(),
+    family: form.get('family'),
+    maxOutputTokens: Number(form.get('maxOutputTokens')),
+    maxInputTokens: Number(form.get('maxInputTokens')),
+    pricing: { currency: String(form.get('currency') || 'USD').toUpperCase(), inputPer1M: numberOrNull(form.get('inputPer1M')), outputPer1M: numberOrNull(form.get('outputPer1M')), cachedInputPer1M: numberOrNull(form.get('cachedInputPer1M')) },
+    fallbackModelId: form.get('fallbackModelId') || null
+  });
+
+  function testResult(result, label) {
+    if (!result.ok) return `<div class="ai-check is-fail"><strong>Модель «${esc(label)}» не відповіла</strong><span>${esc(result.message)}</span><small>${num(result.latencyMs)} мс</small></div>`;
+    return `<div class="ai-check is-ok"><strong>Відповідь отримано за ${num(result.latencyMs)} мс</strong><span>Ключ: ${esc(result.keyLabel)}</span></div>
+      <div class="ai-test-text">${esc(result.text) || '<em>порожня відповідь</em>'}</div>
+      <p class="muted-copy">Використано: вхід ${num(result.usage.input)}, вихід ${num(result.usage.output)}${result.usage.reasoning ? `, з них reasoning ${num(result.usage.reasoning)}` : ''}${result.usage.cached ? `, кешовано ${num(result.usage.cached)}` : ''} — разом ${num(result.usage.total)} токенів${result.usage.approximate ? ' (оцінка: провайдер не повідомив точне число)' : ' (дані провайдера)'}. Баланси учнів не змінюються.</p>`;
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // Tokens and limits
+
+  function tokensView(data) {
+    const { students, groups, totals, ledger, models } = data;
+    const rows = students.map(row => `<tr>
+      <td><strong>${esc(row.name)}</strong><small>${esc(row.groupName ?? 'Без групи')}</small></td>
+      <td><strong class="ai-strong">${num(row.available)}</strong>${row.reserved ? `<small>у резерві ${num(row.reserved)}</small>` : '<small>доступно</small>'}</td>
+      <td>${num(row.used)}<small>${row.approxUsed ? `з них ≈${num(row.approxUsed)} оцінкою` : `вхід ${num(row.inputUsed)} · вихід ${num(row.outputUsed)}`}</small></td>
+      <td>${num(row.allocated)}<small>використано + залишок</small></td>
+      <td>${num(row.requests)}</td>
+      <td>${esc(row.lastModel ?? '—')}<small>${row.models.length ? `доступно моделей: ${row.models.length}` : 'немає доступних моделей'}${row.rule ? ' · особисті правила' : ''}</small></td>
+      <td>${fmt(row.lastActivityAt)}</td>
+      <td>${row.blocked ? status('disabled', 'Заблоковано') : status('active', 'Активний')}${row.monthlyLimit ? `<small>щомісяця ${num(row.monthlyLimit)}</small>` : ''}</td>
+      <td class="actions"><div class="ai-presets">${PRESETS.map(([amount, label]) => `<button class="pill ai-preset" data-ai-action="grant" data-student="${row.studentId}" data-amount="${amount}" aria-label="Видати ${num(amount)} токенів: ${esc(row.name)}">+${label}</button>`).join('')}<button class="secondary ai-manage" data-ai-action="student-manage" data-student="${row.studentId}">Керувати</button></div></td>
+    </tr>`);
+    const modelName = id => models.find(model => model.id === id)?.label ?? '—';
+    const groupRows = groups.map(group => `<tr>
+      <td><strong>${esc(group.name)}</strong><small>${num(group.studentCount)} учнів · ${group.status === 'active' ? 'активна' : 'архів'}</small></td>
+      <td>${group.rule ? (group.rule.modelIds ? group.rule.modelIds.map(id => `<span class="pill">${esc(modelName(id))}</span>`).join(' ') : 'Усі увімкнені') : 'Усі увімкнені'}${group.rule?.defaultModelId ? `<small>основна: ${esc(modelName(group.rule.defaultModelId))}</small>` : ''}</td>
+      <td class="actions"><button class="text-button" data-ai-action="access" data-scope="group" data-id="${group.id}">Моделі групи</button><button class="text-button" data-ai-action="group-grant" data-id="${group.id}" ${group.status === 'active' ? '' : 'disabled'}>Видати групі</button></td>
+    </tr>`);
+    const ledgerRows = ledger.map(entry => `<tr>
+      <td>${fmt(entry.at)}</td><td><strong>${esc(entry.studentName)}</strong></td>
+      <td>${esc(LEDGER_LABELS[entry.type] ?? entry.type)}${entry.batchId ? '<small>масова видача</small>' : ''}</td>
+      <td class="${entry.amount < 0 ? 'ai-minus' : entry.amount > 0 ? 'ai-plus' : ''}">${entry.amount > 0 ? '+' : ''}${num(entry.amount)}</td>
+      <td>${num(entry.balanceAfter)}</td><td>${esc(entry.note ?? '')}</td>
+    </tr>`);
+    return `<div class="metrics ai-metrics">
+        ${metric('Виділено учням', num(totals.used + totals.balance), 'використано + залишок')}
+        ${metric('Залишок у учнів', num(totals.balance), 'внутрішні ліміти')}
+        ${metric('Використано', num(totals.used), 'за фактичним usage API')}
+        ${metric('У резерві зараз', num(totals.reserved), 'відповіді, що генеруються')}
+        ${metric('Запитів', num(totals.requests), 'усього')}
+      </div>
+      <div class="toolbar"><input data-filter placeholder="Знайти учня або групу" aria-label="Фільтр учнів"><button class="secondary" data-ai-action="group-grant">Видати групі…</button></div>
+      ${rows.length ? `<div class="table-wrap"><table><thead><tr><th>Учень</th><th>Залишок</th><th>Використано</th><th>Виділено</th><th>Запити</th><th>Модель</th><th>Активність</th><th>Статус</th><th>Видати</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>` : '<div class="panel"><div class="empty"><strong>Учнів немає</strong><p>Додайте учнів у розділі «Учні».</p></div></div>'}
+      <section class="panel ai-section"><div class="panel-head"><div><span class="kicker">Групи</span><h2>Моделі та масова видача</h2><span>Правило групи діє для всіх її учнів, якщо в учня немає власного.</span></div></div>
+        ${groupRows.length ? `<div class="table-wrap"><table class="ai-compact"><thead><tr><th>Група</th><th>Доступні моделі</th><th></th></tr></thead><tbody>${groupRows.join('')}</tbody></table></div>` : '<p class="muted-copy">Груп немає.</p>'}
+      </section>
+      <section class="panel ai-section"><div class="panel-head"><div><span class="kicker">Журнал операцій</span><h2>Останні зміни балансів</h2><span>Видачі, нові баланси, обнулення, блокування й оновлення місячних лімітів. Списання — у журналі кожного учня.</span></div></div>
+        ${ledgerRows.length ? `<div class="table-wrap"><table class="ai-compact"><thead><tr><th>Час</th><th>Учень</th><th>Операція</th><th>Зміна</th><th>Баланс після</th><th>Примітка</th></tr></thead><tbody>${ledgerRows.join('')}</tbody></table></div>` : '<p class="muted-copy">Записів ще немає.</p>'}
+      </section>`;
+  }
+
+  function studentManage(data, studentId) {
+    const row = data.students.find(item => item.studentId === studentId);
+    if (!row) return;
+    openModal(`ШІ-ліміт · ${row.name}`, `
+      <div class="ai-summary"><span>Доступно <strong>${num(row.available)}</strong></span><span>Використано <strong>${num(row.used)}</strong></span><span>Запитів <strong>${num(row.requests)}</strong></span></div>
+      <fieldset><legend>Баланс</legend>
+        <label class="check"><input type="radio" name="op" value="add" checked><span>Додати до поточного балансу</span></label>
+        <label class="check"><input type="radio" name="op" value="set"><span>Встановити новий баланс</span></label>
+        <label class="check"><input type="radio" name="op" value="reset"><span>Обнулити баланс</span></label>
+        ${field('Кількість токенів', 'amount', '', 'number', 'min="0" max="100000000000" step="1" inputmode="numeric"')}
+        <div class="ai-presets">${PRESETS.map(([amount, label]) => `<button type="button" class="pill ai-preset" data-fill="${amount}">${label}</button>`).join('')}</div>
+        ${field('Примітка', 'note', '', 'text', 'maxlength="300" placeholder="Напр. Бонус за проєкт"')}
+      </fieldset>
+      <div class="ai-modal-links">
+        <button type="button" class="secondary" data-ai-action="block" data-student="${row.studentId}" data-blocked="${row.blocked}">${row.blocked ? 'Розблокувати доступ до ШІ' : 'Тимчасово заборонити доступ'}</button>
+        <button type="button" class="secondary" data-ai-action="monthly" data-student="${row.studentId}">${row.monthlyLimit ? `Місячний ліміт: ${num(row.monthlyLimit)}` : 'Автооновлення щомісяця'}</button>
+        <button type="button" class="secondary" data-ai-action="access" data-scope="student" data-id="${row.studentId}">Моделі учня</button>
+        <button type="button" class="secondary" data-ai-action="journal" data-student="${row.studentId}">Журнал учня</button>
+      </div>`, async form => {
+      const op = form.get('op');
+      const amount = Number(form.get('amount'));
+      if (op !== 'reset' && (!Number.isInteger(amount) || amount < (op === 'add' ? 1 : 0))) throw new Error('Вкажіть кількість токенів цілим числом');
+      const result = await api.aiAdjust(row.studentId, { op, ...(op === 'reset' ? {} : { amount }), note: String(form.get('note') ?? '').trim() || undefined });
+      return { message: `Баланс ${row.name}: ${num(result.before)} → ${num(result.after)}` };
+    }, false, 'Застосувати');
+    const modal = document.querySelector('#modal .modal');
+    modal.querySelectorAll('[data-fill]').forEach(button => { button.onclick = () => { modal.querySelector('[name="amount"]').value = button.dataset.fill; }; });
+    const amountField = modal.querySelector('[name="amount"]');
+    modal.querySelectorAll('[name="op"]').forEach(radio => { radio.onchange = () => { amountField.disabled = radio.value === 'reset' && radio.checked; }; });
+    modal.querySelectorAll('[data-ai-action]').forEach(button => { button.onclick = () => handle(button.dataset.aiAction, button.dataset, button); });
+  }
+
+  function accessModal(data, scope, targetId) {
+    const models = (data.models ?? []).filter(model => model.enabled && model.verified);
+    const target = scope === 'student' ? data.students.find(item => item.studentId === targetId) : data.groups.find(item => item.id === targetId);
+    const rule = target?.rule ?? null;
+    const name = target?.name ?? '';
+    const inherit = scope === 'student' ? 'Як у групи (або всі увімкнені)' : 'Усі увімкнені моделі';
+    openModal(`Моделі · ${name}`, `
+      <fieldset><legend>Доступні моделі</legend>
+        <label class="check"><input type="radio" name="mode" value="inherit" ${rule?.modelIds ? '' : 'checked'}><span>${inherit}</span></label>
+        <label class="check"><input type="radio" name="mode" value="custom" ${rule?.modelIds ? 'checked' : ''}><span>Лише вибрані:</span></label>
+        <div class="check-grid">${models.map(model => `<label class="check"><input type="checkbox" name="modelIds" value="${model.id}" ${rule?.modelIds?.includes(model.id) ? 'checked' : ''}><span>${esc(model.label)}</span></label>`).join('') || '<p class="muted-copy">Немає увімкнених моделей.</p>'}</div>
+      </fieldset>
+      ${select('Модель за замовчуванням', 'defaultModelId', [['', 'Загальна за замовчуванням'], ...models.map(model => [model.id, model.label])], rule?.defaultModelId ?? '')}
+      <p class="muted-copy">Учень обирає лише з дозволених моделей. Запит до іншої моделі сервер відхилить.</p>`, async form => {
+      const custom = form.get('mode') === 'custom';
+      const modelIds = custom ? form.getAll('modelIds') : null;
+      const defaultModelId = form.get('defaultModelId') || null;
+      if (custom && !modelIds.length) throw new Error('Виберіть хоча б одну модель або залиште доступ до всіх');
+      if (!custom && !defaultModelId) { if (rule) await api.aiDeleteAccess(scope, targetId); }
+      else await api.aiSetAccess(scope, targetId, { modelIds, defaultModelId });
+      return { message: 'Доступ до моделей оновлено' };
+    }, false, 'Зберегти');
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // Purchased resources
+
+  function resourcesView(data) {
+    const { packages, summary, alerts, providerList, modelsWithoutPricing } = data;
+    const unitLabel = item => item.unit === 'tokens' ? 'токени' : item.unit === 'credits' ? `кредити (${item.currency})` : `гроші (${item.currency})`;
+    const amount = (item, value) => value === null || value === undefined ? '—' : item.unit === 'tokens' ? num(value) : money(value, item.currency);
+    const rows = packages.map(item => `<tr>
+      <td><strong>${esc(item.name)}</strong><small>${esc(item.providerName)}</small>${item.note ? `<small>${esc(item.note)}</small>` : ''}</td>
+      <td>${esc(unitLabel(item))}</td>
+      <td>${amount(item, item.purchasedAmount)}${item.cost !== null ? `<small>вартість ${money(item.cost, item.costCurrency)}</small>` : ''}</td>
+      <td>${day(item.purchasedAt)}<small>${item.expiresAt ? `діє до ${day(item.expiresAt)}` : 'без терміну'}</small></td>
+      <td>${item.usedBasis === 'unknown' ? '<small class="ai-warn">невідомо: немає тарифів</small>' : amount(item, item.used)}<small>${item.usedBasis === 'cost' ? `за тарифами моделей · ${num(item.usedTokens)} токенів` : item.usedBasis === 'tokens' ? 'за usage API' : ''}</small></td>
+      <td><strong class="ai-strong">${amount(item, item.estimatedRemaining)}</strong><small>розрахунковий${item.remainingShare !== null ? ` · ${Math.round(item.remainingShare * 100)}%` : ''}</small></td>
+      <td>${item.confirmedRemaining ? `${amount(item, item.confirmedRemaining.amount)}<small>${item.confirmedRemaining.source === 'provider' ? 'від API провайдера' : 'введено вручну'} · ${fmt(item.confirmedRemaining.at)}</small>` : '<small>не підтверджено</small>'}</td>
+      <td>${item.expired ? status('disabled', 'Минув') : item.warnings.length ? status('warning', 'Увага') : status('active', 'Ок')}${item.warnings.map(text => `<small class="ai-warn">${esc(text)}</small>`).join('')}</td>
+      <td class="actions"><button class="text-button" data-ai-action="package-edit" data-id="${item.id}">Редагувати</button><button class="text-button ai-danger-link" data-ai-action="package-delete" data-id="${item.id}" data-name="${esc(item.name)}">Видалити</button></td>
+    </tr>`);
+    return `<div class="metrics ai-metrics">
+        ${metric('Куплено токенів', num(summary.purchasedTokens), 'активні пакети в токенах')}
+        ${metric('Розрахунковий залишок', num(summary.remainingTokens), 'куплено − використано API')}
+        ${metric('Виділено учням', num(summary.allocatedToStudents), 'поточні залишки учнів')}
+        ${metric('Не розподілено', summary.unallocatedTokens === null ? '—' : num(summary.unallocatedTokens), summary.unallocatedTokens === null ? 'немає пакетів у токенах' : 'залишок − виділене')}
+        ${metric('У резерві зараз', num(summary.reservedNow), 'відповіді, що генеруються')}
+      </div>
+      ${alerts.length ? `<div class="security-banner ai-alerts"><b>УВАГА</b><div>${alerts.map(alert => `<p>${esc(alert.packageName)}: ${esc(alert.message)}</p>`).join('')}</div></div>` : ''}
+      <section class="panel ai-section"><div class="panel-head"><div><span class="kicker">Пакети</span><h2>Куплений ресурс провайдерів</h2><span>Розрахунковий залишок — оцінка за журналом використання. Підтверджений — з API провайдера або введений вами з його кабінету.</span></div><button class="primary" data-ai-action="package-new" ${providerList.length ? '' : 'disabled'}>Додати пакет</button></div>
+        ${rows.length ? `<div class="table-wrap"><table><thead><tr><th>Пакет</th><th>Одиниця</th><th>Куплено</th><th>Дата</th><th>Використано</th><th>Залишок</th><th>Підтверджено</th><th>Стан</th><th></th></tr></thead><tbody>${rows.join('')}</tbody></table></div>` : '<p class="muted-copy">Пакетів ще немає. Додайте покупку, щоб бачити залишок і попередження.</p>'}
+      </section>
+      <section class="panel ai-section"><div class="panel-head"><div><span class="kicker">Баланс у провайдерів</span><h2>Синхронізація з API</h2></div></div>
+        ${providerList.map(provider => `<div class="ai-key"><div><strong>${esc(provider.name)}</strong><span class="code">${esc(balanceLabel(provider.balanceSource))}</span></div><span>${provider.syncedBalance ? `${money(provider.syncedBalance.amount, provider.syncedBalance.currency)}<small> · ${fmt(provider.syncedBalance.at)}</small>` : provider.balanceSource === 'none' ? '<small>API не надає баланс — використовуйте розрахунковий</small>' : '<small>ще не отримано</small>'}</span>${provider.balanceSource !== 'none' ? `<button class="secondary" data-ai-action="provider-balance" data-id="${provider.id}">Синхронізувати</button>` : '<span></span>'}</div>`).join('') || '<p class="muted-copy">Провайдерів немає.</p>'}
+      </section>
+      ${modelsWithoutPricing.length ? `<p class="muted-copy">Без тарифів (вартість не рахується): ${modelsWithoutPricing.map(model => `<span class="pill">${esc(model.label)}</span>`).join(' ')}</p>` : ''}`;
+  }
+
+  function packageForm(data, item = null) {
+    const today = new Date().toISOString().slice(0, 10);
+    return `${field('Назва пакета *', 'name', item?.name ?? '', 'text', 'required maxlength="80" placeholder="Напр. OpenRouter $50 · жовтень"')}
+      ${select('Провайдер *', 'providerId', data.providerList.map(provider => [provider.id, provider.name]), item?.providerId ?? data.providerList[0]?.id)}
+      ${select('Що куплено *', 'unit', [['tokens', 'Токени'], ['credits', 'Кредити провайдера'], ['money', 'Грошовий баланс']], item?.unit ?? 'tokens')}
+      <div class="ai-two">${field('Кількість *', 'purchasedAmount', item?.purchasedAmount ?? '', 'number', 'required min="0" step="any"')}${field('Валюта (для кредитів/грошей)', 'currency', item?.currency ?? 'USD', 'text', 'maxlength="3" pattern="[A-Za-z]{3}"')}</div>
+      <div class="ai-two">${field('Вартість покупки', 'cost', item?.cost ?? '', 'number', 'min="0" step="any"')}${field('Валюта покупки', 'costCurrency', item?.costCurrency ?? 'USD', 'text', 'maxlength="3" pattern="[A-Za-z]{3}"')}</div>
+      <div class="ai-two">${field('Дата покупки *', 'purchasedAt', (item?.purchasedAt ?? today).slice(0, 10), 'date', 'required')}${field('Діє до', 'expiresAt', item?.expiresAt?.slice(0, 10) ?? '', 'date')}</div>
+      ${field('Залишок з кабінету провайдера (необовʼязково)', 'manualRemaining', item?.manualRemaining ?? '', 'number', 'min="0" step="any"')}
+      ${field('Примітка', 'note', item?.note ?? '', 'text', 'maxlength="500"')}
+      <p class="muted-copy">Кредити в грошах не перетворюються на токени автоматично: витрати рахуються за тарифами моделей, якщо ви їх задали.</p>`;
+  }
+
+  const packagePayload = form => ({
+    name: String(form.get('name')).trim(), providerId: form.get('providerId'), unit: form.get('unit'),
+    purchasedAmount: Number(form.get('purchasedAmount')), currency: String(form.get('currency') || 'USD').toUpperCase(),
+    cost: numberOrNull(form.get('cost')), costCurrency: String(form.get('costCurrency') || 'USD').toUpperCase(),
+    purchasedAt: form.get('purchasedAt'), expiresAt: form.get('expiresAt') || null,
+    manualRemaining: numberOrNull(form.get('manualRemaining')), note: String(form.get('note') ?? '').trim()
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // Analytics
+
+  function chart(series, range) {
+    if (!series.length) return '';
+    const width = 760, height = 220, left = 56, bottom = 28, top = 12;
+    const max = Math.max(1, ...series.map(item => item.tokens));
+    const step = (width - left - 8) / series.length;
+    const barWidth = Math.max(4, Math.min(28, step * 0.62));
+    const scale = value => (height - bottom - top) * value / max;
+    const grid = [0, 0.5, 1].map(share => {
+      const y = height - bottom - (height - bottom - top) * share;
+      return `<line x1="${left}" x2="${width - 4}" y1="${y}" y2="${y}" class="ai-grid-line"/><text x="${left - 8}" y="${y + 4}" text-anchor="end" class="ai-axis">${num(max * share)}</text>`;
+    }).join('');
+    const label = key => range === 'day' ? key.slice(11, 13) : `${key.slice(8, 10)}.${key.slice(5, 7)}`;
+    const every = Math.ceil(series.length / 12);
+    const bars = series.map((item, index) => {
+      const x = left + index * step + (step - barWidth) / 2;
+      const h = scale(item.tokens);
+      return `<g><title>${esc(label(item.key))}: ${num(item.tokens)} токенів, ${num(item.requests)} запитів</title><rect x="${x.toFixed(1)}" y="${(height - bottom - h).toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(h, item.tokens ? 1 : 0).toFixed(1)}" rx="3" class="ai-bar"/>${index % every === 0 ? `<text x="${(x + barWidth / 2).toFixed(1)}" y="${height - 9}" text-anchor="middle" class="ai-axis">${esc(label(item.key))}</text>` : ''}</g>`;
+    }).join('');
+    return `<svg class="ai-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Витрата токенів за період">${grid}${bars}</svg>
+      <table class="visually-hidden"><caption>Витрата токенів</caption><thead><tr><th>Період</th><th>Токени</th><th>Запити</th></tr></thead><tbody>${series.map(item => `<tr><td>${esc(label(item.key))}</td><td>${num(item.tokens)}</td><td>${num(item.requests)}</td></tr>`).join('')}</tbody></table>`;
+  }
+
+  function bars(items, labelOf, valueOf = item => item.tokens) {
+    if (!items.length) return '<p class="muted-copy">Даних за період немає.</p>';
+    const max = Math.max(1, ...items.map(valueOf));
+    return `<div class="ai-bars">${items.slice(0, 12).map(item => `<div class="ai-bar-row"><span>${labelOf(item)}</span><div class="ai-bar-track"><i style="width:${Math.max(1, Math.round(valueOf(item) / max * 100))}%"></i></div><strong>${num(valueOf(item))}</strong></div>`).join('')}</div>`;
+  }
+
+  function analyticsView(data) {
+    const f = ui.analytics;
+    const t = data.totals;
+    const filtered = Boolean(f.groupId || f.studentId || f.modelId);
+    const costs = data.costs.length ? data.costs.map(cost => money(cost.amount, cost.currency)).join(' + ') : '—';
+    const option = (items, selected, empty, labelOf) => `<option value="">${empty}</option>${items.map(item => `<option value="${item.id}" ${item.id === selected ? 'selected' : ''}>${esc(labelOf(item))}</option>`).join('')}`;
+    return `<div class="toolbar ai-filters" role="group" aria-label="Фільтри аналітики">
+        <div class="ai-segment" role="radiogroup" aria-label="Період">${[['day', 'День'], ['week', 'Тиждень'], ['month', 'Місяць']].map(([value, label]) => `<button type="button" role="radio" aria-checked="${f.range === value}" class="${f.range === value ? 'is-active' : ''}" data-range="${value}">${label}</button>`).join('')}</div>
+        <select data-filter-key="groupId" aria-label="Група">${option(data.filters.groups, f.groupId, 'Усі групи', item => item.name)}</select>
+        <select data-filter-key="studentId" aria-label="Учень">${option(data.filters.students.filter(item => !f.groupId || item.groupId === f.groupId), f.studentId, 'Усі учні', item => item.name)}</select>
+        <select data-filter-key="modelId" aria-label="Модель">${option(data.filters.models, f.modelId, 'Усі моделі', item => item.label)}</select>
+        ${filtered ? '<button class="text-button" data-ai-action="filters-reset">Скинути фільтри</button>' : ''}
+      </div>
+      <div class="metrics ai-metrics">
+        ${metric('Токени', num(t.tokens), filtered ? 'за фільтром' : `вхід ${num(t.input)} · вихід ${num(t.output)}`)}
+        ${metric('Запити', num(t.requests), filtered ? '' : `помилок: ${num(t.errors)}`)}
+        ${metric('Reasoning / кеш', filtered ? '—' : `${num(t.reasoning)} / ${num(t.cached)}`, 'за даними провайдера')}
+        ${metric('Оцінкою', filtered ? '—' : num(t.approximate), 'провайдер не повідомив usage')}
+        ${metric('Орієнтовна вартість', filtered ? '—' : costs, 'лише для моделей із тарифом')}
+        ${metric('Тести адміністратора', filtered ? '—' : num(t.adminTests), 'не списуються з учнів')}
+      </div>
+      <section class="panel ai-section"><div class="panel-head"><div><span class="kicker">Динаміка</span><h2>Витрата токенів</h2><span>${f.range === 'day' ? 'Останні 24 години, по годинах' : f.range === 'week' ? 'Останні 7 днів' : 'Останні 30 днів'} · час Києва</span></div></div>${chart(data.series, data.range)}</section>
+      <div class="grid-3 ai-breakdowns">
+        <section class="panel"><div class="panel-head"><div><span class="kicker">Моделі</span><h2>Розхід за моделями</h2></div></div>${bars(data.byModel, item => `${esc(item.label)}${item.costMicros !== null && item.currency ? ` <small>${money(item.costMicros / 1_000_000, item.currency)}</small>` : ''}`)}</section>
+        <section class="panel"><div class="panel-head"><div><span class="kicker">Групи</span><h2>Розхід за групами</h2></div></div>${bars(data.byGroup, item => esc(item.name))}</section>
+        <section class="panel"><div class="panel-head"><div><span class="kicker">Учні</span><h2>Найбільший розхід</h2></div></div>${bars(data.byStudent, item => `${esc(item.name)}${item.groupName ? ` <small>${esc(item.groupName)}</small>` : ''}`)}</section>
+      </div>
+      <section class="panel ai-section"><div class="panel-head"><div><span class="kicker">Помилки API</span><h2>Що повернули провайдери</h2></div></div>
+        ${data.errors.length ? `<div class="table-wrap"><table class="ai-compact"><thead><tr><th>Час</th><th>Провайдер</th><th>Модель</th><th>Код</th><th>Повідомлення</th></tr></thead><tbody>${data.errors.map(item => `<tr><td>${fmt(item.at)}</td><td>${esc(item.providerName)}</td><td>${esc(item.modelLabel ?? '—')}</td><td>${item.status ? `HTTP ${item.status}<small>${esc(item.code)}</small>` : esc(item.code)}</td><td>${esc(item.message)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted-copy">Помилок за період немає.</p>'}
+      </section>`;
+  }
+
+  function bindAnalyticsFilters() {
+    document.querySelectorAll('#ai-root [data-range]').forEach(button => { button.onclick = () => { ui.analytics.range = button.dataset.range; void reloadAnalytics(); }; });
+    document.querySelectorAll('#ai-root [data-filter-key]').forEach(control => {
+      control.onchange = () => {
+        ui.analytics[control.dataset.filterKey] = control.value;
+        if (control.dataset.filterKey === 'groupId') ui.analytics.studentId = '';
+        void reloadAnalytics();
+      };
+    });
+  }
+
+  async function reloadAnalytics() {
+    document.querySelector('#ai-root')?.setAttribute('aria-busy', 'true');
+    await reload();
+    document.querySelector('#ai-root')?.removeAttribute('aria-busy');
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // Actions
+
+  async function handle(action, data, button) {
+    const route = currentRoute;
+    // Balances change with every student request: act on fresh numbers.
+    if (['grant', 'student-manage', 'monthly'].includes(action) && !document.querySelector('#modal.open')) await reload();
+    const page = cache[route]?.data;
+    switch (action) {
+      case 'reload': return reload();
+      case 'filters-reset': ui.analytics = { range: ui.analytics.range, groupId: '', studentId: '', modelId: '' }; return reloadAnalytics();
+      case 'provider-new':
+        return openModal('Новий провайдер ШІ', providerForm(), async form => {
+          await api.aiCreateProvider({
+            name: String(form.get('name')).trim(), protocol: form.get('protocol'), baseUrl: String(form.get('baseUrl')).trim(),
+            apiKey: String(form.get('apiKey')).trim(), keyLabel: String(form.get('keyLabel') ?? '').trim() || undefined,
+            headers: parseHeaders(form.get('headers')), balanceSource: form.get('balanceSource'), enabled: true
+          });
+          cache['ai-providers'] = null;
+          return { message: 'Провайдера додано. Перевірте зʼєднання й додайте моделі.' };
+        }, false, 'Додати');
+      case 'provider-edit': {
+        const provider = page.providers.find(item => item.id === data.id);
+        return openModal(`Редагувати · ${provider.name}`, providerForm(provider), async form => {
+          await api.aiUpdateProvider(provider.id, { name: String(form.get('name')).trim(), protocol: form.get('protocol'), baseUrl: String(form.get('baseUrl')).trim(), headers: parseHeaders(form.get('headers')), balanceSource: form.get('balanceSource') });
+          return { message: 'Провайдера оновлено. Якщо змінилась адреса або протокол, моделі треба перевірити знову.' };
+        }, false, 'Зберегти');
+      }
+      case 'provider-toggle':
+        return run(button, () => api.aiUpdateProvider(data.id, { enabled: data.enabled !== 'true' }), data.enabled === 'true' ? 'Провайдера вимкнено — його моделі недоступні учням' : 'Провайдера увімкнено');
+      case 'provider-delete':
+        return openModal('Видалити провайдера', `<p>Видалити «${esc(data.name)}» разом з його ключами та моделями? Учні втратять доступ до цих моделей. Історія використання залишиться в аналітиці.</p>`, async () => {
+          await api.aiDeleteProvider(data.id);
+          return { message: 'Провайдера видалено' };
+        }, true, 'Видалити');
+      case 'provider-test': {
+        const result = await run(button, () => api.aiTestProvider(data.id));
+        if (result) showInfo('Перевірка зʼєднання', `<div class="ai-check ${result.ok ? 'is-ok' : 'is-fail'}"><strong>${result.ok ? 'Зʼєднання працює' : 'Помилка'}</strong><span>${esc(result.message)}</span><small>${num(result.latencyMs)} мс</small></div>`);
+        return;
+      }
+      case 'provider-balance': {
+        const result = await run(button, () => api.aiSyncBalance(data.id));
+        if (result) toast(`Баланс провайдера: ${money(result.amount, result.currency)}`);
+        return;
+      }
+      case 'provider-discover': {
+        button.disabled = true; button.setAttribute('aria-busy', 'true');
+        try {
+          const { models } = await api.aiDiscover(data.id);
+          ui.discovered[data.id] = models;
+          const list = models.map(model => `<div class="ai-discovered" data-search="${esc(`${model.id} ${model.label}`.toLowerCase())}"><div><strong>${esc(model.label)}</strong><span class="code">${esc(model.id)}</span>${model.contextWindow ? `<small>контекст ${num(model.contextWindow)}</small>` : ''}</div>${model.added ? '<span class="pill">Додано</span>' : `<button type="button" class="secondary" data-add-model="${esc(model.id)}" data-label="${esc(model.label)}" data-context="${model.contextWindow ?? ''}">Додати</button>`}</div>`).join('');
+          showInfo(`Моделі з API · ${models.length}`, `<input class="ai-search" type="search" placeholder="Пошук: gpt, claude, gemini, deepseek, qwen…" aria-label="Пошук моделі"><div class="ai-discovered-list">${list || '<p class="muted-copy">Провайдер повернув порожній список.</p>'}</div>`);
+          const layer = document.querySelector('#modal');
+          layer.querySelector('.ai-search').oninput = event => {
+            const term = event.target.value.trim().toLowerCase();
+            layer.querySelectorAll('.ai-discovered').forEach(row => { row.hidden = Boolean(term) && !row.dataset.search.includes(term); });
+          };
+          layer.querySelectorAll('[data-add-model]').forEach(add => {
+            add.onclick = async () => {
+              add.disabled = true; add.setAttribute('aria-busy', 'true');
+              try {
+                const context = Number(add.dataset.context) || 16000;
+                await api.aiCreateModel({ providerId: data.id, apiModelId: add.dataset.addModel, label: add.dataset.label, family: guessFamily(add.dataset.addModel), maxOutputTokens: 2048, maxInputTokens: Math.max(512, Math.min(context, 128000)) });
+                add.replaceWith(Object.assign(document.createElement('span'), { className: 'pill', textContent: 'Додано' }));
+                toast('Модель додано вимкненою. Увімкніть її в таблиці моделей — сервер перевірить запитом.');
+                void reload();
+              } catch (error) { add.disabled = false; add.removeAttribute('aria-busy'); toast(error.message, true); }
+            };
+          });
+        } catch (error) { toast(error.message, true); }
+        finally { if (button.isConnected) { button.disabled = false; button.removeAttribute('aria-busy'); } }
+        return;
+      }
+      case 'key-new':
+        return openModal('Додати API-ключ', `${field('Назва ключа', 'label', '', 'text', 'maxlength="60" placeholder="Напр. Резервний"')}${field('API Key *', 'apiKey', '', 'password', 'required minlength="8" maxlength="1000" autocomplete="off" spellcheck="false"')}<p class="muted-copy">Кілька ключів одного провайдера: якщо перший відповідає помилкою доступу чи ліміту, сервер спробує наступний — до початку відповіді.</p>`, async form => {
+          await api.aiAddKey(data.id, { label: String(form.get('label') ?? '').trim() || undefined, apiKey: String(form.get('apiKey')).trim() });
+          return { message: 'Ключ додано й зашифровано' };
+        }, false, 'Додати');
+      case 'key-toggle':
+        return run(button, () => api.aiUpdateKey(data.provider, data.key, { enabled: data.enabled !== 'true' }), data.enabled === 'true' ? 'Ключ вимкнено' : 'Ключ увімкнено');
+      case 'key-delete':
+        return openModal('Видалити ключ', `<p>Видалити ключ «${esc(data.label)}»? Його не можна буде відновити — лише ввести знову.</p>`, async () => {
+          await api.aiDeleteKey(data.provider, data.key);
+          return { message: 'Ключ видалено' };
+        }, true, 'Видалити');
+      case 'model-new':
+        return openModal('Нова модель', modelForm(page), async form => {
+          const model = await api.aiCreateModel({ providerId: form.get('providerId'), ...modelPayload(form) });
+          return { message: `Модель «${model.label}» додано. Натисніть «Увімкнути», щоб перевірити її й відкрити учням.` };
+        }, false, 'Додати');
+      case 'model-edit': {
+        const model = page.models.find(item => item.id === data.id);
+        return openModal(`Редагувати · ${model.label}`, modelForm(page, model), async form => {
+          await api.aiUpdateModel(model.id, modelPayload(form));
+          return { message: 'Модель оновлено' };
+        }, false, 'Зберегти');
+      }
+      case 'model-toggle': {
+        const enabling = data.enabled !== 'true';
+        if (enabling) button.textContent = 'Перевіряємо…';
+        return run(button, () => api.aiUpdateModel(data.id, { enabled: enabling }), enabling ? 'Модель відповіла на тестовий запит і тепер доступна учням' : 'Модель вимкнено');
+      }
+      case 'model-default':
+        return run(button, () => api.aiSettings({ defaultModelId: data.id }), 'Основну модель змінено');
+      case 'model-delete':
+        return openModal('Видалити модель', `<p>Видалити «${esc(data.name)}»? Вона зникне з дозволених моделей учнів і груп.</p>`, async () => {
+          await api.aiDeleteModel(data.id);
+          return { message: 'Модель видалено' };
+        }, true, 'Видалити');
+      case 'model-test': {
+        const model = page.models.find(item => item.id === data.id);
+        const result = await run(button, () => api.aiTestModel(data.id));
+        if (result) showInfo(`Тест · ${model.label}`, testResult(result, model.label));
+        return;
+      }
+      case 'grant': {
+        const row = page.students.find(item => item.studentId === data.student);
+        const amount = Number(data.amount);
+        return openModal('Видати токени', `<p>Додати <strong>${num(amount)}</strong> токенів до балансу учня ${esc(row.name)}? Зараз доступно ${num(row.available)}.</p>${field('Примітка', 'note', '', 'text', 'maxlength="300"')}`, async form => {
+          const result = await api.aiAdjust(row.studentId, { op: 'add', amount, note: String(form.get('note') ?? '').trim() || undefined });
+          return { message: `${row.name}: ${num(result.before)} → ${num(result.after)} токенів` };
+        }, false, `Видати ${num(amount)}`);
+      }
+      case 'student-manage': return studentManage(page, data.student);
+      case 'block': {
+        const blocking = data.blocked !== 'true';
+        return openModal(blocking ? 'Заборонити доступ до ШІ' : 'Відновити доступ до ШІ', `<p>${blocking ? 'Учень бачитиме повідомлення «Доступ до ШІ тимчасово призупинено». Баланс не зміниться.' : 'Учень знову зможе надсилати запити в межах балансу.'}</p>${field('Примітка', 'note', '', 'text', 'maxlength="300"')}`, async form => {
+          await api.aiFlags(data.student, { blocked: blocking, note: String(form.get('note') ?? '').trim() || undefined });
+          return { message: blocking ? 'Доступ до ШІ призупинено' : 'Доступ до ШІ відновлено' };
+        }, blocking, blocking ? 'Заборонити' : 'Відновити');
+      }
+      case 'monthly': {
+        const row = page.students.find(item => item.studentId === data.student);
+        return openModal('Автооновлення місячного ліміту', `<p>На початку кожного місяця (за київським часом) баланс учня встановлюється на цей ліміт. Невикористані токени не переносяться. Щоб вимкнути — вкажіть 0.</p>${field('Ліміт на місяць, токенів', 'limit', row.monthlyLimit || 1_000_000, 'number', 'required min="0" step="1"')}${field('Примітка', 'note', '', 'text', 'maxlength="300"')}`, async form => {
+          const limit = Number(form.get('limit'));
+          if (!Number.isInteger(limit) || limit < 0) throw new Error('Вкажіть ціле число токенів');
+          await api.aiFlags(data.student, { monthlyLimit: limit, note: String(form.get('note') ?? '').trim() || undefined });
+          return { message: limit ? `Щомісячний ліміт ${num(limit)} увімкнено, баланс оновлено` : 'Автооновлення вимкнено' };
+        }, false, 'Зберегти');
+      }
+      case 'access': return accessModal(page, data.scope, data.id);
+      case 'journal': {
+        const row = page.students.find(item => item.studentId === data.student);
+        try {
+          const { entries } = await api.aiLedger(data.student, 200);
+          showInfo(`Журнал · ${row?.name ?? ''}`, entries.length ? `<div class="table-wrap"><table class="ai-compact"><thead><tr><th>Час</th><th>Операція</th><th>Зміна</th><th>Баланс</th><th>Деталі</th></tr></thead><tbody>${entries.map(entry => `<tr><td>${fmt(entry.at)}</td><td>${esc(LEDGER_LABELS[entry.type] ?? entry.type)}</td><td class="${entry.amount < 0 ? 'ai-minus' : entry.amount > 0 ? 'ai-plus' : ''}">${entry.amount > 0 ? '+' : ''}${num(entry.amount)}</td><td>${num(entry.balanceAfter)}</td><td>${esc(entry.modelLabel ?? '')}${entry.approximate ? ' · оцінка' : ''}${entry.note ? ` · ${esc(entry.note)}` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted-copy">Записів немає.</p>');
+        } catch (error) { toast(error.message, true); }
+        return;
+      }
+      case 'group-grant': {
+        const groups = page.groups.filter(group => group.status === 'active');
+        return openModal('Видати токени групі', `${select('Група *', 'groupId', groups.map(group => [group.id, `${group.name} · ${group.studentCount} учнів`]), data.id ?? groups[0]?.id)}
+          <label class="check"><input type="radio" name="op" value="add" checked><span>Додати кожному учню</span></label>
+          <label class="check"><input type="radio" name="op" value="set"><span>Встановити кожному новий баланс</span></label>
+          ${field('Кількість токенів на учня *', 'amount', 1_000_000, 'number', 'required min="0" step="1"')}
+          <div class="ai-presets">${PRESETS.map(([amount, label]) => `<button type="button" class="pill ai-preset" data-fill="${amount}">${label}</button>`).join('')}</div>
+          ${field('Примітка', 'note', '', 'text', 'maxlength="300"')}
+          <p class="muted-copy">Кожна зміна потрапить у журнал з однією позначкою масової видачі.</p>`, async form => {
+          const amount = Number(form.get('amount'));
+          if (!Number.isInteger(amount) || amount < 0) throw new Error('Вкажіть ціле число токенів');
+          const result = await api.aiGroupGrant(form.get('groupId'), { op: form.get('op'), amount, note: String(form.get('note') ?? '').trim() || undefined });
+          return { message: `Оновлено балансів: ${result.count}. Загальна зміна ${num(result.delta)} токенів` };
+        }, false, 'Застосувати');
+      }
+      case 'package-new':
+        return openModal('Новий пакет ресурсу', packageForm(page), async form => {
+          await api.aiCreatePackage(packagePayload(form));
+          return { message: 'Пакет додано' };
+        }, false, 'Додати');
+      case 'package-edit': {
+        const item = page.packages.find(entry => entry.id === data.id);
+        return openModal(`Редагувати · ${item.name}`, packageForm(page, item), async form => {
+          await api.aiUpdatePackage(item.id, packagePayload(form));
+          return { message: 'Пакет оновлено' };
+        }, false, 'Зберегти');
+      }
+      case 'package-delete':
+        return openModal('Видалити пакет', `<p>Видалити запис про пакет «${esc(data.name)}»? Використання API та баланси учнів не зміняться.</p>`, async () => {
+          await api.aiDeletePackage(data.id);
+          return { message: 'Пакет видалено' };
+        }, true, 'Видалити');
+    }
+  }
+
+  function guessFamily(id) {
+    const value = id.toLowerCase();
+    if (/gpt|o1|o3|o4|openai/.test(value)) return 'gpt';
+    if (/claude|anthropic/.test(value)) return 'claude';
+    if (/gemini|google/.test(value)) return 'gemini';
+    if (/deepseek/.test(value)) return 'deepseek';
+    if (/qwen/.test(value)) return 'qwen';
+    if (/llama/.test(value)) return 'llama';
+    if (/mistral|mixtral/.test(value)) return 'mistral';
+    return 'other';
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // Shell integration
+
+  const intros = {
+    'ai-providers': intro('Підключайте сторонні API — OpenAI-сумісні сервіси, агрегатори, реселерів із власним Base URL або Anthropic — і відкривайте учням лише перевірені моделі. Ключі зберігаються тільки на сервері, зашифровано.', '<button class="primary" data-ai-action="provider-new">Додати провайдера</button>'),
+    'ai-tokens': intro('Внутрішні ліміти учнів у токенах. Сервер резервує бюджет перед запитом і списує фактичне використання з відповіді провайдера — дані клієнта не враховуються.'),
+    'ai-resources': intro('Ресурс, куплений у провайдерів, окремо від лімітів учнів. Кредити в грошах не перераховуються в токени без ваших тарифів.'),
+    'ai-analytics': intro('Витрата токенів, запити, помилки API й орієнтовна вартість. Тести адміністратора рахуються в ресурсі провайдера, але не в балансах учнів.')
+  };
+
+  return {
+    views: Object.fromEntries(aiNav.map(([route]) => [route, () => shell(`${intros[route]}<div id="ai-root" aria-live="polite">${cache[route]?.data ? '' : loading()}</div>`)])),
+    bind(route) {
+      currentRoute = route;
+      if (cache[route]?.data) paint(route);
+      void reload();
+      document.querySelectorAll('[data-ai-action]').forEach(element => {
+        if (element.closest('#ai-root')) return;
+        element.onclick = () => handle(element.dataset.aiAction, element.dataset, element);
+      });
+      const root = document.querySelector('#ai-root');
+      if (root && !root.dataset.bound) {
+        root.dataset.bound = '1';
+        root.addEventListener('click', event => {
+          const target = event.target.closest('[data-ai-action]');
+          if (!target || target.disabled) return;
+          void handle(target.dataset.aiAction, target.dataset, target);
+        });
+        root.addEventListener('input', event => {
+          if (!event.target.matches('[data-filter]')) return;
+          const term = event.target.value.toLocaleLowerCase('uk');
+          root.querySelectorAll('tbody tr').forEach(row => { row.hidden = !row.textContent.toLocaleLowerCase('uk').includes(term); });
+        });
+        root.addEventListener('submit', async event => {
+          if (event.target.id !== 'ai-settings') return;
+          event.preventDefault();
+          const form = new FormData(event.target);
+          const submit = event.target.querySelector('[type="submit"]');
+          await run(submit, () => api.aiSettings({
+            systemPrompt: String(form.get('systemPrompt')).trim(), defaultModelId: form.get('defaultModelId') || null,
+            maxMessageChars: Number(form.get('maxMessageChars')), requestsPerMinute: Number(form.get('requestsPerMinute')),
+            maxConcurrentPerStudent: Number(form.get('maxConcurrentPerStudent')), lowBalanceTokens: Number(form.get('lowBalanceTokens')),
+            resourceWarningPercent: Number(form.get('resourceWarningPercent'))
+          }), 'Налаштування збережено');
+        });
+      }
+    },
+    leave() { currentRoute = null; }
+  };
+}

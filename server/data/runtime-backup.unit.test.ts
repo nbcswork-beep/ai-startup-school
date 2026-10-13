@@ -9,7 +9,6 @@ import { MemoryLoginAttemptLimiter, MemorySessionStore } from '../auth/session-s
 import { loadEnv } from '../config/env.js';
 import { MemoryRepository } from './memory-repository.js';
 import { MemoryMentoringStore } from './mentoring-store.js';
-import { MockAiProvider } from '../services/ai-provider.js';
 import {
   MemoryPilotRuntimeStore,
   RedisRestPilotRuntimeStore,
@@ -366,7 +365,7 @@ describe('admin export endpoint', () => {
       runtimeStore: runtime, mentoringStore: new MemoryMentoringStore(), sessionStore: new MemorySessionStore()
     });
     const app = await buildApp({
-      env, repository, jwt: await createJwtService(env), aiProvider: new MockAiProvider(), loginLimiter: new MemoryLoginAttemptLimiter()
+      env, repository, jwt: await createJwtService(env), loginLimiter: new MemoryLoginAttemptLimiter()
     });
     apps.push(app);
     return app;
@@ -414,7 +413,7 @@ describe('admin export endpoint', () => {
       const repository = createAssignedRepository(undefined, {
         runtimeStore: runtime, mentoringStore: new MemoryMentoringStore(), sessionStore: new MemorySessionStore()
       });
-      const app = await buildApp({ env, repository, jwt: await createJwtService(env), aiProvider: new MockAiProvider(), loginLimiter: new MemoryLoginAttemptLimiter() });
+      const app = await buildApp({ env, repository, jwt: await createJwtService(env), loginLimiter: new MemoryLoginAttemptLimiter() });
       const login = await app.inject({ method: 'POST', url: '/api/v1/auth/development' });
       const response = await app.inject({
         method: 'GET', url: '/api/v1/admin/export/runtime-state', headers: { authorization: `Bearer ${login.json().accessToken}` }

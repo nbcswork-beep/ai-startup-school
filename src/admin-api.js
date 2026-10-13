@@ -43,3 +43,35 @@ export const adminApi={
   ,createStaff:input=>request('/admin/staff',{method:'POST',body:JSON.stringify(input)})
   ,updateStaff:(id,input)=>request(`/admin/staff/${id}`,{method:'PATCH',body:JSON.stringify(input)})
 };
+
+// AI assistant administration. Keys go to the server once and never come back.
+const json=(method,body)=>({method,body:JSON.stringify(body??{})});
+Object.assign(adminApi,{
+  aiProviders:()=>request('/admin/ai/providers'),
+  aiCreateProvider:input=>request('/admin/ai/providers',json('POST',input)),
+  aiUpdateProvider:(id,input)=>request(`/admin/ai/providers/${id}`,json('PATCH',input)),
+  aiDeleteProvider:id=>request(`/admin/ai/providers/${id}`,{method:'DELETE'}),
+  aiTestProvider:id=>request(`/admin/ai/providers/${id}/test`,json('POST')),
+  aiDiscover:id=>request(`/admin/ai/providers/${id}/models`),
+  aiSyncBalance:id=>request(`/admin/ai/providers/${id}/balance`,json('POST')),
+  aiAddKey:(id,input)=>request(`/admin/ai/providers/${id}/keys`,json('POST',input)),
+  aiUpdateKey:(id,keyId,input)=>request(`/admin/ai/providers/${id}/keys/${keyId}`,json('PATCH',input)),
+  aiDeleteKey:(id,keyId)=>request(`/admin/ai/providers/${id}/keys/${keyId}`,{method:'DELETE'}),
+  aiCreateModel:input=>request('/admin/ai/models',json('POST',input)),
+  aiUpdateModel:(id,input)=>request(`/admin/ai/models/${id}`,json('PATCH',input)),
+  aiDeleteModel:id=>request(`/admin/ai/models/${id}`,{method:'DELETE'}),
+  aiTestModel:(id,prompt)=>request(`/admin/ai/models/${id}/test`,json('POST',prompt?{prompt}:{})),
+  aiSettings:input=>request('/admin/ai/settings',json('PUT',input)),
+  aiSetAccess:(scope,id,input)=>request(`/admin/ai/access/${scope}/${id}`,json('PUT',input)),
+  aiDeleteAccess:(scope,id)=>request(`/admin/ai/access/${scope}/${id}`,{method:'DELETE'}),
+  aiTokens:()=>request('/admin/ai/tokens'),
+  aiAdjust:(studentId,input)=>request(`/admin/ai/tokens/students/${studentId}`,json('POST',input)),
+  aiFlags:(studentId,input)=>request(`/admin/ai/tokens/students/${studentId}/flags`,json('POST',input)),
+  aiGroupGrant:(groupId,input)=>request(`/admin/ai/tokens/groups/${groupId}`,json('POST',input)),
+  aiLedger:(studentId,limit=100)=>request(`/admin/ai/tokens/ledger?limit=${limit}${studentId?`&studentId=${studentId}`:''}`),
+  aiResources:()=>request('/admin/ai/resources'),
+  aiCreatePackage:input=>request('/admin/ai/resources/packages',json('POST',input)),
+  aiUpdatePackage:(id,input)=>request(`/admin/ai/resources/packages/${id}`,json('PATCH',input)),
+  aiDeletePackage:id=>request(`/admin/ai/resources/packages/${id}`,{method:'DELETE'}),
+  aiAnalytics:filter=>request(`/admin/ai/analytics?${new URLSearchParams(Object.entries(filter).filter(([,value])=>value))}`)
+});

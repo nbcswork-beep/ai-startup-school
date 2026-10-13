@@ -21,6 +21,26 @@ async function request(path, options = {}, retry = true) {
   return response.status === 204 ? null : response.json();
 }
 
+// Streams an AI answer (server-sent events). Same token refresh as request(), but the body is
+// returned unread so the caller can show the answer while it is being written.
+async function stream(path, body, signal, retry = true) {
+  const headers = new Headers({ 'content-type': 'application/json', accept: 'text/event-stream' });
+  if (accessToken) headers.set('authorization', `Bearer ${accessToken}`);
+  const response = await fetch(`/api/v1${path}`, { method: 'POST', headers, body: JSON.stringify(body), credentials: 'include', cache: 'no-store', signal });
+  if (response.status === 401 && retry) {
+    const refreshed = await fetch('/api/v1/auth/refresh', { method: 'POST', credentials: 'include' });
+    if (refreshed.ok) {
+      accessToken = (await refreshed.json()).accessToken;
+      return stream(path, body, signal, false);
+    }
+  }
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw Object.assign(new Error(payload.error?.message || 'Не вдалося надіслати повідомлення'), { status: response.status, code: payload.error?.code });
+  }
+  return response;
+}
+
 async function authenticate() {
   const initData = window.Telegram?.WebApp?.initData;
   const endpoint = initData ? '/auth/telegram' : '/auth/development';
@@ -57,7 +77,10 @@ export const api = {
   addProjectNote:(projectId,input)=>request(`/projects/${projectId}/notes`,{method:'POST',body:JSON.stringify(input)}),
   submitProjectTask:(projectId,taskId,input)=>request(`/projects/${projectId}/tasks/${taskId}/submit`,{method:'POST',body:JSON.stringify(input)}),
   completeTask: (projectId, taskId, idempotencyKey) => request(`/projects/${projectId}/tasks/${taskId}/complete`, { method: 'POST', body: JSON.stringify({ idempotencyKey }) }),
-  createConversation: title => request('/ai/conversations', { method: 'POST', body: JSON.stringify({ title }) }),
-  messages: id => request(`/ai/conversations/${id}/messages`),
-  sendMessage: (id, content, clientMessageId) => request(`/ai/conversations/${id}/messages`, { method: 'POST', body: JSON.stringify({ content, clientMessageId }) })
+  aiMe: () => request('/ai/me'),
+  aiConversations: () => request('/ai/conversations'),
+  aiConversation: id => request(`/ai/conversations/${id}`),
+  aiRename: (id, title) => request(`/ai/conversations/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
+  aiDelete: id => request(`/ai/conversations/${id}`, { method: 'DELETE' }),
+  aiStream: (conversationId, input, signal) => stream(`/ai/conversations/${conversationId}/stream`, input, signal)
 };

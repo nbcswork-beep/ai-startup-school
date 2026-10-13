@@ -5,7 +5,6 @@ import { buildApp } from './app.js';
 import { createJwtService } from './auth/jwt-service.js';
 import { loadEnv } from './config/env.js';
 import { MemoryRepository } from './data/memory-repository.js';
-import { MockAiProvider } from './services/ai-provider.js';
 import { createSchoolBot } from './telegram/school-bot.js';
 import { unavailableTelegramWebhookDependencies } from './routes/telegram-webhook.js';
 
@@ -15,7 +14,7 @@ let apps:FastifyInstance[]=[];
 
 async function testApp(configured=true,handler?:Parameters<typeof buildApp>[0]['telegramWebhookHandler']){
   const env=loadEnv({NODE_ENV:'test',DATA_BACKEND:'memory',DEV_EPHEMERAL_JWT:'true',SESSION_TOKEN_PEPPER:'webhook-test-pepper',...(configured?{TELEGRAM_BOT_TOKEN:'123456789:test-token',TELEGRAM_WEBHOOK_SECRET:SECRET,MINI_APP_URL}: {})});
-  const app=await buildApp({env,repository:createAssignedRepository(),jwt:await createJwtService(env),aiProvider:new MockAiProvider(),...(handler?{telegramWebhookHandler:handler}:{})});
+  const app=await buildApp({env,repository:createAssignedRepository(),jwt:await createJwtService(env),...(handler?{telegramWebhookHandler:handler}:{})});
   apps.push(app);return app;
 }
 

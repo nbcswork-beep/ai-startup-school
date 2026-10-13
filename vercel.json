@@ -1,6 +1,15 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/ai-stream.ts": {
+      "maxDuration": 300
+    }
+  },
   "rewrites": [
+    {
+      "source": "/api/v1/ai/conversations/:conversationId/stream",
+      "destination": "/api/ai-stream?conversationId=:conversationId"
+    },
     {
       "source": "/api/:path*",
       "destination": "/api/backend?__aiss_path=:path*"

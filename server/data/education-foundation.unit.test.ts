@@ -4,7 +4,6 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../app.js';
 import { createJwtService } from '../auth/jwt-service.js';
 import { loadEnv } from '../config/env.js';
-import { MockAiProvider } from '../services/ai-provider.js';
 import { MemoryRepository } from './memory-repository.js';
 import { DEV_IDS } from './seed.js';
 
@@ -58,7 +57,7 @@ describe('teacher API validation',()=>{
   let app:FastifyInstance|undefined; afterEach(async()=>app?.close());
   it('rejects unsafe meeting URLs and out-of-range scores',async()=>{
     const env=loadEnv({NODE_ENV:'test',DATA_BACKEND:'memory',DEV_AUTH_ENABLED:'true',DEV_EPHEMERAL_JWT:'true',SESSION_TOKEN_PEPPER:'test-pepper',DEV_USER_ID:teacher});
-    const jwt=await createJwtService(env); app=await buildApp({env,repository:createAssignedRepository(),jwt,aiProvider:new MockAiProvider()});
+    const jwt=await createJwtService(env); app=await buildApp({env,repository:createAssignedRepository(),jwt});
     const login=await app.inject({method:'POST',url:'/api/v1/auth/development'}); const token=login.json().accessToken; const headers={authorization:`Bearer ${token}`};
     const unsafe=await app.inject({method:'POST',url:'/api/v1/teacher/sessions',headers,payload:{groupId:group,courseId:DEV_IDS.course,title:'Live',startsAt:'2026-10-01T15:00:00.000Z',endsAt:'2026-10-01T16:30:00.000Z',meetingUrl:'javascript:alert(1)'}});
     expect(unsafe.statusCode).toBe(400);
@@ -67,7 +66,7 @@ describe('teacher API validation',()=>{
   });
   it('enforces role boundaries on teacher endpoints',async()=>{
     const env=loadEnv({NODE_ENV:'test',DATA_BACKEND:'memory',DEV_AUTH_ENABLED:'true',DEV_EPHEMERAL_JWT:'true',SESSION_TOKEN_PEPPER:'test-pepper',DEV_USER_ID:DEV_IDS.user});
-    const jwt=await createJwtService(env); app=await buildApp({env,repository:createAssignedRepository(),jwt,aiProvider:new MockAiProvider()});
+    const jwt=await createJwtService(env); app=await buildApp({env,repository:createAssignedRepository(),jwt});
     const login=await app.inject({method:'POST',url:'/api/v1/auth/development'}); const token=login.json().accessToken;
     const response=await app.inject({method:'GET',url:'/api/v1/teacher/groups',headers:{authorization:`Bearer ${token}`}});
     expect(response.statusCode).toBe(403);

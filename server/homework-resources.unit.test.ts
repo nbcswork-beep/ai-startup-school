@@ -11,7 +11,6 @@ import { MemoryRepository } from './data/memory-repository.js';
 import { MemoryPilotRuntimeStore } from './data/pilot-runtime-store.js';
 import { PostgresRepository } from './data/postgres-repository.js';
 import { DEV_IDS, PILOT } from './data/seed.js';
-import { MockAiProvider } from './services/ai-provider.js';
 import type { HomeworkSummaryDto } from './types/domain.js';
 import { HOMEWORK_FILE_ACCEPT, formatFileSize } from '../src/homework-uploads.js';
 
@@ -24,7 +23,7 @@ const document = { kind: 'document' as const, title: 'Інструкція', url
 async function client(repository: MemoryRepository, userId: string) {
   const env = loadEnv({ NODE_ENV: 'test', DATA_BACKEND: 'memory', DEV_AUTH_ENABLED: 'true', DEV_EPHEMERAL_JWT: 'true', SESSION_TOKEN_PEPPER: 'homework-resources-test-only', DEV_USER_ID: userId });
   const jwt = await createJwtService(env);
-  const app = await buildApp({ env, repository, jwt, aiProvider: new MockAiProvider() });
+  const app = await buildApp({ env, repository, jwt });
   apps.push(app);
   const login = await app.inject({ method: 'POST', url: '/api/v1/auth/development' });
   expect(login.statusCode).toBe(200);
@@ -36,7 +35,7 @@ function renderHomework(homework: HomeworkSummaryDto, extraData: Record<string, 
   const helpers = source.slice(source.indexOf('const icons ='), source.indexOf('const app ='));
   const icons = source.slice(source.indexOf('function arrowIcon()'), source.indexOf('function artifactIcon('));
   const escape = source.slice(source.indexOf('function escapeHtml('), source.indexOf('function loadingView('));
-  const page = source.slice(source.indexOf('function homeworkPage()'), source.indexOf('function ai()'));
+  const page = source.slice(source.indexOf('function homeworkPage()'), source.indexOf('function profile()'));
   return vm.runInNewContext(`${helpers}\n${icons}\n${escape}\n${page}\nhomeworkPage()`, {
     currentHomework: homework, data: { schedule: { timezone: 'Europe/Kyiv' }, ...extraData }, backLabel: () => 'Навчання', URL, Intl, Date, Map, Set,
     // main.js imports these from homework-uploads.js; the sliced template needs them in scope.

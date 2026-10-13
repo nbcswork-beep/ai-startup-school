@@ -6,7 +6,6 @@ import { loadEnv, resolveRedisRestCredentials, type AppEnv } from './config/env.
 import { MemoryRepository } from './data/memory-repository.js';
 import { RedisRestMentoringStore, type MentoringStore } from './data/mentoring-store.js';
 import { RedisRestPilotRuntimeStore, type PilotRuntimeStore } from './data/pilot-runtime-store.js';
-import { MockAiProvider } from './services/ai-provider.js';
 import { RedisRestLoginAttemptLimiter, RedisRestSessionStore, type LoginAttemptLimiter, type SessionStore } from './auth/session-store.js';
 import type { TelegramWebhookHandler } from './routes/telegram-webhook.js';
 import type { NotificationSender } from './services/telegram-notification-service.js';
@@ -128,7 +127,6 @@ export async function createVercelApp(input: NodeJS.ProcessEnv = process.env, ov
       runtimeStore
     }),
     jwt: await createJwtService(env),
-    aiProvider: new MockAiProvider(),
     loginLimiter,
     ...(overrides.telegramWebhookHandler ? { telegramWebhookHandler:overrides.telegramWebhookHandler } : {}),
     ...(overrides.notificationSender ? { notificationSender:overrides.notificationSender } : {})

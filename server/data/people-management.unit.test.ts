@@ -8,7 +8,6 @@ import crypto from 'node:crypto';
 import { loadEnv } from '../config/env.js';
 import { createJwtService } from '../auth/jwt-service.js';
 import { buildApp } from '../app.js';
-import { MockAiProvider } from '../services/ai-provider.js';
 
 const ADMIN='14000000-0000-4000-8000-000000000001';
 
@@ -92,7 +91,7 @@ describe('persistent People Management lifecycle',()=>{
     const botToken='123456789:people-lifecycle-test';
     const env=loadEnv({NODE_ENV:'test',DATA_BACKEND:'memory',DEV_AUTH_ENABLED:'true',DEV_EPHEMERAL_JWT:'true',DEV_USER_ID:ADMIN,SESSION_TOKEN_PEPPER:'people-api-test-pepper',TELEGRAM_BOT_TOKEN:botToken});
     const repository=createAssignedRepository(undefined,{requireSeededTelegramIdentity:true});
-    const app=await buildApp({env,repository,jwt:await createJwtService(env),aiProvider:new MockAiProvider()});
+    const app=await buildApp({env,repository,jwt:await createJwtService(env)});
     await app.ready();
     try{
       const adminLogin=await app.inject({method:'POST',url:'/api/v1/auth/development'});const adminHeaders={authorization:`Bearer ${adminLogin.json().accessToken}`};

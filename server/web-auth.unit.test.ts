@@ -7,7 +7,6 @@ import { hashPassword } from './auth/password-credentials.js';
 import { MemoryLoginAttemptLimiter, MemorySessionStore } from './auth/session-store.js';
 import { loadEnv, type AppEnv } from './config/env.js';
 import { MemoryRepository } from './data/memory-repository.js';
-import { MockAiProvider } from './services/ai-provider.js';
 
 const ADMIN_ID='12000000-0000-4000-8000-000000000001';
 const TEACHER_ID='12000000-0000-4000-8000-000000000002';
@@ -30,7 +29,7 @@ beforeAll(async()=>{
 afterEach(async()=>{await Promise.all(apps.map(app=>app.close()));apps=[]});
 
 async function appWith(store=new MemorySessionStore(),limiter=new MemoryLoginAttemptLimiter()){
-  const app=await buildApp({env,repository:createAssignedRepository(undefined,{sessionStore:store}),jwt,aiProvider:new MockAiProvider(),loginLimiter:limiter});
+  const app=await buildApp({env,repository:createAssignedRepository(undefined,{sessionStore:store}),jwt,loginLimiter:limiter});
   apps.push(app);return app;
 }
 

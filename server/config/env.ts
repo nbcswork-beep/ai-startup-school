@@ -137,7 +137,10 @@ const envSchema = z.object({
   DEV_AUTH_ENABLED: booleanFromEnv.default(false),
   DEV_EPHEMERAL_JWT: booleanFromEnv.default(false),
   DEV_USER_ID: z.string().uuid().default('10000000-0000-4000-8000-000000000001'),
-  AI_PROVIDER: z.enum(['mock']).default('mock'),
+  /** 32 random bytes, base64. Encrypts AI provider keys at rest; derived from SESSION_TOKEN_PEPPER when unset. */
+  AI_SECRETS_KEY: z.preprocess(value => typeof value === 'string' ? value.trim() || undefined : value, z.string().regex(/^[A-Za-z0-9+/]{43}=$/, 'must be 32 bytes encoded as base64').optional()),
+  /** Redis namespace for AI balances, chats and settings. Defaults to SESSION_REDIS_PREFIX + ':ai:v1'. */
+  AI_REDIS_PREFIX: z.preprocess(value => typeof value === 'string' ? value.trim() || undefined : value, z.string().regex(/^[a-zA-Z0-9:_-]{3,120}$/).optional()),
   WORKSPACE_URL: optionalString,
   TRUST_PROXY: booleanFromEnv.default(false),
   STORAGE_PRIVATE_BUCKETS_CONFIGURED: booleanFromEnv.default(false),
@@ -209,7 +212,7 @@ const envSchema = z.object({
   }
 });
 
-export type AppEnv = z.infer<typeof envSchema> & { origins: string[]; deployEnvironment: DeployEnvironment; runtimeRedisPrefix: string };
+export type AppEnv = z.infer<typeof envSchema> & { origins: string[]; deployEnvironment: DeployEnvironment; runtimeRedisPrefix: string; aiRedisPrefix: string };
 
 /**
  * Namespace that holds the pilot runtime state. Defaults to the historical value derived from
@@ -251,13 +254,15 @@ export function loadEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
     deployEnvironment,
     prefixes: [
       { field: 'SESSION_REDIS_PREFIX', value: parsed.SESSION_REDIS_PREFIX },
-      ...(parsed.PILOT_RUNTIME_REDIS_PREFIX ? [{ field: 'PILOT_RUNTIME_REDIS_PREFIX', value: parsed.PILOT_RUNTIME_REDIS_PREFIX }] : [])
+      ...(parsed.PILOT_RUNTIME_REDIS_PREFIX ? [{ field: 'PILOT_RUNTIME_REDIS_PREFIX', value: parsed.PILOT_RUNTIME_REDIS_PREFIX }] : []),
+      ...(parsed.AI_REDIS_PREFIX ? [{ field: 'AI_REDIS_PREFIX', value: parsed.AI_REDIS_PREFIX }] : [])
     ]
   });
   return {
     ...parsed,
     origins: parsed.APP_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean),
     deployEnvironment,
-    runtimeRedisPrefix
+    runtimeRedisPrefix,
+    aiRedisPrefix: parsed.AI_REDIS_PREFIX ?? `${parsed.SESSION_REDIS_PREFIX}:ai:v1`
   };
 }

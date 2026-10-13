@@ -42,6 +42,7 @@ import type {
 import type { PilotRuntimeState } from './pilot-runtime-store.js';
 import type { GroupInput } from './group-model.js';
 import type { HomeworkFileDto } from '../types/domain.js';
+import type { AiRoster } from '../ai/service.js';
 
 export interface HomeworkSubmitInput {
   contentText: string;
@@ -156,6 +157,8 @@ export interface AppRepository {
   markStudentNotificationsRead(userId:string,notificationIds:string[]):Promise<StudentNotificationsDto>;
 
   getAdminWorkspace(userId: UserId): Promise<AdminWorkspaceDto>;
+  /** Students and groups for the AI assistant. No access check: callers are the admin routes and the student's own requests. */
+  getAiRoster(): Promise<AiRoster>;
   searchAdmin(userId: UserId, query: string): Promise<AdminSearchDto>;
   exploreAdmin(userId: UserId, input: { entity: AdminEntity; page: number; pageSize: number; sort: string; direction: 'asc'|'desc'; query?: string }): Promise<AdminExplorerPageDto>;
   adminSetAccountStatus(userId: UserId, targetUserId: string, status: 'active'|'disabled'|'archived', reason: string, correlationId: string): Promise<void>;

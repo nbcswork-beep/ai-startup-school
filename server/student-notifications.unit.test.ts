@@ -7,7 +7,6 @@ import { loadEnv } from './config/env.js';
 import { MemoryRepository } from './data/memory-repository.js';
 import { createPilotRuntimeState, MemoryPilotRuntimeStore, type PilotNotification } from './data/pilot-runtime-store.js';
 import { DEV_IDS, PILOT_STUDENTS } from './data/seed.js';
-import { MockAiProvider } from './services/ai-provider.js';
 
 const notification = (overrides:Partial<PilotNotification>):PilotNotification=>({
   id:'90000000-0000-4000-8000-000000000001',
@@ -69,7 +68,7 @@ describe('student notifications',()=>{
     const runtimeStore=new MemoryPilotRuntimeStore(createAssignedPilotState());
     const repository=createAssignedRepository(undefined,{runtimeStore});
     const env=loadEnv({NODE_ENV:'test',DATA_BACKEND:'memory',DEV_AUTH_ENABLED:'true',DEV_EPHEMERAL_JWT:'true',SESSION_TOKEN_PEPPER:'test-pepper'});
-    app=await buildApp({env,repository,jwt:await createJwtService(env),aiProvider:new MockAiProvider()});
+    app=await buildApp({env,repository,jwt:await createJwtService(env)});
     const login=await app.inject({method:'POST',url:'/api/v1/auth/development'});
     const {accessToken}=login.json();
     await runtimeStore.mutate(state=>{state.directory[DEV_IDS.user]!.status=status;state.userStatus[DEV_IDS.user]=status;});

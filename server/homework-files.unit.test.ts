@@ -7,7 +7,6 @@ import { createAssignedPilotState } from './data/assigned-pilot.test-fixture.js'
 import { MemoryRepository } from './data/memory-repository.js';
 import { MemoryPilotRuntimeStore } from './data/pilot-runtime-store.js';
 import { DEV_IDS, PILOT_STUDENTS } from './data/seed.js';
-import { MockAiProvider } from './services/ai-provider.js';
 import { LocalDevFileStorage, type FileStorage } from './storage/file-storage.js';
 import { cleanDisplayName, matchesSignature, storageSafeName } from './storage/file-types.js';
 import type { HomeworkFileDto, HomeworkSummaryDto, TeacherWorkspaceDto } from './types/domain.js';
@@ -32,7 +31,7 @@ function school(options: { storage?: FileStorage | null; env?: Record<string, st
   return async (userId: string) => {
     const env = loadEnv({ NODE_ENV: 'test', DATA_BACKEND: 'memory', DEV_AUTH_ENABLED: 'true', DEV_EPHEMERAL_JWT: 'true', SESSION_TOKEN_PEPPER: 'homework-files-test-only', DEV_USER_ID: userId, HOMEWORK_UPLOAD_MAX_FILE_MB: '1', HOMEWORK_UPLOAD_MAX_FILES: '4', ...options.env });
     const repository = new MemoryRepository(undefined, { runtimeStore: runtime });
-    const app = await buildApp({ env, repository, jwt: await createJwtService(env), aiProvider: new MockAiProvider(), fileStorage: storage });
+    const app = await buildApp({ env, repository, jwt: await createJwtService(env), fileStorage: storage });
     apps.push(app);
     const login = await app.inject({ method: 'POST', url: '/api/v1/auth/development' });
     expect(login.statusCode).toBe(200);
@@ -170,7 +169,9 @@ describe('homework file uploads', () => {
     const student = await school()(DEV_IDS.user);
     const reserved = await student.inject('POST', `/api/v1/homework/${HOMEWORK}/uploads`, { name: 'late.pdf', size: bytes.pdf.length });
     const { file, upload } = reserved.json();
-    const forged = upload.url.replace(/.$/, upload.url.endsWith('A') ? 'B' : 'A');
+    // Change a character inside the signature: the last base64url character carries unused bits.
+    const at = upload.url.length - 10;
+    const forged = `${upload.url.slice(0, at)}${upload.url[at] === 'A' ? 'B' : 'A'}${upload.url.slice(at + 1)}`;
     expect((await student.app.inject({ method: 'PUT', url: forged, headers: upload.headers, payload: bytes.pdf })).statusCode).toBe(403);
     const incomplete = await student.inject('POST', `/api/v1/homework/${HOMEWORK}/uploads/${file.id}/complete`);
     expect(incomplete.statusCode).toBe(409);
