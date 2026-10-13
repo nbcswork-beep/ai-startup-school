@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../errors/app-error.js';
+import type { FileStorage } from '../storage/file-storage.js';
 import { AiProviderError, createAdapter, safeProviderMessage, type ProviderAdapter, type ProviderConnection, type ProviderUsage } from './adapters.js';
 import { SecretBox, secretHint } from './secret-box.js';
 import { MAX_BALANCE, type AiStore, type LedgerDraft, type StatsIncrement } from './store.js';
@@ -22,6 +23,10 @@ export interface AiServiceDeps {
   /** Local development and tests may point providers at http://localhost mocks. */
   allowLocalProviderUrls?: boolean;
   log?: (error: unknown, message: string) => void;
+  /** Private object storage for ZIP attachments; without it attachments are reported as unavailable. */
+  fileStorage?: FileStorage | null;
+  /** First pathname segment, so environments sharing one store never mix objects. */
+  storagePrefix?: string;
 }
 
 export const DEFAULT_SYSTEM_PROMPT = [

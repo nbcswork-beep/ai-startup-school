@@ -1,5 +1,5 @@
 import type {
-  AiAccessRule, AiBalance, AiConversation, AiErrorRecord, AiLedgerEntry, AiMessage, AiModelRecord, AiProviderRecord,
+  AiAccessRule, AiAttachment, AiBalance, AiConversation, AiErrorRecord, AiLedgerEntry, AiMessage, AiModelRecord, AiProviderRecord,
   AiResourcePackage, AiSettings, AiUsageRecord
 } from './types.js';
 
@@ -112,6 +112,13 @@ export interface AiStore {
   deleteConversation(studentId: string, conversationId: string): Promise<void>;
   getMessages(conversationId: string, limit: number): Promise<AiMessage[]>;
   appendMessages(conversationId: string, messages: AiMessage[], cap: number): Promise<void>;
+  // attachments: metadata per student, extracted text in its own key
+  listAttachments(studentId: string): Promise<AiAttachment[]>;
+  getAttachment(studentId: string, attachmentId: string): Promise<AiAttachment | null>;
+  putAttachment(attachment: AiAttachment): Promise<void>;
+  deleteAttachment(studentId: string, attachmentId: string): Promise<void>;
+  putAttachmentText(attachmentId: string, text: string): Promise<void>;
+  getAttachmentTexts(attachmentIds: string[]): Promise<Map<string, string>>;
 }
 
 function emptyBalance(studentId: string): AiBalance {
@@ -167,6 +174,8 @@ export class MemoryAiStore implements AiStore {
   private hourStats = new Map<string, Record<string, number>>();
   private conversations = new Map<string, Map<string, AiConversation>>();
   private messages = new Map<string, AiMessage[]>();
+  private attachments = new Map<string, Map<string, AiAttachment>>();
+  private attachmentTexts = new Map<string, string>();
 
   async listProviders() { return [...this.providers.values()].map(item => structuredClone(item)); }
   async putProvider(provider: AiProviderRecord) { this.providers.set(provider.id, structuredClone(provider)); }
@@ -358,6 +367,32 @@ export class MemoryAiStore implements AiStore {
   async appendMessages(conversationId: string, messages: AiMessage[], cap: number) {
     const list = [...(this.messages.get(conversationId) ?? []), ...structuredClone(messages)];
     this.messages.set(conversationId, list.slice(-cap));
+  }
+
+  async listAttachments(studentId: string) {
+    return [...(this.attachments.get(studentId)?.values() ?? [])].map(item => structuredClone(item));
+  }
+
+  async getAttachment(studentId: string, attachmentId: string) {
+    const item = this.attachments.get(studentId)?.get(attachmentId);
+    return item ? structuredClone(item) : null;
+  }
+
+  async putAttachment(attachment: AiAttachment) {
+    const map = this.attachments.get(attachment.studentId) ?? new Map<string, AiAttachment>();
+    map.set(attachment.id, structuredClone(attachment));
+    this.attachments.set(attachment.studentId, map);
+  }
+
+  async deleteAttachment(studentId: string, attachmentId: string) {
+    this.attachments.get(studentId)?.delete(attachmentId);
+    this.attachmentTexts.delete(attachmentId);
+  }
+
+  async putAttachmentText(attachmentId: string, text: string) { this.attachmentTexts.set(attachmentId, text); }
+
+  async getAttachmentTexts(attachmentIds: string[]) {
+    return new Map(attachmentIds.flatMap(id => this.attachmentTexts.has(id) ? [[id, this.attachmentTexts.get(id)!] as const] : []));
   }
 }
 
@@ -745,5 +780,33 @@ export class RedisAiStore implements AiStore {
       ['RPUSH', key, ...messages.map(message => JSON.stringify(message))],
       ['LTRIM', key, -cap, -1]
     ]);
+  }
+
+  listAttachments(studentId: string) { return this.hashValues<AiAttachment>(this.key('atts', studentId)); }
+
+  async getAttachment(studentId: string, attachmentId: string) {
+    const raw = await this.client.command<string | null>(['HGET', this.key('atts', studentId), attachmentId]);
+    if (!raw) return null;
+    try { return JSON.parse(raw) as AiAttachment; } catch { return null; }
+  }
+
+  async putAttachment(attachment: AiAttachment) {
+    await this.client.command(['HSET', this.key('atts', attachment.studentId), attachment.id, JSON.stringify(attachment)]);
+  }
+
+  async deleteAttachment(studentId: string, attachmentId: string) {
+    await this.client.pipeline([
+      ['HDEL', this.key('atts', studentId), attachmentId],
+      ['DEL', this.key('att', attachmentId)]
+    ]);
+  }
+
+  async putAttachmentText(attachmentId: string, text: string) {
+    await this.client.command(['SET', this.key('att', attachmentId), text]);
+  }
+
+  async getAttachmentTexts(attachmentIds: string[]) {
+    const replies = await this.client.pipeline<string | null>(attachmentIds.map(id => ['GET', this.key('att', id)]));
+    return new Map(attachmentIds.flatMap((id, index) => typeof replies[index] === 'string' ? [[id, replies[index] as string] as const] : []));
   }
 }

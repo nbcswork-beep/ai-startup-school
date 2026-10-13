@@ -82,5 +82,9 @@ export const api = {
   aiConversation: id => request(`/ai/conversations/${id}`),
   aiRename: (id, title) => request(`/ai/conversations/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
   aiDelete: id => request(`/ai/conversations/${id}`, { method: 'DELETE' }),
-  aiStream: (conversationId, input, signal) => stream(`/ai/conversations/${conversationId}/stream`, input, signal)
+  aiStream: (conversationId, input, signal) => stream(`/ai/conversations/${conversationId}/stream`, input, signal),
+  aiReserveAttachment: input => request('/ai/attachments', { method: 'POST', body: JSON.stringify(input) }),
+  aiCompleteAttachment: id => request(`/ai/attachments/${id}/complete`, { method: 'POST' }),
+  aiDeleteAttachment: id => request(`/ai/attachments/${id}`, { method: 'DELETE' }),
+  aiArchive: (conversationId, messageId) => request(`/ai/conversations/${conversationId}/messages/${messageId}/archive`, { method: 'POST' })
 };

@@ -4,7 +4,10 @@ import { AiProviderError, type ChatTurn, type ProviderUsage } from './adapters.j
 import { costMicros, type AiService } from './service.js';
 import { dayKey, hourKey, monthKey } from './time.js';
 import { countChatTokens, countTokens, withSafetyMargin } from './tokenizer.js';
-import type { AiConversation, AiMessage, AiModelRecord, AiProviderRecord, AiUsageStatus } from './types.js';
+import type { AiAttachment, AiConversation, AiMessage, AiModelRecord, AiProviderRecord, AiUsageStatus } from './types.js';
+import { ATTACHMENT_MAX_BYTES, extractArchiveText, parseAnswerFiles, renderAttachment } from './files.js';
+import { createZip, ZipFormatError } from './zip.js';
+import { cleanDisplayName, fileExtension, storageSafeName } from '../storage/file-types.js';
 
 const MESSAGE_CAP = 400;
 const HISTORY_LOAD = 80;
@@ -12,11 +15,25 @@ const CONVERSATION_LIMIT = 200;
 const MIN_ANSWER_TOKENS = 256;
 const RESERVATION_TTL_MS = 6 * 60_000;
 const HEARTBEAT_MS = 15_000;
+const ATTACHMENT_UPLOAD_TTL_MS = 15 * 60_000;
+const UNUSED_ATTACHMENT_TTL_MS = 24 * 60 * 60_000;
+const MAX_UNUSED_ATTACHMENTS = 10;
+const MAX_ATTACHMENTS_PER_MESSAGE = 3;
+const ARCHIVE_LINK_TTL_MS = 10 * 60_000;
+
+// Interface rules appended to the admin's system prompt: how archives arrive and how files go back.
+const FILE_RULES = [
+  'Правила інтерфейсу чату:',
+  '- Учень може прикріпити ZIP-архів. Його текстові файли приходять у повідомленні між рядками «--- файл: шлях ---» і «--- кінець файлу ---».',
+  '- Коли учень просить файли, проєкт або архів, пиши кожен файл окремим блоком коду, а після трьох зворотних апострофів вказуй мову і шлях, наприклад: ```js src/app.js',
+  '- Інтерфейс сам збере такі блоки в ZIP-архів із кнопкою «Завантажити ZIP». Не вигадуй посилань на завантаження і не кажи, що не можеш надіслати файли.'
+].join('\n');
 
 export interface ChatInput {
   content: string;
   modelId?: string | undefined;
   clientRequestId: string;
+  attachmentIds?: string[] | undefined;
 }
 
 export interface ChatSession {
@@ -74,7 +91,7 @@ export class AiChatService {
       },
       models: access.models.map(model => ({ id: model.id, label: model.label, family: model.family })),
       defaultModelId: access.defaultModel?.id ?? null,
-      limits: { maxMessageChars: access.settings.maxMessageChars }
+      limits: { maxMessageChars: access.settings.maxMessageChars, attachments: { enabled: Boolean(this.ai.deps.fileStorage), maxBytes: ATTACHMENT_MAX_BYTES } }
     };
   }
 
@@ -112,22 +129,165 @@ export class AiChatService {
 
   async deleteConversation(studentId: string, conversationId: string) {
     await this.requireConversation(studentId, conversationId);
+    const messages = await this.ai.store.getMessages(conversationId, MESSAGE_CAP);
     await this.ai.store.deleteConversation(studentId, conversationId);
+    // Archives sent in this chat go with it.
+    const attachmentIds = messages.flatMap(message => message.attachments?.map(item => item.id) ?? []);
+    for (const id of attachmentIds) await this.removeAttachment(studentId, id);
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Attachments: the browser uploads the ZIP straight to private storage, the server unpacks it.
+
+  private storage() {
+    const storage = this.ai.deps.fileStorage;
+    if (!storage) throw new AppError('AI_ATTACHMENTS_UNAVAILABLE', 503, 'Прикріплення файлів ще не підключено.');
+    return storage;
+  }
+
+  private attachmentDto(attachment: AiAttachment) {
+    const { pathname: _pathname, studentId: _studentId, ...dto } = attachment;
+    return dto;
+  }
+
+  private async removeAttachment(studentId: string, attachmentId: string): Promise<void> {
+    const attachment = await this.ai.store.getAttachment(studentId, attachmentId);
+    if (!attachment) return;
+    await this.ai.store.deleteAttachment(studentId, attachmentId);
+    await this.ai.deps.fileStorage?.delete([attachment.pathname]).catch(error => this.ai.log(error, 'AI attachment cleanup failed'));
+  }
+
+  /** Drops uploads that never finished and archives that were never sent. */
+  private async sweepAttachments(studentId: string, now: number): Promise<AiAttachment[]> {
+    const kept: AiAttachment[] = [];
+    for (const attachment of await this.ai.store.listAttachments(studentId)) {
+      const stale = attachment.status === 'pending' ? Date.parse(attachment.expiresAt) < now : !attachment.usedIn && Date.parse(attachment.createdAt) + UNUSED_ATTACHMENT_TTL_MS < now;
+      if (stale) await this.removeAttachment(studentId, attachment.id);
+      else kept.push(attachment);
+    }
+    return kept;
+  }
+
+  async reserveAttachment(studentId: string, input: { name: string; size: number }) {
+    const storage = this.storage();
+    const name = cleanDisplayName(input.name);
+    if (!name || fileExtension(name) !== 'zip') throw new AppError('AI_ATTACHMENT_TYPE', 415, 'Можна прикріпити лише ZIP-архів.');
+    if (input.size <= 0) throw new AppError('AI_ATTACHMENT_EMPTY', 400, 'Архів порожній.');
+    if (input.size > ATTACHMENT_MAX_BYTES) throw new AppError('AI_ATTACHMENT_TOO_LARGE', 413, `Архів завеликий: максимум ${Math.round(ATTACHMENT_MAX_BYTES / 1024 / 1024)} МБ.`);
+    const now = this.ai.now().getTime();
+    const current = await this.sweepAttachments(studentId, now);
+    if (current.filter(item => !item.usedIn).length >= MAX_UNUSED_ATTACHMENTS) throw new AppError('AI_ATTACHMENT_LIMIT', 409, 'Забагато ненадісланих архівів. Надішліть або видаліть попередні.');
+    const id = randomUUID();
+    const expiresAt = now + ATTACHMENT_UPLOAD_TTL_MS;
+    const attachment: AiAttachment = {
+      id, studentId, name, size: input.size,
+      pathname: `${this.ai.deps.storagePrefix ?? 'local'}/ai/${studentId}/${id}/${storageSafeName(name, 'zip')}`,
+      status: 'pending', createdAt: new Date(now).toISOString(), expiresAt: new Date(expiresAt).toISOString(),
+      files: [], skipped: [], estimatedTokens: 0, usedIn: null
+    };
+    await this.ai.store.putAttachment(attachment);
+    try {
+      const upload = await storage.createUploadTarget({ pathname: attachment.pathname, contentType: 'application/zip', size: input.size, expiresAt });
+      return { attachment: this.attachmentDto(attachment), upload, expiresAt: attachment.expiresAt };
+    } catch (error) {
+      this.ai.log(error, 'AI attachment upload URL could not be issued');
+      await this.ai.store.deleteAttachment(studentId, id);
+      throw new AppError('FILE_STORAGE_FAILED', 502, 'Сховище файлів тимчасово недоступне. Спробуйте ще раз за хвилину.');
+    }
+  }
+
+  /** Checks what arrived, unpacks the text files and keeps them for the model. */
+  async completeAttachment(studentId: string, attachmentId: string) {
+    const storage = this.storage();
+    const attachment = await this.ai.store.getAttachment(studentId, attachmentId);
+    if (!attachment) throw new AppError('AI_ATTACHMENT_NOT_FOUND', 404, 'Архів не знайдено');
+    if (attachment.status === 'ready') return this.attachmentDto(attachment);
+    const stored = await storage.head(attachment.pathname);
+    if (!stored) throw new AppError('UPLOAD_INCOMPLETE', 409, 'Архів ще не завантажено. Спробуйте ще раз.');
+    const reject = async (code: string, status: number, message: string) => {
+      await this.removeAttachment(studentId, attachmentId);
+      throw new AppError(code, status, message);
+    };
+    if (stored.size !== attachment.size) return reject('FILE_SIZE_MISMATCH', 422, 'Розмір архіву не збігається. Завантажте його ще раз.');
+    const bytes = Buffer.from(await storage.readStart(attachment.pathname, attachment.size));
+    if (bytes.length !== attachment.size) throw new AppError('FILE_STORAGE_FAILED', 502, 'Не вдалося прочитати архів. Спробуйте ще раз.');
+    let extracted: ReturnType<typeof extractArchiveText>;
+    try { extracted = extractArchiveText(bytes); }
+    catch (error) {
+      return reject('AI_ATTACHMENT_INVALID', 415, error instanceof ZipFormatError ? `Архів не відкрився: ${error.message.charAt(0).toLowerCase()}${error.message.slice(1)}.` : 'Архів пошкоджений або це не ZIP.');
+    }
+    if (!extracted.files.length) return reject('AI_ATTACHMENT_NO_TEXT', 422, 'В архіві немає текстових файлів, які може прочитати ШІ.');
+    const rendered = renderAttachment(attachment.name, extracted.files, extracted.skipped);
+    await this.ai.store.putAttachmentText(attachmentId, rendered);
+    const ready: AiAttachment = {
+      ...attachment, status: 'ready',
+      files: extracted.files.map(file => ({ path: file.path, chars: file.text.length })),
+      skipped: extracted.skipped.slice(0, 200),
+      estimatedTokens: await countTokens(rendered)
+    };
+    await this.ai.store.putAttachment(ready);
+    return this.attachmentDto(ready);
+  }
+
+  async deleteAttachment(studentId: string, attachmentId: string) {
+    const attachment = await this.ai.store.getAttachment(studentId, attachmentId);
+    if (!attachment) throw new AppError('AI_ATTACHMENT_NOT_FOUND', 404, 'Архів не знайдено');
+    if (attachment.usedIn) throw new AppError('AI_ATTACHMENT_SENT', 409, 'Архів уже надіслано в чат. Видаліть чат, щоб прибрати його.');
+    await this.removeAttachment(studentId, attachmentId);
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // ZIP from an answer. The link carries a signature instead of a session, so Telegram's own
+  // downloader can fetch it; it names one message of one student and expires in minutes.
+
+  async archiveLink(studentId: string, conversationId: string, messageId: string) {
+    await this.requireConversation(studentId, conversationId);
+    const message = (await this.ai.store.getMessages(conversationId, MESSAGE_CAP)).find(item => item.id === messageId && item.role === 'assistant');
+    const files = message ? parseAnswerFiles(message.content) : [];
+    if (!files.length) throw new AppError('AI_ARCHIVE_EMPTY', 404, 'У цій відповіді немає файлів для архіву');
+    const expiresAt = this.ai.now().getTime() + ARCHIVE_LINK_TTL_MS;
+    const payload = Buffer.from(JSON.stringify({ s: studentId, c: conversationId, m: messageId, e: expiresAt })).toString('base64url');
+    const token = `${payload}.${this.ai.deps.secrets.sign(payload)}`;
+    return { url: `/api/v1/ai/archives?token=${encodeURIComponent(token)}`, fileName: await this.archiveName(studentId, conversationId), fileCount: files.length, expiresAt: new Date(expiresAt).toISOString() };
+  }
+
+  private async archiveName(studentId: string, conversationId: string): Promise<string> {
+    const conversation = await this.ai.store.getConversation(studentId, conversationId);
+    return storageSafeName(`${conversation?.title ?? 'project'}.zip`, 'zip');
+  }
+
+  async archiveDownload(token: string): Promise<{ fileName: string; bytes: Buffer }> {
+    const [payload, signature] = token.split('.');
+    const invalid = () => new AppError('AI_ARCHIVE_LINK_INVALID', 403, 'Посилання на архів недійсне або застаріло. Натисніть «Завантажити ZIP» ще раз.');
+    if (!payload || !signature || !this.ai.deps.secrets.verify(payload, signature)) throw invalid();
+    let claims: { s?: unknown; c?: unknown; m?: unknown; e?: unknown };
+    try { claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')); } catch { throw invalid(); }
+    if (typeof claims.s !== 'string' || typeof claims.c !== 'string' || typeof claims.m !== 'string' || typeof claims.e !== 'number') throw invalid();
+    if (claims.e < this.ai.now().getTime()) throw invalid();
+    const conversation = await this.ai.store.getConversation(claims.s, claims.c);
+    if (!conversation || conversation.studentId !== claims.s) throw invalid();
+    const message = (await this.ai.store.getMessages(claims.c, MESSAGE_CAP)).find(item => item.id === claims.m && item.role === 'assistant');
+    const files = message ? parseAnswerFiles(message.content) : [];
+    if (!files.length) throw invalid();
+    return { fileName: await this.archiveName(claims.s, claims.c), bytes: createZip(files, this.ai.now()) };
   }
 
   /** Fits the system prompt, as much recent history as the model's input budget allows, and the new message. */
-  private async context(systemPrompt: string, history: AiMessage[], content: string, maxInputTokens: number): Promise<{ turns: ChatTurn[]; inputTokens: number }> {
-    const system: ChatTurn = { role: 'system', content: systemPrompt };
+  private async context(systemPrompt: string, history: ChatTurn[], content: string, maxInputTokens: number, withAttachments: boolean): Promise<{ turns: ChatTurn[]; inputTokens: number }> {
+    const system: ChatTurn = { role: 'system', content: `${systemPrompt}\n\n${FILE_RULES}` };
     const latest: ChatTurn = { role: 'user', content };
     const fixed = await countChatTokens([system, latest]);
-    if (withSafetyMargin(fixed) > maxInputTokens) throw new AppError('AI_MESSAGE_TOO_LONG', 400, 'Повідомлення задовге для цієї моделі. Скоротіть його.');
+    if (withSafetyMargin(fixed) > maxInputTokens) {
+      throw new AppError('AI_MESSAGE_TOO_LONG', 400, withAttachments
+        ? `Архів завеликий для цієї моделі: близько ${fixed} токенів при ліміті ${maxInputTokens}. Надішліть менше файлів або попросіть викладача збільшити ліміт контексту моделі.`
+        : 'Повідомлення задовге для цієї моделі. Скоротіть його.');
+    }
     const kept: ChatTurn[] = [];
     let total = fixed;
-    for (const message of [...history].reverse()) {
-      if (!message.content.trim()) continue;
-      const cost = 4 + await countTokens(message.content);
+    for (const turn of [...history].reverse()) {
+      const cost = 4 + await countTokens(turn.content);
       if (withSafetyMargin(total + cost) > maxInputTokens) break;
-      kept.unshift({ role: message.role, content: message.content });
+      kept.unshift(turn);
       total += cost;
     }
     // A history that starts with an assistant turn confuses some providers.
@@ -140,7 +300,9 @@ export class AiChatService {
     const groupId = await this.studentGroup(studentId);
     const access = await this.ai.accessFor(studentId, groupId);
     const { settings } = access;
-    if (!content) throw new AppError('AI_MESSAGE_EMPTY', 400, 'Напишіть повідомлення');
+    const attachmentIds = [...new Set(input.attachmentIds ?? [])];
+    if (!content && !attachmentIds.length) throw new AppError('AI_MESSAGE_EMPTY', 400, 'Напишіть повідомлення');
+    if (attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE) throw new AppError('AI_ATTACHMENT_LIMIT', 400, `Можна прикріпити до ${MAX_ATTACHMENTS_PER_MESSAGE} архівів до одного повідомлення`);
     if (content.length > settings.maxMessageChars) throw new AppError('AI_MESSAGE_TOO_LONG', 400, `Повідомлення задовге: максимум ${settings.maxMessageChars} символів`);
     if (!access.models.length) throw new AppError('AI_NOT_CONFIGURED', 503, 'ШІ-асистент ще не налаштований. Зверніться до викладача.');
 
@@ -159,7 +321,24 @@ export class AiChatService {
     const provider = access.providers.find(item => item.id === model.providerId)!;
 
     const history = existing ? await this.ai.store.getMessages(existing.id, HISTORY_LOAD) : [];
-    const { turns, inputTokens } = await this.context(settings.systemPrompt, history, content, model.maxInputTokens);
+    // Archives from earlier messages go back to the model with them; new ones must be the student's, ready and unsent.
+    const texts = await this.ai.store.getAttachmentTexts([...history.flatMap(message => message.attachments?.map(item => item.id) ?? []), ...attachmentIds]);
+    const attachments: AiAttachment[] = [];
+    for (const id of attachmentIds) {
+      const attachment = await this.ai.store.getAttachment(studentId, id);
+      if (!attachment || attachment.status !== 'ready' || !texts.has(id)) throw new AppError('AI_ATTACHMENT_NOT_FOUND', 404, 'Архів не знайдено або він ще обробляється');
+      if (attachment.usedIn) throw new AppError('AI_ATTACHMENT_SENT', 409, 'Цей архів уже надіслано. Прикріпіть його ще раз.');
+      attachments.push(attachment);
+    }
+    const expand = (text: string, items: AiMessage['attachments']) => items?.length
+      ? [text, ...items.map(item => texts.get(item.id) ?? `[Архів «${item.name}» більше недоступний]`)].join('\n\n')
+      : text;
+    const text = content || 'Переглянь вкладений архів.';
+    const messageAttachments = attachments.map(item => ({ id: item.id, name: item.name, size: item.size, fileCount: item.files.length }));
+    const historyTurns: ChatTurn[] = history
+      .filter(message => message.content.trim() || message.attachments?.length)
+      .map(message => ({ role: message.role, content: expand(message.content, message.attachments) }));
+    const { turns, inputTokens } = await this.context(settings.systemPrompt, historyTurns, expand(text, messageAttachments), model.maxInputTokens, attachments.length > 0);
     const inputEstimate = withSafetyMargin(inputTokens);
     const now = this.ai.now();
     // The id is derived on the server, so a client cannot collide with another student's request.
@@ -185,7 +364,7 @@ export class AiChatService {
     }
 
     const conversationIdFinal = existing?.id ?? randomUUID();
-    const userMessage: AiMessage = { id: randomUUID(), role: 'user', content, createdAt: now.toISOString() };
+    const userMessage: AiMessage = { id: randomUUID(), role: 'user', content: text, createdAt: now.toISOString(), ...(messageAttachments.length ? { attachments: messageAttachments } : {}) };
     const assistantId = randomUUID();
     const encoder = new TextEncoder();
     const upstream = new AbortController();
@@ -204,7 +383,7 @@ export class AiChatService {
     });
     const done = this.run({
       studentId, groupId, conversationId: conversationIdFinal, existing, model, provider, access, turns, inputTokens, inputEstimate,
-      reserved: reservation.reserved, requestId, userMessage, assistantId, upstream, event, write
+      reserved: reservation.reserved, requestId, userMessage, assistantId, upstream, event, write, attachments
     }).catch(error => {
       this.ai.log(error, 'AI chat run failed');
       event('error', { code: 'AI_INTERNAL', message: 'Сталася помилка. Спробуйте ще раз.' });
@@ -222,6 +401,7 @@ export class AiChatService {
     turns: ChatTurn[]; inputTokens: number; inputEstimate: number; reserved: number; requestId: string;
     userMessage: AiMessage; assistantId: string; upstream: AbortController;
     event: (name: string, data: unknown) => void; write: (chunk: string) => void;
+    attachments: AiAttachment[];
   }): Promise<void> {
     const started = Date.now();
     ctx.event('start', {
@@ -310,15 +490,19 @@ export class AiChatService {
 
     let assistantMessage: AiMessage | null = null;
     if (text) {
+      const answerFiles = parseAnswerFiles(text);
       assistantMessage = {
         id: ctx.assistantId, role: 'assistant', content: text, createdAt: now.toISOString(), modelId: usedModel.id, modelLabel: usedModel.label,
         usage: { input: measured.inputTokens, output: measured.outputTokens, total: actual, approximate },
-        status: status === 'complete' ? 'complete' : status === 'stopped' ? 'stopped' : 'interrupted'
+        status: status === 'complete' ? 'complete' : status === 'stopped' ? 'stopped' : 'interrupted',
+        ...(answerFiles.length ? { archive: { fileCount: answerFiles.length, paths: answerFiles.slice(0, 30).map(file => file.path) } } : {})
       };
       // Re-read: the student may have deleted this chat while the answer was streaming.
       const current = ctx.existing ? await this.ai.store.getConversation(ctx.studentId, ctx.conversationId) : null;
       if (!ctx.existing || current) {
         await this.ai.store.appendMessages(ctx.conversationId, [ctx.userMessage, assistantMessage], MESSAGE_CAP);
+        // An archive belongs to the chat it was sent in from now on.
+        for (const attachment of ctx.attachments) await this.ai.store.putAttachment({ ...attachment, usedIn: ctx.conversationId });
         const base = current ?? { id: ctx.conversationId, studentId: ctx.studentId, title: titleFrom(ctx.userMessage.content), createdAt: ctx.userMessage.createdAt, messageCount: 0, preview: '', modelId: null, updatedAt: '' };
         await this.ai.store.putConversation({ ...base, modelId: usedModel.id, updatedAt: now.toISOString(), messageCount: Math.min(MESSAGE_CAP, base.messageCount + 2), preview: text.replace(/\s+/g, ' ').slice(0, 140) });
       }

@@ -11,6 +11,8 @@ import { DEV_IDS, PILOT_STUDENTS } from './data/seed.js';
 import { RedisAiStore } from './ai/store.js';
 import { MockProviderServer, MOCK_USAGE } from './ai/testing/mock-provider.js';
 import { RedisEmulator } from './ai/testing/redis-emulator.js';
+import { extractArchiveText } from './ai/files.js';
+import { createZip } from './ai/zip.js';
 
 const ADMIN = '14000000-0000-4000-8000-000000000001';
 const STUDENT = DEV_IDS.user;
@@ -380,6 +382,95 @@ describe('AI assistant — student chat and honest token accounting', () => {
     const balance = await admin.call('PATCH', `/api/v1/admin/ai/providers/${provider.id}`, { balanceSource: 'openrouter' });
     expect(balance.statusCode).toBe(200);
     expect((await admin.call('POST', `/api/v1/admin/ai/providers/${provider.id}/balance`)).json()).toMatchObject({ amount: 37.5, currency: 'USD' });
+  });
+
+  it('lets a student send a ZIP the model reads, and download the files the model wrote as a ZIP', async () => {
+    const { as } = school();
+    const admin = await as(ADMIN);
+    await configure(admin);
+    await admin.call('POST', `/api/v1/admin/ai/tokens/students/${STUDENT}`, { op: 'add', amount: 200_000 });
+    const student = await as(STUDENT);
+    expect((await student.call('GET', '/api/v1/ai/me')).json().limits.attachments).toMatchObject({ enabled: true, maxBytes: 5 * 1024 * 1024 });
+
+    const archive = createZip([
+      { path: 'src/app.js', content: "console.log('мій код');\n" },
+      { path: 'README.md', content: '# Мій проєкт\n' },
+      { path: 'node_modules/big/index.js', content: 'module.exports = 1;\n' },
+      { path: 'logo.png', content: 'PNG' }
+    ]);
+    const reserved = await student.call('POST', '/api/v1/ai/attachments', { name: 'project.zip', size: archive.length });
+    expect(reserved.statusCode).toBe(201);
+    const { attachment, upload } = reserved.json();
+    expect(JSON.stringify(reserved.json())).not.toContain(STUDENT);
+    expect((await student.app.inject({ method: upload.method, url: upload.url, headers: upload.headers, payload: archive })).statusCode).toBe(200);
+    const completed = await student.call('POST', `/api/v1/ai/attachments/${attachment.id}/complete`);
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json()).toMatchObject({ status: 'ready', files: [{ path: 'src/app.js' }, { path: 'README.md' }] });
+    expect(completed.json().skipped.map((item: { path: string }) => item.path)).toEqual(['node_modules/big/index.js', 'logo.png']);
+
+    // Another student can neither use nor touch it.
+    const other = await as(OTHER);
+    expect((await other.call('POST', `/api/v1/ai/attachments/${attachment.id}/complete`)).statusCode).toBe(404);
+    expect((await other.call('DELETE', `/api/v1/ai/attachments/${attachment.id}`)).statusCode).toBe(404);
+
+    const sent = await student.call('POST', '/api/v1/ai/conversations/new/stream', { content: 'Що робить мій код?', clientRequestId: randomUUID(), attachmentIds: [attachment.id] });
+    const done = parseSse(sent.body).find(item => item.event === 'done')!.data;
+    expect(done.userMessage.attachments).toEqual([{ id: attachment.id, name: 'project.zip', size: archive.length, fileCount: 2 }]);
+    const providerMessage = mock.chatRequests().at(-1)!.body.messages.at(-1).content as string;
+    expect(providerMessage).toContain('Що робить мій код?');
+    expect(providerMessage).toContain("--- файл: src/app.js ---\nconsole.log('мій код');");
+    expect(providerMessage).not.toContain('module.exports');
+    expect(mock.chatRequests().at(-1)!.body.messages[0].content).toContain('Інтерфейс сам збере такі блоки в ZIP-архів');
+    expect((await student.call('POST', '/api/v1/ai/conversations/new/stream', { content: 'Ще раз', clientRequestId: randomUUID(), attachmentIds: [attachment.id] })).statusCode).toBe(409);
+    expect((await student.call('DELETE', `/api/v1/ai/attachments/${attachment.id}`)).statusCode).toBe(409);
+
+    // The follow-up keeps the archive in context and gets an answer with a named code block.
+    const reply = await student.send("Готово\n```js src/hello.js\nconsole.log('привіт');\n```", { conversationId: done.conversationId });
+    expect(reply.done.message.archive).toEqual({ fileCount: 1, paths: ['src/hello.js'] });
+    expect(mock.chatRequests().at(-1)!.body.messages.some((message: { content: string }) => message.content.includes('--- файл: src/app.js ---'))).toBe(true);
+
+    const link = await student.call('POST', `/api/v1/ai/conversations/${done.conversationId}/messages/${reply.done.message.id}/archive`);
+    expect(link.json()).toMatchObject({ fileCount: 1 });
+    expect(link.json().fileName).toMatch(/\.zip$/);
+    const download = await student.app.inject({ method: 'GET', url: link.json().url });
+    expect(download.statusCode).toBe(200);
+    expect(download.headers['content-type']).toBe('application/zip');
+    expect(download.headers['content-disposition']).toContain('attachment; filename=');
+    expect(download.headers['access-control-allow-origin']).toBe('https://web.telegram.org');
+    expect(extractArchiveText(download.rawPayload).files).toEqual([{ path: 'src/hello.js', text: "console.log('привіт');\n" }]);
+
+    const forged = link.json().url.replace(/.{6}$/, 'AAAAAA');
+    expect((await student.app.inject({ method: 'GET', url: forged })).statusCode).toBe(403);
+    expect((await other.call('POST', `/api/v1/ai/conversations/${done.conversationId}/messages/${reply.done.message.id}/archive`)).statusCode).toBe(404);
+    expect((await student.call('POST', `/api/v1/ai/conversations/${done.conversationId}/messages/${done.message.id}/archive`)).statusCode).toBe(404);
+
+    // Deleting the chat removes the archive it carried.
+    expect((await student.call('DELETE', `/api/v1/ai/conversations/${done.conversationId}`)).statusCode).toBe(204);
+    expect((await student.call('POST', `/api/v1/ai/attachments/${attachment.id}/complete`)).statusCode).toBe(404);
+  });
+
+  it('accepts only real ZIP archives with readable text', async () => {
+    const { as } = school();
+    const admin = await as(ADMIN);
+    await configure(admin);
+    const student = await as(STUDENT);
+    expect((await student.call('POST', '/api/v1/ai/attachments', { name: 'virus.exe', size: 100 })).statusCode).toBe(415);
+    expect((await student.call('POST', '/api/v1/ai/attachments', { name: 'huge.zip', size: 6 * 1024 * 1024 })).statusCode).toBe(413);
+    const upload = async (name: string, bytes: Buffer) => {
+      const reserved = (await student.call('POST', '/api/v1/ai/attachments', { name, size: bytes.length })).json();
+      await student.app.inject({ method: reserved.upload.method, url: reserved.upload.url, headers: reserved.upload.headers, payload: bytes });
+      return { id: reserved.attachment.id as string, complete: await student.call('POST', `/api/v1/ai/attachments/${reserved.attachment.id}/complete`) };
+    };
+    const fake = await upload('fake.zip', Buffer.from('this is not a zip archive at all'));
+    expect(fake.complete.statusCode).toBe(415);
+    expect(fake.complete.json().error.code).toBe('AI_ATTACHMENT_INVALID');
+    expect((await student.call('POST', `/api/v1/ai/attachments/${fake.id}/complete`)).statusCode).toBe(404);
+    const images = await upload('images.zip', createZip([{ path: 'a.png', content: 'x' }]));
+    expect(images.complete.statusCode).toBe(422);
+    expect(images.complete.json().error.message).toBe('В архіві немає текстових файлів, які може прочитати ШІ.');
+    const unsent = await upload('ok.zip', createZip([{ path: 'a.txt', content: 'текст' }]));
+    expect(unsent.complete.statusCode).toBe(200);
+    expect((await student.call('DELETE', `/api/v1/ai/attachments/${unsent.id}`)).statusCode).toBe(204);
   });
 
   it('serves the stream route through the standalone fetch handler with the same checks', async () => {

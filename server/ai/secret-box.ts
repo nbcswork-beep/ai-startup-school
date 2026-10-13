@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes, timingSafeEqual } from 'node:crypto';
 import { AppError } from '../errors/app-error.js';
 import type { SealedSecret } from './types.js';
 
@@ -44,6 +44,20 @@ export class SecretBox {
       throw new AppError('AI_SECRET_UNREADABLE', 500, 'Не вдалося розшифрувати ключ провайдера. Введіть ключ ще раз.');
     }
   }
+
+  /** HMAC for short-lived links, under a key of its own derived from the master key. */
+  sign(value: string): string {
+    this.linkKey ??= Buffer.from(hkdfSync('sha256', this.requireKey(), 'aiss-ai-links', 'archive-links-v1', 32));
+    return createHmac('sha256', this.linkKey).update(value).digest('base64url');
+  }
+
+  verify(value: string, signature: string): boolean {
+    const expected = Buffer.from(this.sign(value));
+    const actual = Buffer.from(signature);
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  }
+
+  private linkKey: Buffer | undefined;
 
   private requireKey(): Buffer {
     if (!this.key) throw new AppError('AI_SECRETS_KEY_MISSING', 503, 'Сховище ключів ШІ не налаштовано: задайте AI_SECRETS_KEY або SESSION_TOKEN_PEPPER.');

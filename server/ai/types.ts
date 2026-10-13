@@ -212,6 +212,30 @@ export interface AiMessageUsage {
   approximate: boolean;
 }
 
+/** A ZIP a student attached to the chat. Its text lives in a separate key; the archive in private storage. */
+export interface AiAttachment {
+  id: string;
+  studentId: string;
+  name: string;
+  size: number;
+  pathname: string;
+  status: 'pending' | 'ready';
+  createdAt: string;
+  expiresAt: string;
+  files: Array<{ path: string; chars: number }>;
+  skipped: Array<{ path: string; reason: string }>;
+  estimatedTokens: number;
+  /** Conversation the archive was sent in; an archive is sent once. */
+  usedIn: string | null;
+}
+
+export interface AiMessageAttachment {
+  id: string;
+  name: string;
+  size: number;
+  fileCount: number;
+}
+
 export interface AiMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -221,4 +245,7 @@ export interface AiMessage {
   modelLabel?: string;
   usage?: AiMessageUsage;
   status?: 'complete' | 'stopped' | 'interrupted';
+  attachments?: AiMessageAttachment[];
+  /** Files the answer wrote as named code blocks; downloadable as one ZIP. */
+  archive?: { fileCount: number; paths: string[] };
 }

@@ -41,6 +41,26 @@ Everything lives in Upstash Redis under `AI_REDIS_PREFIX` (default `SESSION_REDI
 5. A provider error before any text costs the student nothing. A reservation that is never settled (crashed function) expires after 6 minutes and charges only its prompt estimate.
 6. The client never sends token counts; the request id is derived on the server from the student id and a client UUID, so a retried request runs once.
 
+## Files: ZIP both ways
+
+**Student → AI.** The paperclip in the composer attaches one ZIP (up to 5 MB, up to 3 per message through the API).
+- The browser uploads it straight to the private Blob store (presigned PUT, as for homework).
+- The server checks the size and opens the archive.
+  - It reads only text files: UTF-8, no NUL bytes, up to 1 MB each.
+  - Its limits: 200 files, 250 000 characters for the model, 8 MB unpacked. Declared sizes are checked before inflating, and inflation is capped, so a small "ZIP bomb" cannot expand.
+  - It skips binaries, `node_modules`, `.git` and other build folders, lock files, `.env` files and unsafe paths, and reports each skip with its reason.
+- The text is kept in Redis (`att:{id}`) and added to the student's message for the model. The model sees it again in later turns while it fits the model's context limit.
+- Tokens are charged as usual; the student sees the estimate before sending.
+- An archive is sent once. Deleting the chat deletes it. Unsent uploads are removed after 24 h.
+
+**AI → student.** The system prompt tells the model to write each file as a code block whose info string names the path (```` ```js src/app.js ````).
+- When an answer contains such blocks, the message gets a «Завантажити ZIP» button.
+- The server builds the ZIP from that message on demand: paths sanitised, up to 100 files and 2 MB.
+- It serves the ZIP through a signed link that expires in 10 minutes and names one message of one student. The link carries no session, because Telegram's own downloader fetches it.
+- Inside Telegram the app calls `WebApp.downloadFile` (Bot API 8.0). The response carries `Content-Disposition: attachment` and `Access-Control-Allow-Origin: https://web.telegram.org`, as Telegram asks. In a browser it is an ordinary download.
+
+Context sizes matter for archives: the default model context is 16 000 tokens. For project archives, raise «Макс. токенів контексту» of the model in Admin OS. For Claude Haiku 5.5, stay under 100 000 per request: above that the per-token price is five times higher.
+
 ## Environment
 
 | Variable | Needed | Purpose |

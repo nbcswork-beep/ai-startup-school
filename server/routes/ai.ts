@@ -186,6 +186,29 @@ export function registerAiRoutes(app: FastifyInstance, deps: { repository: AppRe
   app.get('/api/v1/ai/conversations/:id', student(), async request => chat.getConversation(request.auth.userId, z.object({ id: uuid }).parse(request.params).id));
   app.patch('/api/v1/ai/conversations/:id', student(30), async request => chat.renameConversation(request.auth.userId, z.object({ id: uuid }).parse(request.params).id, z.object({ title: z.string().trim().min(1).max(80) }).parse(request.body).title));
   app.delete('/api/v1/ai/conversations/:id', student(30), async (request, reply) => { await chat.deleteConversation(request.auth.userId, z.object({ id: uuid }).parse(request.params).id); return reply.status(204).send(); });
+  // Attachments: reserve a direct upload, confirm it (the server unpacks the ZIP), or drop an unsent one.
+  app.post('/api/v1/ai/attachments', student(20), async (request, reply) => {
+    const input = z.object({ name: z.string().min(1).max(255), size: z.number().int().min(0) }).strict().parse(request.body);
+    return reply.status(201).send(await chat.reserveAttachment(request.auth.userId, input));
+  });
+  app.post('/api/v1/ai/attachments/:id/complete', student(20), async request => chat.completeAttachment(request.auth.userId, z.object({ id: uuid }).parse(request.params).id));
+  app.delete('/api/v1/ai/attachments/:id', student(30), async (request, reply) => { await chat.deleteAttachment(request.auth.userId, z.object({ id: uuid }).parse(request.params).id); return reply.status(204).send(); });
+  // ZIP from an answer: a signed link (for Telegram's downloader, which sends no session), then the file.
+  app.post('/api/v1/ai/conversations/:id/messages/:messageId/archive', student(30), async request => {
+    const params = z.object({ id: uuid, messageId: uuid }).parse(request.params);
+    return chat.archiveLink(request.auth.userId, params.id, params.messageId);
+  });
+  app.get('/api/v1/ai/archives', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const { token } = z.object({ token: z.string().min(20).max(1000) }).parse(request.query);
+    const archive = await chat.archiveDownload(token);
+    return reply
+      .header('content-type', 'application/zip')
+      .header('content-disposition', `attachment; filename="${archive.fileName}"; filename*=UTF-8''${encodeURIComponent(archive.fileName)}`)
+      .header('access-control-allow-origin', 'https://web.telegram.org')
+      .header('cross-origin-resource-policy', 'cross-origin')
+      .header('x-content-type-options', 'nosniff')
+      .send(archive.bytes);
+  });
   app.post('/api/v1/ai/conversations/:id/stream', { ...student(30), bodyLimit: 262_144 }, async (request, reply) => {
     const { id } = z.object({ id: z.union([uuid, z.literal('new')]) }).parse(request.params);
     const body = chatBody.parse(request.body);
@@ -201,7 +224,8 @@ export function registerAiRoutes(app: FastifyInstance, deps: { repository: AppRe
 const chatBody = z.object({
   content: z.string().max(40_000),
   modelId: z.string().uuid().optional(),
-  clientRequestId: z.string().uuid()
+  clientRequestId: z.string().uuid(),
+  attachmentIds: z.array(z.string().uuid()).max(3).optional()
 });
 
 const SSE_HEADERS = {

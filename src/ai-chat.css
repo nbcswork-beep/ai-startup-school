@@ -191,6 +191,9 @@ html[data-screen='ai'] .bottom-nav { visibility: hidden; }
   font: 600 12px/1 Inter, sans-serif;
   text-transform: lowercase;
 }
+.ai-code-head > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A file path keeps its case and reads as code. */
+.ai-code-path { color: var(--text); font: 600 12px/1.2 ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace; text-transform: none; }
 .ai-code-copy {
   min-width: 44px;
   height: 44px;
@@ -348,6 +351,54 @@ html[data-screen='ai'] .bottom-nav { visibility: hidden; }
 .ai-composer .ai-send { --_h: 44px; border-radius: 14px; }
 .ai-send svg { width: 20px; height: 20px; }
 .ai-composer-hint { grid-column: 1 / -1; margin: 0; color: var(--faint); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+.ai-composer.can-attach { grid-template-columns: 44px minmax(0, 1fr) 44px; padding-left: 6px; }
+.ai-attach { --_h: 44px; color: var(--muted); }
+.ai-attach svg { width: 22px; height: 22px; }
+
+/* Archives ------------------------------------------------------------------------------- */
+.ai-attachment-row { grid-column: 1 / -1; margin: 2px 0 6px; }
+.ai-attachment {
+  min-height: 52px;
+  padding: 4px 0 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--surface);
+}
+.ai-attachment-icon { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; color: var(--cyan); background: rgba(var(--cyan-rgb), 0.1); }
+.ai-attachment-icon svg { width: 20px; height: 20px; }
+.ai-attachment-text { min-width: 0; display: grid; gap: 2px; }
+.ai-attachment-text strong { overflow: hidden; color: var(--text); font-size: 14px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.ai-attachment-text small { color: var(--muted); font-size: 12px; line-height: 1.35; font-variant-numeric: tabular-nums; }
+.ai-attachment[data-state='ready'] .ai-attachment-icon { color: var(--success); background: rgba(var(--cyan-rgb), 0.16); }
+.ai-attachment[data-state='error'] { border-color: rgba(var(--pink-rgb), 0.55); }
+.ai-attachment[data-state='error'] small { color: var(--attention); }
+.ai-attachment-progress { height: 4px; margin-top: 3px; border-radius: 2px; overflow: hidden; background: rgba(var(--lavender-rgb), 0.12); }
+.ai-attachment-progress i { display: block; height: 100%; border-radius: 2px; background: var(--brand-gradient); transition: width var(--dur-base) var(--ease); }
+
+.ai-file-chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-bottom: 6px; max-width: 100%; }
+.ai-file-chip {
+  max-width: 100%;
+  padding: 6px 12px 6px 8px;
+  border: 1px solid rgba(var(--purple-rgb), 0.45);
+  border-radius: 12px;
+  display: inline-grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  background: rgba(var(--purple-rgb), 0.14);
+}
+.ai-file-chip svg { width: 20px; height: 20px; color: var(--cyan); }
+.ai-file-chip span { min-width: 0; display: grid; }
+.ai-file-chip strong { overflow: hidden; color: var(--text); font-size: 13px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.ai-file-chip small { color: var(--muted); font-size: 12px; }
+
+.ai-zip { margin: 6px 0 2px; max-width: 100%; }
+.ai-zip svg { width: 18px; height: 18px; flex: 0 0 18px; }
+.ai-zip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-composer-hint:empty { display: none; }
 .ai-composer-hint[data-tone='danger'] { color: var(--attention); }
 

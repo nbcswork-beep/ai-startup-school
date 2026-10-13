@@ -74,6 +74,8 @@ export async function buildApp(deps: { env: AppEnv; repository: AppRepository; j
     secrets: SecretBox.fromEnv(deps.env),
     roster: () => deps.repository.getAiRoster(),
     allowLocalProviderUrls: deps.env.deployEnvironment === 'local',
+    fileStorage,
+    storagePrefix: fileConfig.pathPrefix,
     log: (error, message) => app.log.error({ err: error }, message),
     ...(deps.aiNow ? { now: deps.aiNow } : {}),
     ...(deps.aiAdapterFactory ? { adapterFactory: deps.aiAdapterFactory } : {})

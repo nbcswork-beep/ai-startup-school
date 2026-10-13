@@ -2,6 +2,7 @@
 // streamed answers, stop, copy, rename and delete. The balance shown here always comes from the
 // server; the client never computes or sends token counts.
 import { escapeText, renderMarkdown } from './ai-markdown.js';
+import { formatFileSize, sendFile } from './homework-uploads.js';
 
 const CURRENT_KEY = 'aiss:ai:current';
 const DRAFT_KEY = 'aiss:ai:draft';
@@ -24,7 +25,9 @@ const state = {
   sheet: false,
   renaming: null,
   confirmDelete: null,
-  stick: true
+  stick: true,
+  /** The ZIP attached to the next message: { file, name, size, status, progress, id, files, skipped, estimatedTokens, error, xhr } */
+  attachment: null
 };
 
 let root = null;
@@ -48,8 +51,14 @@ const icons = {
   trash: icon('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'),
   down: icon('<path d="M12 5v14M6 13l6 6 6-6"/>'),
   close: icon('<path d="M6 6l12 12M18 6 6 18"/>'),
-  spark: icon('<path d="M12 2.7 14.1 8l5.2 2.1-5.2 2.1L12 17.5l-2.1-5.3-5.2-2.1L9.9 8z"/>')
+  spark: icon('<path d="M12 2.7 14.1 8l5.2 2.1-5.2 2.1L12 17.5l-2.1-5.3-5.2-2.1L9.9 8z"/>'),
+  clip: icon('<path d="m20 11.5-8.2 8.2a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/>'),
+  archive: icon('<rect x="3.5" y="4" width="17" height="5" rx="1.5"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9M10 13h4"/>'),
+  download: icon('<path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/>'),
+  retry: icon('<path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/>')
 };
+
+const fileWord = count => plural(count, 'файл', 'файли', 'файлів');
 
 const SUGGESTIONS = [
   ['Поясни простіше', 'Поясни простими словами, що таке MVP і навіщо він стартапу.'],
@@ -118,6 +127,9 @@ export function aiScreenMarkup() {
     <div class="ai-thread" id="aiThread" role="log" aria-live="polite" aria-relevant="additions" tabindex="-1"></div>
     <button type="button" class="ai-to-bottom" data-ai="to-bottom" aria-label="До останнього повідомлення" hidden>${icons.down}</button>
     <form class="ai-composer" id="aiComposer" novalidate>
+      <div class="ai-attachment-row" id="aiAttachment" hidden></div>
+      <button type="button" class="btn btn--icon btn--ghost ai-attach" data-ai="attach" aria-label="Прикріпити ZIP-архів" hidden>${icons.clip}</button>
+      <input type="file" id="aiFile" accept=".zip,application/zip,application/x-zip-compressed" hidden>
       <label class="visually-hidden" for="aiInput">Повідомлення ШІ-асистенту</label>
       <textarea id="aiInput" rows="1" placeholder="Напишіть питання…" autocomplete="off" enterkeyhint="send"></textarea>
       <button type="submit" class="btn btn--icon btn--primary ai-send" id="aiSend" aria-label="Надіслати">${icons.send}</button>
@@ -138,7 +150,11 @@ export function aiScreenMarkup() {
 
 function messageMarkup(message, { streaming = false } = {}) {
   if (message.role === 'user') {
+    const files = message.attachments?.length
+      ? `<div class="ai-file-chips">${message.attachments.map(item => `<span class="ai-file-chip">${icons.archive}<span><strong>${escapeText(item.name)}</strong><small>${item.fileCount ? `${item.fileCount} ${fileWord(item.fileCount)} · ` : ''}${formatFileSize(item.size)}</small></span></span>`).join('')}</div>`
+      : '';
     return `<article class="ai-msg ai-msg--user" data-message="${escapeText(message.id ?? '')}">
+      ${files}
       <div class="ai-bubble">${escapeText(message.content).replace(/\n/g, '<br>')}</div>
       <div class="ai-msg-actions"><button type="button" class="ai-icon-action" data-ai="copy" data-id="${escapeText(message.id ?? '')}" aria-label="Копіювати повідомлення">${icons.copy}</button></div>
     </article>`;
@@ -153,6 +169,7 @@ function messageMarkup(message, { streaming = false } = {}) {
     <span class="ai-avatar" aria-hidden="true">${icons.spark}</span>
     <div class="ai-answer">
       <div class="ai-md">${message.content ? renderMarkdown(message.content, { streaming }) : '<span class="ai-typing" aria-label="ШІ пише відповідь"><i></i><i></i><i></i></span>'}</div>
+      ${!streaming && message.archive?.fileCount ? `<button type="button" class="btn btn--secondary btn--sm ai-zip" data-ai="zip" data-id="${escapeText(message.id ?? '')}" aria-label="Завантажити ZIP: ${message.archive.fileCount} ${fileWord(message.archive.fileCount)}">${icons.download}<span>Завантажити ZIP · ${message.archive.fileCount} ${fileWord(message.archive.fileCount)}</span></button>` : ''}
       ${streaming ? '' : `<div class="ai-msg-actions"><button type="button" class="ai-icon-action" data-ai="copy" data-id="${escapeText(message.id ?? '')}" aria-label="Копіювати відповідь">${icons.copy}</button>${meta ? `<span class="ai-meta"${usage?.approximate ? ' title="Провайдер не повідомив точну кількість — показано оцінку"' : ''}>${meta}</span>` : ''}</div>`}
     </div>
   </article>`;
@@ -163,7 +180,7 @@ function emptyMarkup() {
   return `<div class="ai-empty">
     <span class="ai-empty-mark" aria-hidden="true">${icons.spark}</span>
     <h2>Чим допомогти?</h2>
-    <p>Питайте про урок, ідею проєкту чи код. Асистент пояснює й підказує, а рішення лишається за вами.</p>
+    <p>Питайте про урок, ідею проєкту чи код. Асистент пояснює й підказує, а рішення лишається за вами.${state.me?.limits?.attachments?.enabled ? ' Можна прикріпити ZIP з кодом, а файли від ШІ — завантажити архівом.' : ''}</p>
     <div class="ai-suggestions">${SUGGESTIONS.map(([label, text]) => `<button type="button" class="ai-suggestion" data-ai="suggest" data-text="${escapeText(text)}" ${block ? 'disabled' : ''}>${escapeText(label)}</button>`).join('')}</div>
   </div>`;
 }
@@ -271,14 +288,48 @@ function renderComposer() {
     send.className = 'btn btn--icon btn--primary ai-send';
     send.setAttribute('aria-label', 'Надіслати');
     send.dataset.mode = 'send';
-    send.disabled = Boolean(block) || !state.me || !input.value.trim();
+    const attachment = state.attachment;
+    const attachmentBusy = attachment && attachment.status !== 'ready' && attachment.status !== 'error';
+    send.disabled = Boolean(block) || !state.me || attachmentBusy || (!input.value.trim() && attachment?.status !== 'ready');
+  }
+  const attach = $('[data-ai="attach"]');
+  if (attach) {
+    attach.hidden = !state.me?.limits?.attachments?.enabled;
+    attach.disabled = Boolean(block) || !state.me || Boolean(state.pending) || Boolean(state.attachment);
+    $('#aiComposer')?.classList.toggle('can-attach', !attach.hidden);
   }
   const length = input.value.length;
   if (hint) {
     hint.textContent = length > limit * 0.8 ? `${numberFormat.format(length)} / ${numberFormat.format(limit)}` : '';
     hint.dataset.tone = length >= limit ? 'danger' : '';
   }
+  renderAttachment();
   autosize(input);
+}
+
+/** The archive waiting to be sent: progress, what the server found inside, or what went wrong. */
+function renderAttachment() {
+  const row = $('#aiAttachment');
+  if (!row) return;
+  const attachment = state.attachment;
+  row.hidden = !attachment;
+  if (!attachment) { row.innerHTML = ''; return; }
+  let status;
+  if (attachment.status === 'uploading') status = `Завантаження… ${Math.round((attachment.progress ?? 0) * 100)}%`;
+  else if (attachment.status === 'processing') status = 'Відкриваємо архів…';
+  else if (attachment.status === 'ready') {
+    const count = attachment.files.length;
+    status = `${count} ${fileWord(count)} для ШІ · ≈ ${formatTokens(attachment.estimatedTokens)}${attachment.skipped.length ? ` · пропущено ${attachment.skipped.length}` : ''}`;
+  } else status = attachment.error;
+  const progress = attachment.status === 'uploading' ? `<span class="ai-attachment-progress" aria-hidden="true"><i style="width:${Math.round((attachment.progress ?? 0) * 100)}%"></i></span>` : '';
+  const skippedTitle = attachment.status === 'ready' && attachment.skipped.length
+    ? ` title="${escapeText(attachment.skipped.slice(0, 12).map(item => `${item.path}: ${item.reason}`).join('\n'))}"` : '';
+  row.innerHTML = `<div class="ai-attachment" data-state="${attachment.status}">
+    <span class="ai-attachment-icon" aria-hidden="true">${icons.archive}</span>
+    <span class="ai-attachment-text"><strong>${escapeText(attachment.name)}</strong><small role="status"${skippedTitle}>${escapeText(status)}</small>${progress}</span>
+    ${attachment.status === 'error' && attachment.retryable ? `<button type="button" class="ai-icon-action" data-ai="attachment-retry" aria-label="Завантажити архів ще раз">${icons.retry}</button>` : ''}
+    <button type="button" class="ai-icon-action" data-ai="attachment-remove" aria-label="Прибрати архів ${escapeText(attachment.name)}">${icons.close}</button>
+  </div>`;
 }
 
 function renderLayers() {
@@ -462,14 +513,17 @@ async function readEvents(body, onEvent) {
 
 async function send(rawText) {
   const text = String(rawText ?? '').trim();
-  if (!text || state.pending || blocker() || !state.me) return;
+  // A waiting archive goes with the message once the server has opened it; text is then optional.
+  const attachment = state.attachment?.status === 'ready' ? state.attachment : null;
+  if (state.attachment && !attachment && state.attachment.status !== 'error') return;
+  if ((!text && !attachment) || state.pending || blocker() || !state.me) return;
   const limit = state.me.limits?.maxMessageChars ?? 8000;
   if (text.length > limit) { state.error = { message: `Повідомлення задовге: максимум ${numberFormat.format(limit)} символів` }; renderThread(); return; }
   const conversationId = state.currentId ?? 'new';
   const model = selectedModel();
   const controller = new AbortController();
   const pending = {
-    user: { role: 'user', content: text, createdAt: new Date().toISOString() },
+    user: { role: 'user', content: text || 'Переглянь вкладений архів.', createdAt: new Date().toISOString(), ...(attachment ? { attachments: [{ id: attachment.id, name: attachment.name, size: attachment.size, fileCount: attachment.files.length }] } : {}) },
     text: '', modelLabel: model?.label ?? '', conversationId, controller, finished: false
   };
   state.pending = pending;
@@ -482,7 +536,7 @@ async function send(rawText) {
 
   const finish = () => { pending.finished = true; if (state.pending === pending) state.pending = null; };
   try {
-    const response = await deps.api.aiStream(conversationId, { content: text, clientRequestId: crypto.randomUUID(), ...(model ? { modelId: model.id } : {}) }, controller.signal);
+    const response = await deps.api.aiStream(conversationId, { content: text, clientRequestId: crypto.randomUUID(), ...(model ? { modelId: model.id } : {}), ...(attachment ? { attachmentIds: [attachment.id] } : {}) }, controller.signal);
     await readEvents(response.body, (event, data) => {
       if (state.pending !== pending) return;
       if (event === 'start') {
@@ -497,6 +551,8 @@ async function send(rawText) {
       } else if (event === 'done') {
         finish();
         if (data.message && state.currentId === data.conversationId) state.messages.push(data.userMessage, data.message);
+        // Sent archives belong to the chat now; an unanswered one stays attached for another try.
+        if (data.message && attachment && state.attachment === attachment) state.attachment = null;
         if (data.error) state.error = { message: data.error.message };
         const field = $('#aiInput');
         if (!data.message && field && !field.value) field.value = text;
@@ -523,7 +579,10 @@ async function send(rawText) {
     if (stopped) {
       // The server saves what was written and charges it; show it now, then sync the real record.
       const field = $('#aiInput');
-      if (pending.text) state.messages.push({ ...pending.user, id: `local-${Date.now()}` }, { role: 'assistant', id: `local-a-${Date.now()}`, content: pending.text, modelLabel: pending.modelLabel, status: 'stopped' });
+      if (pending.text) {
+        state.messages.push({ ...pending.user, id: `local-${Date.now()}` }, { role: 'assistant', id: `local-a-${Date.now()}`, content: pending.text, modelLabel: pending.modelLabel, status: 'stopped' });
+        if (attachment && state.attachment === attachment) state.attachment = null;
+      }
       else if (field && !field.value) field.value = text;
       setTimeout(syncAfterInterruption, 1500);
     } else if (error.status) {
@@ -539,6 +598,11 @@ async function send(rawText) {
 function handleRefusal(error, text) {
   const input = $('#aiInput');
   if (input && !input.value) input.value = text;
+  if (['AI_ATTACHMENT_SENT', 'AI_ATTACHMENT_NOT_FOUND'].includes(error.code)) {
+    state.attachment = null;
+    state.error = { message: `${error.message} Прикріпіть архів ще раз.` };
+    return;
+  }
   if (error.code === 'AI_LIMIT_EXHAUSTED' && state.me) { state.me.balance = { ...state.me.balance, available: 0, exhausted: true }; return; }
   if (error.code === 'AI_ACCESS_BLOCKED' && state.me) { state.me.balance = { ...state.me.balance, blocked: true }; return; }
   if (error.code === 'AI_NOT_CONFIGURED' && state.me) { state.me.configured = false; return; }
@@ -563,6 +627,98 @@ async function syncAfterInterruption() {
   }
   if (state.error?.message?.startsWith('Зʼєднання перервалося')) state.error = { message: 'Зʼєднання перервалося. Збережене показано вище.' };
   renderAll();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Archives: the student's ZIP goes straight to private storage, the server opens it; the model's
+// files come back as a ZIP through a short signed link that Telegram's own downloader can open.
+
+async function uploadAttachment(attachment) {
+  attachment.status = 'uploading';
+  attachment.progress = 0;
+  attachment.error = '';
+  renderComposer();
+  try {
+    if (!attachment.id) {
+      const reserved = await deps.api.aiReserveAttachment({ name: attachment.name, size: attachment.size });
+      attachment.id = reserved.attachment.id;
+      attachment.upload = reserved.upload;
+    }
+    await sendFile(attachment.upload, attachment.file, {
+      onStart: xhr => { attachment.xhr = xhr; },
+      onProgress: share => { attachment.progress = share; if (state.attachment === attachment) renderAttachment(); }
+    });
+    if (state.attachment !== attachment) return;
+    attachment.status = 'processing';
+    renderComposer();
+    const ready = await deps.api.aiCompleteAttachment(attachment.id);
+    if (state.attachment !== attachment) return;
+    Object.assign(attachment, { status: 'ready', files: ready.files, skipped: ready.skipped, estimatedTokens: ready.estimatedTokens });
+    deps.haptic?.('success');
+  } catch (error) {
+    if (state.attachment !== attachment || error.aborted) return;
+    // A rejected archive is gone on the server; an expired link or a lost connection can be retried.
+    const final = ['AI_ATTACHMENT_INVALID', 'AI_ATTACHMENT_NO_TEXT', 'AI_ATTACHMENT_TYPE', 'AI_ATTACHMENT_TOO_LARGE', 'AI_ATTACHMENT_EMPTY', 'AI_ATTACHMENT_LIMIT', 'FILE_SIZE_MISMATCH'].includes(error.code);
+    if (final || error.expired) { attachment.id = null; attachment.upload = null; }
+    Object.assign(attachment, { status: 'error', error: error.message || 'Не вдалося прикріпити архів.', retryable: !final || error.expired });
+    deps.haptic?.('error');
+  }
+  renderComposer();
+}
+
+function attachFile(file) {
+  if (!file || !state.me) return;
+  const maxBytes = state.me.limits?.attachments?.maxBytes ?? 5 * 1024 * 1024;
+  const base = { file, name: file.name, size: file.size, status: 'error', progress: 0, id: null, upload: null, files: [], skipped: [], estimatedTokens: 0, retryable: false };
+  if (!/\.zip$/i.test(file.name)) state.attachment = { ...base, error: 'Можна прикріпити лише ZIP-архів.' };
+  else if (!file.size) state.attachment = { ...base, error: 'Архів порожній.' };
+  else if (file.size > maxBytes) state.attachment = { ...base, error: `Архів завеликий: максимум ${formatFileSize(maxBytes)}.` };
+  else { state.attachment = { ...base, status: 'uploading' }; void uploadAttachment(state.attachment); return; }
+  renderComposer();
+}
+
+function removeAttachment() {
+  const attachment = state.attachment;
+  if (!attachment) return;
+  state.attachment = null;
+  attachment.xhr?.abort();
+  if (attachment.id) void deps.api.aiDeleteAttachment(attachment.id).catch(() => {});
+  renderComposer();
+  $('[data-ai="attach"]')?.focus();
+}
+
+async function downloadArchive(messageId, button) {
+  if (!state.currentId) return;
+  button.disabled = true;
+  button.setAttribute('aria-busy', 'true');
+  const label = button.querySelector('span');
+  const original = label?.textContent ?? '';
+  try {
+    const link = await deps.api.aiArchive(state.currentId, messageId);
+    const url = new URL(link.url, location.origin).href;
+    const tg = window.Telegram?.WebApp;
+    if (typeof tg?.downloadFile === 'function' && tg.isVersionAtLeast?.('8.0')) {
+      // Telegram shows its own download dialog and saves the file on the phone.
+      tg.downloadFile({ url, file_name: link.fileName });
+    } else {
+      const anchor = Object.assign(document.createElement('a'), { href: url, download: link.fileName, rel: 'noopener' });
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+    }
+    if (label) label.textContent = 'Архів готовий';
+    deps.haptic?.('success');
+  } catch (error) {
+    state.error = { message: error.message || 'Не вдалося підготувати архів. Спробуйте ще раз.' };
+    renderThread();
+  } finally {
+    setTimeout(() => {
+      if (!button.isConnected) return;
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
+      if (label) label.textContent = original;
+    }, 1500);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -612,6 +768,10 @@ function onClick(event) {
       break;
     }
     case 'suggest': void send(target.dataset.text); break;
+    case 'attach': $('#aiFile')?.click(); break;
+    case 'attachment-remove': removeAttachment(); break;
+    case 'attachment-retry': if (state.attachment?.file) void uploadAttachment(state.attachment); break;
+    case 'zip': void downloadArchive(id, target); break;
     case 'retry': { const text = state.error?.retryText; state.error = null; if (text) void send(text); break; }
     case 'reload': void load(); break;
     case 'to-bottom': { const thread = $('#aiThread'); state.stick = true; thread?.scrollTo({ top: thread.scrollHeight, behavior: 'smooth' }); updateToBottom(); break; }
@@ -722,6 +882,11 @@ export function mountAiScreen(element, dependencies) {
   root.addEventListener('click', onClick);
   root.addEventListener('submit', onSubmit);
   root.addEventListener('input', onInput);
+  root.addEventListener('change', event => {
+    if (event.target.id !== 'aiFile') return;
+    attachFile(event.target.files?.[0]);
+    event.target.value = '';
+  });
   root.addEventListener('keydown', onKeydown);
   root.addEventListener('scroll', onScroll, true);
   syncViewport();

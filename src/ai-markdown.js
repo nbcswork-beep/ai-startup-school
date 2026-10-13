@@ -122,9 +122,32 @@ function highlight(code, language) {
   return out;
 }
 
-function codeBlock(code, language, open) {
-  const label = /^[\w+#.-]{1,20}$/.test(language) ? language : '';
-  return `<div class="ai-code${open ? ' is-open' : ''}"><div class="ai-code-head"><span>${escapeHtml(label || 'код')}</span><button type="button" class="ai-code-copy" data-copy-code aria-label="Копіювати код">Копіювати</button></div><pre><code>${highlight(code, label)}</code></pre></div>`;
+const EXTENSION_LANGUAGE = { js: 'js', mjs: 'js', cjs: 'js', jsx: 'jsx', ts: 'ts', tsx: 'tsx', json: 'json', py: 'py', sh: 'sh', bash: 'sh', ps1: 'ps1', sql: 'sql', html: 'html', htm: 'html', xml: 'xml', svg: 'svg', vue: 'vue', css: 'css', scss: 'scss', java: 'java', kt: 'kt', go: 'go', rs: 'rs', c: 'c', h: 'c', cpp: 'cpp', cs: 'cs', php: 'php', swift: 'swift', dart: 'dart' };
+
+/**
+ * The fence info: a language, and optionally the file the block is (```js src/app.js, ```js:src/app.js,
+ * ```src/app.js, ```html title="index.html"). The server turns blocks with a path into a ZIP.
+ */
+function parseFenceInfo(info) {
+  const attribute = /\b(?:file|filename|title|path)\s*=\s*["']?([^"'\s]+)["']?/i.exec(info);
+  const tokens = info.replace(/\b(?:file|filename|title|path)\s*=\s*["']?[^"'\s]+["']?/gi, '').split(/\s+/).filter(Boolean);
+  let language = '';
+  let path = attribute?.[1] ?? '';
+  for (const token of tokens) {
+    const pair = /^([A-Za-z0-9+#-]{1,20}):(.+)$/.exec(token);
+    if (pair) { language ||= pair[1]; path ||= pair[2]; continue; }
+    const looksLikePath = /[/\\]/.test(token) || (/\.[A-Za-z0-9]{1,10}$/.test(token) && !/^(node|vue|next|nuxt|react|three|d3)\.js$/i.test(token));
+    if (looksLikePath) path ||= token;
+    else language ||= token;
+  }
+  if (!language && path) language = EXTENSION_LANGUAGE[(/\.([^.]+)$/.exec(path)?.[1] ?? '').toLowerCase()] ?? '';
+  return { language: /^[\w+#.-]{1,20}$/.test(language) ? language : '', path: path.slice(0, 120) };
+}
+
+function codeBlock(code, info, open) {
+  const { language, path } = parseFenceInfo(info);
+  const label = path ? `<span class="ai-code-path" title="${escapeHtml(path)}">${escapeHtml(path)}</span>` : `<span>${escapeHtml(language || 'код')}</span>`;
+  return `<div class="ai-code${open ? ' is-open' : ''}"><div class="ai-code-head">${label}<button type="button" class="ai-code-copy" data-copy-code aria-label="Копіювати код">Копіювати</button></div><pre><code>${highlight(code, language)}</code></pre></div>`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -150,7 +173,7 @@ export function renderMarkdown(source, { streaming = false } = {}) {
   };
   while (index < lines.length) {
     const line = lines[index];
-    const fence = /^\s*(```+|~~~+)\s*([\w+#.-]*)\s*$/.exec(line);
+    const fence = /^\s{0,3}(```+|~~~+)[ \t]*([^`\n]*?)\s*$/.exec(line);
     if (fence) {
       flush();
       const marker = fence[1];
