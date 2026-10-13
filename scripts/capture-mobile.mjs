@@ -30,8 +30,8 @@ function command(method,params={}) { const id=nextId++; socket.send(JSON.stringi
 await command('Page.enable');
 const targets=[
   ['home','home','.home-page'],
-  ['learn','learn','.learn-page'],
-  ['schedule','learn','.week-route'],
+  ['learn','learn','.learn'],
+  ['schedule','learn','.learn-week'],
   ['project','project','.project-page'],
   ['portfolio','portfolio','.portfolio-page'],
   ['profile','profile','.profile-page'],

@@ -172,23 +172,30 @@
 .top-actions { gap: var(--space-2); }
 
 /* 3. Interactive cards ------------------------------------------------------------------------ */
-.card-action, .lesson-node, .homework-row, .homework-pulse, .notification-item,
-.profile-links button, .mentor-slot, .nav-item, .brand {
+.card-action,
+.homework-pulse,
+.notification-item,
+.profile-links button,
+.mentor-slot,
+.nav-item,
+.brand {
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
   transition: background-color var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease), color var(--dur-base) var(--ease);
 }
-:is(.card-action, .lesson-node, .homework-row, .homework-pulse, .notification-item, .profile-links button, .mentor-slot, .nav-item, .brand):focus-visible {
+:is(.card-action, .homework-pulse, .notification-item, .profile-links button, .mentor-slot, .nav-item, .brand):focus-visible {
   outline: var(--focus-ring);
   outline-offset: 2px;
 }
-:is(.card-action, .lesson-node, .homework-row, .homework-pulse, .notification-item, .profile-links button, .mentor-slot, .nav-item):active { transform: none; }
-:is(.lesson-node, .mentor-slot, .notification-item):disabled { cursor: default; }
+:is(.card-action, .homework-pulse, .notification-item, .profile-links button, .mentor-slot, .nav-item):active { transform: none; }
+:is(.mentor-slot, .notification-item):disabled { cursor: default; }
 input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+/* Screen headings take focus after navigation so screen readers announce them; they are not controls,
+   so no ring (Telegram Desktop drew one as a dark box around the whole heading row). */
+:is(h1, h2)[tabindex='-1']:focus { outline: none; }
 @media (hover: hover) {
-  :is(.card-action, .homework-row, .homework-pulse, .profile-links button, .mentor-slot):hover:enabled { background: var(--surface-hover); border-color: var(--control-border); }
-  .lesson-node.available:hover:enabled { background: var(--surface-hover); border-color: var(--cyan); }
-  .lesson-node.current:hover:enabled { background: var(--accent-hover); }
+  :is(.card-action, .homework-pulse, .profile-links button, .mentor-slot):hover:enabled { background: var(--surface-hover); border-color: var(--control-border); }
+
   .notification-item:hover:enabled { background: var(--surface); }
   .nav-item:hover:enabled { color: var(--text); background: var(--surface-hover); }
 }
@@ -206,34 +213,14 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visib
 .project-preview .preview-rail { display: flex; }
 .project-preview .preview-progress { display: block; }
 
-.lesson-node { grid-template-columns: 48px minmax(0, 1fr) 24px; gap: 12px; min-height: 64px; padding: 12px; margin-block: 8px; }
-.lesson-node.current { min-height: 96px; padding: 14px 12px; }
-.lesson-copy { min-width: 0; }
-.lesson-copy strong { font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
-.lesson-copy small { font-size: 12px; letter-spacing: .04em; }
-.lesson-copy em { font-size: 13px; line-height: 1.45; }
-.lesson-marker { width: 48px; height: 48px; }
-.lesson-marker svg, .nav-icon svg { width: 24px; height: 24px; }
-.lesson-node.current .lesson-action { width: 24px; height: 24px; border-radius: 0; color: var(--on-accent); background: transparent; }
-.lesson-action .arrow-icon { width: 24px; height: 24px; }
-.lesson-node.available { border: 1px solid var(--line-strong); background: var(--surface); }
-.lesson-node.available .lesson-copy em, .lesson-node.locked .lesson-copy em { color: var(--muted); }
-.lesson-node.locked { opacity: 1; }
+.nav-icon svg { width: 24px; height: 24px; }
 
-.mentor-dock { grid-template-columns: 48px minmax(0, 1fr) 24px; gap: 12px; }
-.mentor-dock strong { font-size: 15px; }
-.mentor-dock p { font-size: 12px; line-height: 1.5; }
-.mentor-dock > div > span { font-size: 11px; }
-.mentor-dock .card-action-label { font-size: 13px; }
-.mentor-dock .mentor-action { display: grid; place-items: center; color: var(--cyan); }
-.mentor-dock .mentor-action .arrow-icon { width: 24px; height: 24px; }
-.mentor-dock .creation-engine { width: 48px; }
-
-.homework-row { min-height: 76px; padding-right: 48px; }
-.homework-row strong, .homework-pulse strong, .profile-links strong { font-size: 14px; line-height: 1.4; }
-.homework-row small, .homework-pulse small, .profile-links small { font-size: 12px; line-height: 1.5; }
-.homework-row .homework-status, .homework-pulse > span { font-size: 11px; }
-.homework-row .arrow-icon, .homework-pulse .arrow-icon { width: 24px; height: 24px; top: 50%; transform: translateY(-50%); }
+.homework-pulse strong,
+.profile-links strong { font-size: 14px; line-height: 1.4; }
+.homework-pulse small,
+.profile-links small { font-size: 12px; line-height: 1.5; }
+.homework-pulse > span { font-size: 11px; }
+.homework-pulse .arrow-icon { width: 24px; height: 24px; top: 50%; transform: translateY(-50%); }
 .profile-links button { min-height: 72px; padding-block: 14px; gap: 12px; border-radius: var(--btn-radius); }
 .profile-links .link-icon { width: 48px; height: 48px; }
 .profile-links .link-icon svg, .profile-links .arrow-icon { width: 24px; height: 24px; }
@@ -441,9 +428,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visib
   .hw-meta > div:nth-child(2) { border-left: 0; }
 }
 @media (max-width: 379px) {
-  .lesson-node { gap: 10px; grid-template-columns: 48px minmax(0, 1fr) 24px; }
-  .mentor-dock { grid-template-columns: minmax(0, 1fr) 24px; }
-  .mentor-dock .creation-engine { display: none; }
+
   .build-step.current { grid-template-columns: 44px minmax(0, 1fr); }
   .build-step.current .build-reward { grid-column: 2; justify-self: start; }
   .hw-card { padding: var(--space-4); }

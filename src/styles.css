@@ -909,8 +909,6 @@ p {
 .step-copy span,
 .preview-copy > span,
 .project-engine-copy > span,
-.module-overview > div > span,
-.mentor-dock > div > span,
 .workspace-dock > div > span,
 .level-track > div > span {
   color: var(--cyan);
@@ -1117,251 +1115,6 @@ p {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.5;
-}
-
-.module-overview {
-  min-height: 174px;
-  padding: 21px 18px;
-  border-top: 1px solid var(--line-strong);
-  border-bottom: 1px solid var(--line-strong);
-  display: grid;
-  grid-template-columns: 44px 1fr 34px;
-  gap: 14px;
-  align-items: start;
-  background: rgba(var(--surface-rgb), 0.38);
-}
-
-.module-number {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--cyan);
-  color: var(--cyan);
-  font-family: Unbounded, sans-serif;
-  font-size: 10px;
-}
-
-.module-overview h2 {
-  margin: 6px 0 8px;
-  font-family: Unbounded, sans-serif;
-  font-size: 20px;
-  line-height: 1.15;
-  letter-spacing: -0.05em;
-}
-
-.module-overview p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.5;
-}
-
-.module-progress {
-  height: 124px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 9px;
-}
-
-.module-progress strong {
-  color: var(--pink);
-  font-family: Unbounded, sans-serif;
-  font-size: 9px;
-}
-
-.module-progress > span {
-  width: 4px;
-  flex: 1;
-  position: relative;
-  overflow: hidden;
-  border-radius: 99px;
-  background: rgba(var(--lavender-rgb), 0.12);
-}
-
-.module-progress i {
-  width: 100%;
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  border-radius: inherit;
-  background: var(--pink);
-}
-
-.journey-label {
-  margin: 25px 2px 13px;
-  display: flex;
-  justify-content: space-between;
-  color: var(--faint);
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 0.12em;
-}
-
-.journey-label span {
-  color: var(--cyan);
-}
-
-.lesson-journey {
-  position: relative;
-  padding: 0 0 0 4px;
-}
-
-.lesson-journey::before {
-  content: '';
-  position: absolute;
-  width: 1px;
-  top: 23px;
-  bottom: 23px;
-  left: 25px;
-  background: linear-gradient(var(--cyan) 0 40%, var(--line-strong) 40% 100%);
-}
-
-.lesson-node {
-  width: 100%;
-  min-height: 68px;
-  position: relative;
-  z-index: 1;
-  padding: 8px 6px 8px 0;
-  border: 0;
-  border-radius: 18px;
-  display: grid;
-  grid-template-columns: 46px 1fr 42px;
-  gap: 13px;
-  align-items: center;
-  text-align: left;
-  color: var(--text);
-  background: transparent;
-  cursor: pointer;
-}
-
-.lesson-node.current {
-  min-height: 86px;
-  margin: 4px 0;
-  padding-right: 12px;
-  background: var(--pink);
-  color: var(--ink);
-  box-shadow: 0 16px 36px rgba(var(--midnight-rgb), 0.2);
-}
-
-.lesson-node.locked {
-  color: rgba(var(--lavender-rgb), 0.6);
-  cursor: default;
-}
-
-.lesson-marker {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  border: 1px solid var(--line-strong);
-  background: var(--surface-strong);
-  color: var(--cyan);
-  display: grid;
-  place-items: center;
-}
-
-.lesson-marker svg {
-  width: 19px;
-  height: 19px;
-}
-
-.lesson-node.current .lesson-marker {
-  margin-left: 1px;
-  border-color: transparent;
-  background: var(--surface-strong);
-  color: var(--pink);
-}
-
-.lesson-node.locked .lesson-marker {
-  color: var(--faint);
-  background: var(--surface);
-}
-
-.lesson-copy small,
-.lesson-copy strong,
-.lesson-copy em {
-  display: block;
-}
-
-.lesson-copy small {
-  margin-bottom: 4px;
-  color: var(--cyan);
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 0.12em;
-}
-
-.lesson-copy strong {
-  font-size: 12px;
-  line-height: 1.3;
-}
-
-.lesson-copy em {
-  margin-top: 5px;
-  color: var(--on-accent);
-  font-size: 8.5px;
-  font-style: normal;
-  font-weight: 700;
-}
-
-.lesson-node.current .lesson-copy small {
-  color: var(--on-accent);
-}
-
-.lesson-node.locked .lesson-copy small {
-  color: var(--faint);
-}
-
-.lesson-action {
-  justify-self: end;
-  color: var(--cyan);
-  font-size: 8px;
-  font-weight: 900;
-}
-
-.lesson-node.current .lesson-action {
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
-  display: grid;
-  place-items: center;
-  color: var(--text);
-  background: var(--surface-strong);
-}
-
-.lesson-action .arrow-icon {
-  width: 17px;
-}
-
-.mentor-dock {
-  min-height: 82px;
-  margin-top: 20px;
-  padding: 12px;
-  border: 1px solid rgba(var(--cyan-rgb), 0.25);
-  border-radius: 20px;
-  display: grid;
-  grid-template-columns: 55px 1fr 44px;
-  gap: 10px;
-  align-items: center;
-  background: rgba(var(--cyan-rgb), 0.05);
-}
-
-.mentor-dock strong,
-.mentor-dock p {
-  display: block;
-}
-
-.mentor-dock strong {
-  margin-top: 3px;
-  font-size: 11px;
-}
-
-.mentor-dock p {
-  margin: 2px 0 0;
-  color: var(--muted);
-  font-size: 8px;
 }
 
 .project-engine {
@@ -2036,7 +1789,6 @@ p {
 
 .class-copy { position: relative; z-index: 1; min-width: 0; }
 .class-copy > span,
-.homework-status,
 .portfolio-beacon > div > span,
 .portfolio-project > div > span,
 .teacher-feedback span {
@@ -2083,9 +1835,6 @@ p {
 .homework-pulse small { color: var(--muted); font-size: 8px; }
 .homework-pulse .arrow-icon { position: absolute; right: 16px; top: 30px; width: 19px; color: var(--cyan); }
 
-.week-route,
-.homework-route { margin: 20px 0 28px; }
-.recovery-route { margin: 20px 0 30px; }
 .recovery-card {
   margin-top: 10px;
   padding: 16px;
@@ -2104,41 +1853,8 @@ p {
 .recovery-task strong { display: block; margin-top: 5px; font-size: 10px; }
 .recovery-task p { margin: 4px 0 0; color: var(--muted); font-size: 8px; line-height: 1.5; }
 .compact-head { min-height: 54px; margin: 0; }
-.schedule-row {
-  min-height: 68px;
-  padding: 9px 3px;
-  border-bottom: 1px solid var(--line);
-  display: grid;
-  grid-template-columns: 48px 1fr 9px;
-  gap: 12px;
-  align-items: center;
-}
-.schedule-date { color: var(--pink); font: 800 8px/1.3 Unbounded, sans-serif; text-transform: uppercase; }
-.schedule-row strong,.schedule-row small { display: block; }
-.schedule-row strong { font-size: 10.5px; line-height: 1.35; }
-.schedule-row small { margin-top: 4px; color: var(--muted); font-size: 8px; }
-.schedule-row > i { width: 8px; height: 8px; border: 2px solid var(--cyan); border-radius: 50%; box-shadow: 0 0 0 4px rgba(var(--cyan-rgb), .05); }
-.schedule-row > i.rescheduled { border-color: var(--pink); }
-.empty-inline { color: var(--muted); font-size: 10px; line-height: 1.6; }
 
-.homework-row {
-  width: 100%;
-  min-height: 76px;
-  position: relative;
-  padding: 13px 44px 12px 3px;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  display: grid;
-  gap: 4px;
-  text-align: left;
-  color: var(--text);
-  background: transparent;
-}
-.homework-row.needs_revision .homework-status { color: var(--pink); }
-.homework-row.completed { opacity: .68; }
-.homework-row strong { font-size: 11px; }
-.homework-row small { color: var(--muted); font-size: 8px; }
-.homework-row .arrow-icon { position: absolute; right: 8px; top: 30px; width: 18px; color: var(--cyan); }
+.empty-inline { color: var(--muted); font-size: 10px; line-height: 1.6; }
 
 .portfolio-beacon {
   min-height: 168px;
@@ -2349,22 +2065,6 @@ p {
     font-size: 7px;
   }
 
-  .module-overview {
-    grid-template-columns: 40px 1fr 28px;
-    gap: 10px;
-    padding-left: 12px;
-    padding-right: 12px;
-  }
-
-  .module-number {
-    width: 40px;
-    height: 40px;
-  }
-
-  .lesson-node {
-    gap: 9px;
-  }
-
   .project-engine-copy h2 {
     font-size: 22px;
   }
@@ -2376,7 +2076,6 @@ p {
   .workspace-dock {
     padding: 14px;
   }
-
 
   .nav-label {
     font-size: 9.5px;
@@ -2450,8 +2149,7 @@ p {
 
   .page-title h1 { font-size: clamp(36px, 4vw, 50px); }
   .page-title p { max-width: 760px; font-size: 13px; }
-  .module-overview h2 { font-size: 24px; }
-  .module-overview p { max-width: 700px; font-size: 12px; }
+
   .portfolio-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .skill-field { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .skill-field article:nth-child(odd) { border-right: 0; }
@@ -2504,19 +2202,6 @@ p {
   .signal-mark { grid-row: auto; }
   .signal-strip small { font-size: 9px; }
 
-  .learn-page { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 30px; align-items: start; }
-  .learn-page > .page-title { grid-column: 1 / -1; grid-row: 1; }
-  .learn-page > .module-overview { grid-column: 1; grid-row: 2; }
-  .learn-page > .week-route { grid-column: 2; grid-row: 2; margin: 0; }
-  .learn-page > .recovery-route { grid-column: 1 / -1; grid-row: 3; margin: 0; }
-  .learn-page > .journey-label { grid-column: 1 / -1; grid-row: 4; margin: 8px 2px 0; }
-  .learn-page > .lesson-journey { grid-column: 1 / -1; grid-row: 5; }
-  .learn-page > .homework-route { grid-column: 1; grid-row: 6; margin: 0; }
-  .learn-page > .mentor-dock { grid-column: 2; grid-row: 6; margin: 0; }
-  .lesson-journey { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 22px; }
-  .lesson-journey::before { display: none; }
-  .lesson-node { padding-left: 12px; border: 1px solid var(--line); background: rgba(var(--surface-rgb), 0.38); }
-  .lesson-node.current { padding-left: 12px; }
   .project-page { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(360px, .85fr); column-gap: 30px; align-items: start; }
   .project-page > .page-title,
   .project-page > .workspace-dock,
@@ -2562,7 +2247,6 @@ p {
   }
 }
 
-
 /* Book palette states; all existing dimensions, layout and interactions are retained. */
 ::selection { color: var(--on-purple); background: var(--violet); }
 .app-shell { background: radial-gradient(ellipse 90% 36% at 110% 8%, rgba(var(--purple-rgb), .16), transparent 66%), radial-gradient(ellipse 88% 28% at -20% 49%, rgba(var(--pink-rgb), .08), transparent 70%), var(--ink); }
@@ -2579,16 +2263,22 @@ p {
 .notification-empty.error strong, .error-state h1 { color: var(--attention); }
 .error-state .state-signal { border-color: var(--pink); box-shadow: inset 0 0 0 10px rgba(var(--pink-rgb), .08); }
 .error-message p { border-color: var(--pink); color: var(--attention); background: var(--surface); }
-.hero-progress i, .project-meter > i, .level-track > i, .module-progress > span, .skill-field i { background: var(--progress-track); }
+.hero-progress i,
+.project-meter > i,
+.level-track > i,
+.skill-field i { background: var(--progress-track); }
 .hero-progress i b, .project-meter > i b, .level-track > i em, .skill-field b { background: var(--brand-gradient); }
-.module-progress i { background: linear-gradient(180deg, var(--cyan), var(--violet) 50%, var(--pink)); }
-.lesson-node.current, .build-step.current { color: var(--on-accent); background: var(--pink); }
-.lesson-node.current :is(.lesson-copy small,.lesson-copy em), .build-step.current small { color: var(--on-accent); }
-.lesson-node.current .lesson-marker, .lesson-node.current .lesson-action { color: var(--pink); background: var(--ink); }
-.lesson-node.locked, .build-step.locked, .artifact.locked, .recovery-card.completed, .homework-row.completed { opacity: 1; color: var(--muted); }
-.lesson-node.locked .lesson-copy small { color: var(--faint); }
+
+.build-step.current { color: var(--on-accent); background: var(--pink); }
+.build-step.current small { color: var(--on-accent); }
+
+.build-step.locked,
+.artifact.locked,
+.recovery-card.completed { opacity: 1; color: var(--muted); }
+
 .artifact.locked .artifact-glyph { color: var(--faint); background: var(--surface-raised); }
-.project-empty :is(input,textarea), .project-editor :is(input,textarea) { border-color: var(--control-border); background: var(--ink); }
+.project-empty :is(input, textarea),
+.project-editor :is(input, textarea) { border-color: var(--control-border); background: var(--ink); }
 input, textarea { caret-color: var(--text); }
 input:disabled, textarea:disabled { opacity: 1; color: var(--disabled-text); background: var(--disabled-surface); border-color: var(--line-strong); }
 input:focus-visible, textarea:focus-visible { border-color: var(--cyan); outline-color: var(--cyan); }
@@ -2596,8 +2286,12 @@ input:user-invalid, textarea:user-invalid { border-color: var(--pink); }
 input:-webkit-autofill, textarea:-webkit-autofill { -webkit-text-fill-color: var(--text); box-shadow: inset 0 0 0 1000px var(--ink); caret-color: var(--text); }
 .project-editor a { color: var(--cyan); }
 .teacher-feedback, .teacher-feedback.needs_revision, .lesson-console, .lesson-task { color: var(--on-light); background: var(--brand-lavender); border-color: var(--violet); }
-.teacher-feedback :is(h2,p,strong), .lesson-console :is(h2,p), .lesson-task :is(h2,p) { color: var(--on-light); }
-.teacher-feedback :is(small,.feedback-score), .lesson-console small, .lesson-task small { color: var(--on-light-muted); }
+.teacher-feedback :is(h2, p, strong),
+.lesson-console :is(h2, p),
+.lesson-task :is(h2, p) { color: var(--on-light); }
+.teacher-feedback :is(small, .feedback-score),
+.lesson-console small,
+.lesson-task small { color: var(--on-light-muted); }
 .teacher-feedback span, .lesson-console > span, .lesson-task .section-kicker { color: var(--violet); }
 .feedback-score { border-color: var(--violet); }
 .stage-feedback, .lesson-review-feedback { color: var(--attention); }

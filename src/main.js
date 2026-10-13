@@ -454,58 +454,123 @@ function home() {
     </section>`;
 }
 
+// «Навчання»: what to do next first, then this week and homework beside it, then the whole route.
 function learn() {
   const learning = data.learning;
+  const course = learning.course;
   const module = learning.modules[0];
-  const lessonRows = module?.lessons ?? [];
-  const availableLessons = lessonRows.filter(lesson => ['current', 'available'].includes(lesson.state));
-  const primaryLesson = availableLessons.find(lesson => lesson.id === data.home.currentLesson?.id) ?? availableLessons[0];
+  const lessons = module?.lessons ?? [];
+  const open = lessons.filter(lesson => ['current', 'available'].includes(lesson.state));
+  const nextLesson = open.find(lesson => lesson.id === data.home.currentLesson?.id) ?? open[0] ?? null;
+  const timezone = data.schedule?.timezone ?? 'Europe/Kyiv';
   const weekClasses = data.schedule?.thisWeek ?? [];
   const homework = data.homework ?? [];
+  const activeHomework = homework.filter(item => item.state !== 'completed').length;
   const recoveries = data.recoveries ?? [];
+  const progress = Math.max(0, Math.min(100, course.progressPercent));
+  const lessonCount = `${course.completedLessons} з ${course.totalLessons} ${plural(course.totalLessons, 'уроку', 'уроків', 'уроків')}`;
   return `
-    <section class="page learn-page">
-      <div class="page-title"><span class="section-kicker">ТВІЙ МАРШРУТ</span><span class="zone-code">ZONE 02 · ROUTE</span><h1>Навчання</h1><p>Живі заняття, практика й робота над власним проєктом.</p></div>
-      <section class="week-route">
-        <div class="section-head compact-head"><div><span class="section-kicker">ЦЬОГО ТИЖНЯ</span><h2>Живі заняття</h2></div><span class="tiny-badge">${weekClasses.length} LIVE</span></div>
-        ${weekClasses.length ? weekClasses.map(item => `<article class="schedule-row"><span class="schedule-date">${escapeHtml(new Intl.DateTimeFormat('uk-UA',{weekday:'short',day:'2-digit',timeZone:data.schedule.timezone}).format(new Date(item.startsAt)).toUpperCase())}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(formatClassTime(item.startsAt,data.schedule.timezone))} · ${item.durationMinutes} хв</small></div><i class="${item.status}"></i></article>`).join('') : '<p class="empty-inline">На цей тиждень занять немає.</p>'}
-      </section>
-      ${recoveries.length ? `<section class="recovery-route">
-        <div class="section-head compact-head"><div><span class="section-kicker">НАЗДОГНАТИ ПРОПУЩЕНЕ</span><h2>Матеріали після заняття</h2></div><span class="tiny-badge">${recoveries.length} ДОСТУПНО</span></div>
+    <section class="page learn">
+      <header class="learn-head">
+        <h1>Навчання</h1>
+        ${lessons.length ? `<div class="learn-course">
+          <p><strong>${escapeHtml(module?.title ?? course.title)}</strong><span>${lessonCount}</span></p>
+          <div class="learn-track" role="progressbar" aria-label="Пройдено ${lessonCount}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}"><i style="width:${progress}%"></i></div>
+        </div>` : ''}
+      </header>
+      ${learnNextMarkup(nextLesson, lessons.length)}
+      <aside class="learn-side">
+        <section class="learn-panel learn-week" aria-labelledby="learnWeekTitle">
+          <div class="learn-panel-head"><h2 id="learnWeekTitle">Цього тижня</h2>${weekClasses.length ? `<span class="learn-count">${weekClasses.length} ${plural(weekClasses.length, 'заняття', 'заняття', 'занять')}</span>` : ''}</div>
+          ${weekClasses.length ? `<div class="learn-list">${weekClasses.map(item => learnClassMarkup(item, timezone)).join('')}</div>` : '<p class="learn-empty">Живих занять цього тижня немає.</p>'}
+        </section>
+        <section class="learn-panel learn-homework" aria-labelledby="learnHomeworkTitle">
+          <div class="learn-panel-head"><h2 id="learnHomeworkTitle">Домашні завдання</h2>${activeHomework ? `<span class="learn-count">${activeHomework} ${plural(activeHomework, 'активне', 'активні', 'активних')}</span>` : ''}</div>
+          ${homework.length ? `<div class="learn-list">${homework.map(item => learnHomeworkMarkup(item, timezone)).join('')}</div>` : '<p class="learn-empty">Завдань поки немає. Вони зʼявляться після заняття.</p>'}
+        </section>
+        <button type="button" class="learn-mentor card-action" data-tab="profile">
+          <span class="learn-mentor-icon" aria-hidden="true">${svgIcon('profile')}</span>
+          <span class="learn-mentor-body"><strong>Потрібна допомога?</strong><small>Забронюй зустріч 1:1 з ментором у профілі.</small></span>
+          ${arrowIcon()}
+        </button>
+      </aside>
+      ${recoveries.length ? `<section class="learn-catchup" aria-labelledby="learnCatchupTitle">
+        <div class="learn-panel-head"><h2 id="learnCatchupTitle">Наздогнати пропущене</h2></div>
         ${recoveries.map(item => `<article class="recovery-card ${item.status}">
-          <div class="recovery-card-head"><span>ПРОПУЩЕНЕ ЗАНЯТТЯ</span><small>${escapeHtml(formatClassTime(item.startsAt,data.schedule.timezone))}</small></div>
+          <div class="recovery-card-head"><span>Пропущене заняття</span><small>${escapeHtml(formatClassTime(item.startsAt, timezone))}</small></div>
           <h3>${escapeHtml(item.lessonTitle || item.title)}</h3><p>${escapeHtml(item.description)}</p>
           ${item.materials.length ? `<div class="recovery-materials">${item.materials.map(material => safeHttpsUrl(material.url) ? `<button type="button" class="btn btn--secondary btn--row btn--block" data-external="${escapeHtml(safeHttpsUrl(material.url))}"><span class="btn-label">${escapeHtml(material.title)}</span>${externalIcon()}</button>` : `<span class="recovery-material-pending">${escapeHtml(material.title)}</span>`).join('')}</div>` : '<small class="recovery-empty">Матеріали ще готує викладач.</small>'}
-          ${item.homework ? `<div class="recovery-task"><span>ЩО ЗРОБИТИ САМОСТІЙНО</span><strong>${escapeHtml(item.homework.title)}</strong><p>${escapeHtml(item.homework.instructions)}</p></div>` : ''}
+          ${item.homework ? `<div class="recovery-task"><span>Що зробити самостійно</span><strong>${escapeHtml(item.homework.title)}</strong><p>${escapeHtml(item.homework.instructions)}</p></div>` : ''}
           ${item.homework || item.mentorSlotId ? `<div class="recovery-actions">${item.homework ? `<button type="button" class="btn btn--primary btn--row recovery-homework" data-homework="${item.homework.id}"><span class="btn-label">Відкрити домашнє завдання</span>${arrowIcon()}</button>` : ''}${item.mentorSlotId ? `<button type="button" class="btn btn--outline recovery-mentor" data-recovery-mentor="${item.mentorSlotId}">Записатися до ментора</button>` : ''}</div>` : ''}
         </article>`).join('')}
       </section>` : ''}
-      ${lessonRows.length ? `<section class="module-overview">
-        <div class="module-number">01</div>
-        <div><span>ПОТОЧНИЙ МОДУЛЬ</span><h2>${escapeHtml(module?.title ?? learning.course.title)}</h2><p>${escapeHtml(module?.description ?? learning.course.description)}</p></div>
-        <div class="module-progress"><strong>${learning.course.progressPercent}%</strong><span><i style="height:${learning.course.progressPercent}%"></i></span></div>
-      </section>` : '<p class="empty-inline">Викладач ще не додав заняття для вашої групи.</p>'}
-      <div class="journey-label"><span>ТВОЯ ТРАЄКТОРІЯ</span><b>${learning.course.completedLessons} / ${learning.course.totalLessons} уроків</b></div>
-      <div class="lesson-journey">
-        ${lessonRows.map(lesson => {
-          const visualState = lesson.state === 'completed' ? 'done' : ['current', 'available'].includes(lesson.state) ? lesson.id === primaryLesson?.id ? 'current' : 'available' : 'locked';
-          return `
-          <button type="button" class="lesson-node ${visualState}" ${visualState === 'locked' ? 'disabled aria-disabled="true"' : `data-lesson="${lesson.id}"`} aria-label="${visualState === 'locked' ? 'Урок поки недоступний' : visualState === 'current' ? 'Продовжити урок' : 'Відкрити урок'}: ${escapeHtml(lesson.title)}">
-            <span class="lesson-marker">${stateIcon(visualState)}</span>
-            <span class="lesson-copy"><small>${lesson.number} · ${visualState === 'current' ? 'ЗАРАЗ' : visualState === 'available' ? 'ДОСТУПНО' : visualState === 'done' ? 'ПРОЙДЕНО' : 'ЗАБЛОКОВАНО'}</small><strong>${escapeHtml(lesson.title)}</strong>${visualState === 'current' ? `<em>Продовжити урок · +${lesson.xpReward} XP</em>` : visualState === 'available' ? '<em>Відкрити урок</em>' : visualState === 'locked' ? '<em>Урок поки недоступний.</em>' : ''}</span>
-            <span class="lesson-action" aria-hidden="true">${visualState === 'current' || visualState === 'available' ? arrowIcon() : visualState === 'done' ? '+XP' : ''}</span>
-          </button>`}).join('')}
-      </div>
-      <section class="homework-route">
-        <div class="section-head compact-head"><div><span class="section-kicker">ПІСЛЯ ЗАНЯТТЯ</span><h2>Домашня практика</h2></div><span class="tiny-badge">${homework.filter(item=>item.state!=='completed').length} АКТИВНІ</span></div>
-        ${homework.map(item => `<button type="button" class="homework-row ${item.state}" data-homework="${item.id}"><span class="homework-status">${escapeHtml(homeworkStatus(item).label.toUpperCase())}</span><strong>${escapeHtml(item.title)}</strong><small>${item.latestSubmission?.review ? `${item.latestSubmission.review.score}/10 · ${effortLabel(item.latestSubmission.review.effort)}` : item.dueAt ? `До ${formatClassTime(item.dueAt,data.schedule.timezone)}` : 'Без дедлайну'}</small>${arrowIcon()}</button>`).join('')}
-      </section>
-      <button type="button" class="mentor-dock card-action" data-tab="profile" aria-label="Допомога ментора — обрати час у профілі">
-        ${portalMarkup('mini')}
-        <div><span>ДОПОМОГА МЕНТОРА</span><strong>Потрібна підтримка?</strong><p>Забронюй коротку зустріч 1:1.</p><span class="card-action-label">Обрати час у профілі</span></div>
-        <span class="mentor-action" aria-hidden="true">${arrowIcon()}</span>
-      </button>
+      ${lessons.length ? `<section class="learn-route" aria-labelledby="learnRouteTitle">
+        <div class="learn-panel-head"><h2 id="learnRouteTitle">Маршрут курсу</h2><span class="learn-count">${lessonCount}</span></div>
+        <ol class="route">${lessons.map(lesson => learnStopMarkup(lesson, nextLesson)).join('')}</ol>
+      </section>` : ''}
     </section>`;
+}
+
+function learnNextMarkup(lesson, lessonCount) {
+  if (!lesson) {
+    return lessonCount
+      ? `<button type="button" class="learn-next is-finished card-action" data-tab="project">
+          <span class="learn-next-body"><span class="learn-next-lead">Усі уроки модуля пройдено</span><strong class="learn-next-title">Маршрут завершено</strong><span class="learn-next-summary">Час довести до ладу свій проєкт.</span><span class="learn-next-foot"><span class="learn-next-cta">Відкрити проєкт</span></span></span>
+        </button>`
+      : `<div class="learn-next is-empty"><span class="learn-next-body"><strong class="learn-next-title">Уроків ще немає</strong><span class="learn-next-summary">Викладач ще не додав уроки для вашої групи. Вони зʼявляться тут.</span></span></div>`;
+  }
+  const started = lesson.state === 'current' && lesson.progressPercent > 0;
+  return `<button type="button" class="learn-next card-action" data-lesson="${lesson.id}" aria-label="${started ? 'Продовжити' : 'Почати'} урок ${escapeHtml(lesson.number)}: ${escapeHtml(lesson.title)}">
+    <span class="learn-next-number" aria-hidden="true">${escapeHtml(lesson.number)}</span>
+    <span class="learn-next-body">
+      <span class="learn-next-lead">${started ? `Пройдено ${lesson.progressPercent}% уроку` : 'Твій наступний урок'}</span>
+      <strong class="learn-next-title">${escapeHtml(lesson.title)}</strong>
+      ${lesson.summary ? `<span class="learn-next-summary">${escapeHtml(lesson.summary)}</span>` : ''}
+      <span class="learn-next-foot">
+        <span class="learn-next-cta">${started ? 'Продовжити урок' : 'Почати урок'}</span>
+        ${lesson.estimatedMinutes ? `<span class="learn-next-fact">${lesson.estimatedMinutes} хв</span>` : ''}
+        ${lesson.xpReward ? `<span class="learn-next-fact is-xp">+${lesson.xpReward} XP</span>` : ''}
+      </span>
+    </span>
+  </button>`;
+}
+
+function learnClassMarkup(item, timezone) {
+  const date = new Date(item.startsAt);
+  const part = options => new Intl.DateTimeFormat('uk-UA', { ...options, timeZone: timezone }).format(date);
+  const joinUrl = item.status === 'in_progress' ? safeHttpsUrl(item.meetingUrl) : null;
+  const note = { in_progress: 'Іде зараз', rescheduled: 'Перенесено', cancelled: 'Скасовано', completed: 'Відбулося' }[item.status];
+  return `<article class="learn-class is-${item.status}">
+    <span class="learn-class-date"><small>${escapeHtml(part({ weekday: 'short' }))}</small><b>${escapeHtml(part({ day: 'numeric' }))}</b></span>
+    <span class="learn-class-body">
+      <strong>${escapeHtml(item.title)}</strong>
+      <small><span>${escapeHtml(part({ hour: '2-digit', minute: '2-digit' }))}</span><span>${item.durationMinutes} хв</span>${note ? `<span class="learn-class-note">${note}</span>` : ''}</small>
+    </span>
+    ${joinUrl ? `<button type="button" class="btn btn--primary btn--sm" data-external="${escapeHtml(joinUrl)}">Приєднатися</button>` : ''}
+  </article>`;
+}
+
+function learnHomeworkMarkup(item, timezone) {
+  const status = homeworkStatus(item);
+  const review = item.latestSubmission?.review;
+  const detail = review ? `${review.score}/10, ${effortLabel(review.effort).toLowerCase()}` : item.dueAt ? `До ${formatClassTime(item.dueAt, timezone)}` : 'Без дедлайну';
+  return `<button type="button" class="learn-hw" data-homework="${item.id}">
+    <span class="learn-hw-body"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(detail)}</small></span>
+    <span class="learn-status is-${status.tone}">${escapeHtml(status.label)}</span>
+    ${arrowIcon()}
+  </button>`;
+}
+
+function learnStopMarkup(lesson, nextLesson) {
+  const state = lesson.state === 'completed' ? 'done' : lesson.state === 'locked' ? 'locked' : lesson.id === nextLesson?.id ? 'current' : 'available';
+  const dot = state === 'done' ? stateIcon('done') : state === 'locked' ? stateIcon('locked') : escapeHtml(lesson.number);
+  const note = { done: 'Пройдено', current: 'Зараз', available: 'Доступний', locked: '' }[state];
+  const body = `<span class="route-dot" aria-hidden="true">${dot}</span>
+    <span class="route-body"><small>Урок ${escapeHtml(lesson.number)}</small><strong>${escapeHtml(lesson.title)}</strong></span>
+    ${note ? `<span class="route-note">${note}</span>` : '<span class="visually-hidden">Урок поки недоступний</span>'}`;
+  return `<li class="route-stop is-${state}">${state === 'locked'
+    ? `<div class="route-row">${body}</div>`
+    : `<button type="button" class="route-row" data-lesson="${lesson.id}">${body}${arrowIcon()}</button>`}</li>`;
 }
 
 function project() {
