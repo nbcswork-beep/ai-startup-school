@@ -77,6 +77,40 @@ describe('ZIP reading and writing', () => {
 });
 
 describe('files in model answers', () => {
+  it('packages the coffee-site reply format with file labels above language-only blocks', () => {
+    const answer = [
+      'Я не могу напрямую создать ZIP-архив, но предоставлю код.',
+      '📄 `index.html`', '', '```html', '<h1>MOKA Coffee</h1>', '```',
+      '### 2. **style.css**', '', '```css', 'body { color: brown; }', '```',
+      '**Файл: `script.js`**', '```js', 'console.log("MOKA");', '```'
+    ].join('\n');
+    const files = parseAnswerFiles(answer);
+    expect(files).toEqual([
+      { path: 'index.html', content: '<h1>MOKA Coffee</h1>\n' },
+      { path: 'style.css', content: 'body { color: brown; }\n' },
+      { path: 'script.js', content: 'console.log("MOKA");\n' }
+    ]);
+    const archive = createZip(files);
+    expect(readZipEntries(archive).map(entry => ({ path: entry.path, content: readZipEntry(archive, entry, 1024).toString('utf8') }))).toEqual(files);
+  });
+
+  it.each(['`src/app.js`', '### **src/app.js**', '1. `src/app.js`:', '- **src/app.js**', 'File: `src/app.js`', '📄 `src/app.js`'])(
+    'accepts a standalone label: %s', label => {
+      expect(parseAnswerFiles(`${label}\n\n\`\`\`js\nhello\n\`\`\``)).toEqual([{ path: 'src/app.js', content: 'hello\n' }]);
+    }
+  );
+
+  it('does not infer files from prose, unsafe labels, stale labels, or unclosed blocks', () => {
+    for (const label of ['See `index.html` for details.', 'Run node script.js', 'https://example.com/app.js', '../escape.js', '/absolute.js', 'C:\\temp\\app.js', 'node.js', '`a.js` and `b.js`', '[app.js](https://example.com/app.js)']) {
+      expect(parseAnswerFiles(`${label}\n\`\`\`js\nexample\n\`\`\``), label).toEqual([]);
+    }
+    expect(parseAnswerFiles('`index.html`\nSome explanation\n```html\nx\n```')).toEqual([]);
+    expect(parseAnswerFiles('`index.html`\n```html\nunclosed')).toEqual([]);
+    expect(parseAnswerFiles('`safe.js`\n```js ../escape.js\nx\n```')).toEqual([]);
+    expect(parseAnswerFiles('`first.js`\n```js actual.js\none\n```\n```js\ntwo\n```')).toEqual([{ path: 'actual.js', content: 'one\n' }]);
+    expect(parseAnswerFiles('```text\n`fake.js`\n```\n```js\nexample\n```')).toEqual([]);
+  });
+
   it('reads code blocks that name a path and ignores plain examples', () => {
     const answer = [
       'Ось проєкт:',
