@@ -212,9 +212,27 @@ describe('homework file types', () => {
   });
   it('cleans display names and storage keys', () => {
     expect(cleanDisplayName('C:\\Users\\me\\Звіт\u202e.pdf')).toBe('Звіт.pdf');
-    expect(storageSafeName('Мій план  (фінал)!.docx', 'docx')).toBe('Мій_план_фінал.docx');
+    expect(storageSafeName('Мій план  (фінал)!.docx', 'docx')).toBe('Mii_plan_final.docx');
+    expect(storageSafeName('Пілот_книга.pdf', 'pdf')).toBe('Pilot_knyha.pdf');
+    expect(storageSafeName('Щоденник Юлії, з\'їзд.txt', 'txt')).toBe('Shchodennyk_Iulii_zizd.txt');
+    expect(storageSafeName('Résumé.pdf', 'pdf')).toBe('Resume.pdf');
+    expect(storageSafeName('报告.pdf', 'pdf')).toBe('file.pdf');
     expect(storageSafeName('../.pdf', 'pdf')).toBe('file.pdf');
     expect(cleanDisplayName(`${'а'.repeat(300)}.pptx`)).toMatch(/^а+\.pptx$/);
     expect(cleanDisplayName(`${'а'.repeat(300)}.pptx`).length).toBe(160);
+  });
+  it('builds storage keys that @vercel/blob can presign', async () => {
+    // The SDK checks the URL pathname against the scope inside the delegation token; a Cyrillic key
+    // failed that check in production ("Blob path does not match the signed token scope").
+    const { presignUrl } = await import('@vercel/blob');
+    const pathname = `production/homework/${HOMEWORK}/${DEV_IDS.user}/${HOMEWORK}/${storageSafeName('Пілот_книга.pdf', 'pdf')}`;
+    const validUntil = Date.now() + 60_000;
+    const scope = { pathname, operations: ['put'], validUntil, allowedContentTypes: ['application/pdf'], maximumSizeInBytes: 100 };
+    const token = { delegationToken: `${Buffer.from(JSON.stringify(scope)).toString('base64url')}.signature`, clientSigningToken: 'test-key', validUntil };
+    const { presignedUrl } = await presignUrl(token, {
+      operation: 'put', access: 'private', pathname, validUntil,
+      allowedContentTypes: ['application/pdf'], maximumSizeInBytes: 100, addRandomSuffix: false, allowOverwrite: false
+    });
+    expect(new URL(presignedUrl).searchParams.get('pathname')).toBe(pathname);
   });
 });

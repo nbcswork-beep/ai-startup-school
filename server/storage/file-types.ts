@@ -73,11 +73,33 @@ export function cleanDisplayName(name: string): string {
   return `${cleaned.slice(0, 160 - suffix.length).trimEnd()}${suffix}`;
 }
 
-/** Storage key segment: letters, digits, dot, dash, underscore. Never contains a slash. */
+// Ukrainian national romanization, plus the Russian letters it lacks. Apostrophes and soft signs drop.
+const CYRILLIC_TO_LATIN: Record<string, string> = {
+  а: 'a', б: 'b', в: 'v', г: 'h', ґ: 'g', д: 'd', е: 'e', є: 'ie', ж: 'zh', з: 'z', и: 'y', і: 'i', ї: 'i',
+  й: 'i', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'kh',
+  ц: 'ts', ч: 'ch', ш: 'sh', щ: 'shch', ь: '', ю: 'iu', я: 'ia', ё: 'e', ъ: '', ы: 'y', э: 'e',
+  "'": '', '’': '', 'ʼ': ''
+};
+
+function romanize(text: string): string {
+  return Array.from(text.normalize('NFC'), char => {
+    const lower = char.toLowerCase();
+    const latin = CYRILLIC_TO_LATIN[lower];
+    if (latin === undefined) return char;
+    return char !== lower && latin ? latin[0]!.toUpperCase() + latin.slice(1) : latin;
+  }).join('');
+}
+
+/**
+ * Storage key segment: ASCII letters, digits, dot, dash, underscore; never a slash. ASCII only because
+ * @vercel/blob decodes the signed-token scope as Latin-1, so a Cyrillic pathname never matches its own
+ * token. People keep seeing the original name; this is only the object key ("Звіт.pdf" → "Zvit.pdf").
+ */
 export function storageSafeName(name: string, extension: HomeworkFileExtension): string {
-  const stem = name.slice(0, name.length - extension.length - 1)
-    .normalize('NFKC')
-    .replace(/[^\p{L}\p{N}._-]+/gu, '_')
+  const stem = romanize(name.slice(0, name.length - extension.length - 1))
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
     .replace(/_{2,}/g, '_')
     .replace(/^[._-]+|[._-]+$/g, '')
     .slice(0, 80);
