@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { MemoryAiStore, RedisAiStore, type AiStore, type LedgerDraft, type ReserveInput } from './store.js';
+import type { AiJob } from './types.js';
 import { RedisEmulator } from './testing/redis-emulator.js';
 
 const STUDENT = '10000000-0000-4000-8000-000000000001';
@@ -159,5 +160,83 @@ describe.each(stores)('AI token store — %s', (_name, create) => {
     await store.deleteConversation(STUDENT, conversation.id);
     expect(await store.getConversation(STUDENT, conversation.id)).toBeNull();
     expect(await store.getMessages(conversation.id, 10)).toEqual([]);
+  });
+});
+
+function job(overrides: Partial<AiJob> = {}): AiJob {
+  return {
+    id: randomUUID(), studentId: STUDENT, conversationId: randomUUID(), requestId: randomUUID().replace(/-/g, ''),
+    userMessageId: randomUUID(), assistantMessageId: randomUUID(), modelId: 'm1', modelLabel: 'Модель', groupId: null,
+    status: 'running', createdAt: NOW, heartbeatAt: NOW, viewerAt: NOW, finalizingAt: null, finishedAt: null, stopRequested: false,
+    inputTokens: 120, errorCode: null, errorMessage: null, notify: null, notifyAttempts: 0,
+    userMessage: { id: 'u1', role: 'user', content: 'Питання', createdAt: new Date(NOW).toISOString() }, message: null,
+    ...overrides
+  };
+}
+
+describe.each(stores)('AI answer jobs — %s', (_name, create) => {
+  it('creates a job once per request and keeps its text in UTF-8 byte order', async () => {
+    const store = create();
+    const first = job();
+    expect(await store.createJob(first)).toEqual({ created: true });
+    expect(await store.createJob(job({ requestId: first.requestId }))).toEqual({ created: false, existingJobId: first.id });
+    expect(await store.jobIdForRequest(first.requestId)).toBe(first.id);
+    expect(await store.listActiveJobs()).toEqual([{ jobId: first.id, studentId: STUDENT }]);
+
+    expect(await store.flushJob(first.id, 'Привіт, ', NOW + 1_000)).toEqual({ stopRequested: false });
+    await store.flushJob(first.id, 'світ ✅', NOW + 2_000);
+    const whole = await store.viewJob(first.id, 0, NOW + 2_500);
+    expect(whole).toMatchObject({ text: 'Привіт, світ ✅', length: Buffer.byteLength('Привіт, світ ✅') });
+    expect(whole!.job).toMatchObject({ heartbeatAt: NOW + 2_000, viewerAt: NOW + 2_500, userMessage: { content: 'Питання' } });
+    // The app asks for what comes after the bytes it already has.
+    const rest = await store.viewJob(first.id, Buffer.byteLength('Привіт, '), NOW + 3_000);
+    expect(rest!.text).toBe('світ ✅');
+    expect((await store.viewJob(first.id, whole!.length, NOW + 3_000))!.text).toBe('');
+    expect(await store.getJobText(first.id)).toBe('Привіт, світ ✅');
+    expect(await store.viewJob(randomUUID(), 0, NOW)).toBeNull();
+  });
+
+  it('passes a stop to the generating function on its next write', async () => {
+    const store = create();
+    const item = job();
+    await store.createJob(item);
+    await store.requestJobStop(item.id);
+    expect(await store.flushJob(item.id, '', NOW + 1_000)).toEqual({ stopRequested: true });
+  });
+
+  it('lets exactly one finisher claim a job, and recovery only once it went quiet', async () => {
+    const store = create();
+    const item = job();
+    await store.createJob(item);
+    await store.flushJob(item.id, 'частина', NOW + 10_000);
+    // Recovery may not take a job that is still alive.
+    expect(await store.claimJobFinalization(item.id, NOW + 20_000, NOW + 5_000)).toBe(false);
+    const claims = await Promise.all([store.claimJobFinalization(item.id, NOW + 20_000, null), store.claimJobFinalization(item.id, NOW + 20_000, null), store.claimJobFinalization(item.id, NOW + 80_000, NOW + 20_000)]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    expect((await store.getJob(item.id))!.status).toBe('finalizing');
+    // A finisher that died while finalizing is replaced once it is stale.
+    expect(await store.claimJobFinalization(item.id, NOW + 30_000, NOW + 10_000)).toBe(false);
+    expect(await store.claimJobFinalization(item.id, NOW + 90_000, NOW + 30_000)).toBe(true);
+    await store.finishJob(item.id, { status: 'complete', finishedAt: NOW + 91_000, message: { id: item.assistantMessageId, role: 'assistant', content: 'частина', createdAt: new Date(NOW).toISOString() } });
+    expect(await store.claimJobFinalization(item.id, NOW + 200_000, NOW + 150_000)).toBe(false);
+    expect(await store.getJob(item.id)).toMatchObject({ status: 'complete', message: { content: 'частина' } });
+    // Finished but still owed a notice: it stays on the index until released.
+    expect(await store.listActiveJobs()).toHaveLength(1);
+    await store.releaseJob(item.id);
+    expect(await store.listActiveJobs()).toEqual([]);
+    expect((await store.getJobs([item.id, randomUUID()])).size).toBe(1);
+  });
+
+  it('leases the notice to one sender and allows a retry only after a failure', async () => {
+    const store = create();
+    const item = job({ status: 'complete', finishedAt: NOW });
+    await store.createJob(item);
+    const leases = await Promise.all([store.claimJobNotification(item.id, NOW, NOW - 60_000), store.claimJobNotification(item.id, NOW, NOW - 60_000)]);
+    expect(leases.sort()).toEqual([0, 1]);
+    await store.updateJob(item.id, { notify: 'failed', notifyClaimAt: '' });
+    expect(await store.claimJobNotification(item.id, NOW + 1_000, NOW - 59_000)).toBe(2);
+    await store.updateJob(item.id, { notify: 'sent' });
+    expect(await store.claimJobNotification(item.id, NOW + 500_000, NOW + 400_000)).toBe(0);
+    expect(await store.getJob(item.id)).toMatchObject({ notify: 'sent', notifyAttempts: 2 });
   });
 });

@@ -87,3 +87,20 @@ td .ai-presets{flex-wrap:nowrap}
 
 @media(max-width:1180px){.ai-settings{grid-template-columns:1fr 1fr}}
 @media(max-width:820px){.ai-provider-grid{grid-template-columns:1fr}.ai-settings,.ai-two,.ai-modal-links{grid-template-columns:1fr}.ai-key{grid-template-columns:1fr auto}.ai-key .ai-row-actions{grid-column:1/-1}.ai-filters select{flex:1 1 140px}}
+
+/* Agent: profile, skills, plugins */
+.ai-agent-profile{margin-bottom:16px}
+.ai-agent-profile textarea{min-height:140px;font:12px/1.5 inherit}
+.ai-agent-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px;margin-top:12px}
+.ai-agent-item{padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--panel2);display:grid;align-content:start;gap:6px;font-size:11px;line-height:1.5}
+.ai-agent-item p{margin:0;overflow-wrap:anywhere}
+.ai-agent-item .pill{margin:2px 2px 2px 0}
+.ai-agent-item-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.ai-agent-item-head strong{font-size:13px}
+.ai-agent-item .ai-row-actions{flex-wrap:wrap;margin-top:4px}
+.ai-agent-item + .panel{margin-top:16px}
+section.panel + section.panel{margin-top:16px}
+@media(max-width:820px){.ai-agent-list{grid-template-columns:1fr}}
+.ai-agent-form{display:grid;gap:12px;max-width:960px}
+.ai-agent-form .ai-actions{justify-content:flex-start}
+.ai-agent-form .check{align-items:flex-start}

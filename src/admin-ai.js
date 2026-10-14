@@ -5,7 +5,8 @@ export const aiNav = [
   ['ai-providers', 'ШІ · Провайдери', '✦'],
   ['ai-tokens', 'ШІ · Токени', '◍'],
   ['ai-resources', 'ШІ · Ресурс API', '◬'],
-  ['ai-analytics', 'ШІ · Аналітика', '▥']
+  ['ai-analytics', 'ШІ · Аналітика', '▥'],
+  ['ai-agent', 'ШІ · Агент', '✧']
 ];
 
 const PRESETS = [[100_000, '100K'], [500_000, '500K'], [1_000_000, '1M'], [5_000_000, '5M']];
@@ -75,7 +76,8 @@ export function createAiAdmin(ctx) {
       const [resources, providers] = await Promise.all([api.aiResources(), api.aiProviders()]);
       return { ...resources, providerList: providers.providers };
     },
-    'ai-analytics': () => api.aiAnalytics(ui.analytics)
+    'ai-analytics': () => api.aiAnalytics(ui.analytics),
+    'ai-agent': () => api.aiAgent()
   };
 
   let currentRoute = null;
@@ -103,7 +105,7 @@ export function createAiAdmin(ctx) {
     if (!entry.data && entry.error) { host.innerHTML = failure(entry.error); return; }
     const filter = host.querySelector('[data-filter]');
     const kept = filter ? { value: filter.value, focused: document.activeElement === filter } : null;
-    host.innerHTML = ({ 'ai-providers': providersView, 'ai-tokens': tokensView, 'ai-resources': resourcesView, 'ai-analytics': analyticsView })[route](entry.data);
+    host.innerHTML = ({ 'ai-providers': providersView, 'ai-tokens': tokensView, 'ai-resources': resourcesView, 'ai-analytics': analyticsView, 'ai-agent': agentView })[route](entry.data);
     const nextFilter = host.querySelector('[data-filter]');
     if (kept?.value && nextFilter) { nextFilter.value = kept.value; nextFilter.dispatchEvent(new Event('input', { bubbles: true })); }
     if (kept?.focused) nextFilter?.focus();
@@ -226,6 +228,7 @@ export function createAiAdmin(ctx) {
         <div class="ai-two">${field('Вихідні', 'outputPer1M', model?.pricing.outputPer1M ?? '', 'number', 'min="0" step="any"')}${field('Кешовані вхідні', 'cachedInputPer1M', model?.pricing.cachedInputPer1M ?? '', 'number', 'min="0" step="any"')}</div>
       </fieldset>
       ${select('Резервна модель (лише якщо ця не відповіла, до початку відповіді)', 'fallbackModelId', [['', 'Без резервної'], ...others], model?.fallbackModelId ?? '')}
+      ${model ? `<label class="check"><input type="checkbox" name="agent" ${model.agent === false ? '' : 'checked'}><span>Режим агента: модель уміє викликати інструменти (читати й створювати файли). Вимкніть для моделей без підтримки tools.</span></label>` : ''}
       ${model ? '' : '<p class="muted-copy">Модель зʼявиться у списку вимкненою. Щоб відкрити її учням, натисніть «Увімкнути» — сервер спершу надішле справжній тестовий запит.</p>'}`;
   }
 
@@ -236,7 +239,8 @@ export function createAiAdmin(ctx) {
     maxOutputTokens: Number(form.get('maxOutputTokens')),
     maxInputTokens: Number(form.get('maxInputTokens')),
     pricing: { currency: String(form.get('currency') || 'USD').toUpperCase(), inputPer1M: numberOrNull(form.get('inputPer1M')), outputPer1M: numberOrNull(form.get('outputPer1M')), cachedInputPer1M: numberOrNull(form.get('cachedInputPer1M')) },
-    fallbackModelId: form.get('fallbackModelId') || null
+    fallbackModelId: form.get('fallbackModelId') || null,
+    ...(form.has('agent') || form.get('apiModelId') ? { agent: form.get('agent') === 'on' } : {})
   });
 
   function testResult(result, label) {
@@ -484,6 +488,178 @@ export function createAiAdmin(ctx) {
   }
 
   // -----------------------------------------------------------------------------------------
+  // Agent: profile, skills (SKILL.md) and plugins
+
+  const LANGUAGES = [['auto', 'Мовою учня'], ['uk', 'Українська'], ['en', 'English'], ['pl', 'Polski'], ['de', 'Deutsch']];
+  const STYLES = [['friendly', 'Дружній, на «ти»'], ['concise', 'Стислий'], ['detailed', 'Докладний, з прикладами'], ['academic', 'Академічний']];
+  const PERMISSIONS = { 'files:read': 'Читає прикріплені файли', 'files:write': 'Створює файли', network: 'Зовнішні запити — лише з підтвердженням учня', compute: 'Обчислення на сервері' };
+  const TOOL_NAMES = ['read_file', 'create_file', 'calculate', 'wikipedia_search'];
+
+  function agentView(data) {
+    const { profile, skills, plugins } = data;
+    const toolNames = [...new Set([...TOOL_NAMES, ...plugins.flatMap(plugin => plugin.tools.map(tool => tool.name))])].filter(name => name !== 'use_skill');
+    ui.agentTools = toolNames;
+    return `<section class="panel ai-agent-profile" aria-labelledby="aiAgentProfile">
+        <div class="panel-head"><div><span class="kicker">Профіль</span><h2 id="aiAgentProfile">Агент для учнів</h2></div>${status(profile.agentEnabled ? 'active' : 'disabled', profile.agentEnabled ? 'Режим агента увімкнено' : 'Режим агента вимкнено')}</div>
+        <form id="ai-agent-profile" class="ai-agent-form">
+          <div class="ai-two">${field('Імʼя агента *', 'agentName', profile.agentName, 'text', 'required maxlength="40"')}${field('Кроків за одне завдання', 'agentMaxSteps', profile.agentMaxSteps, 'number', 'min="1" max="20" required')}</div>
+          ${field('Опис (бачать учні)', 'agentDescription', profile.agentDescription, 'text', 'maxlength="300"')}
+          <div class="ai-two">${select('Мова відповідей', 'agentLanguage', LANGUAGES, profile.agentLanguage)}${select('Стиль', 'agentStyle', STYLES, profile.agentStyle)}</div>
+          <label class="field"><span>Інструкції (системний промпт для всіх відповідей)</span><textarea name="systemPrompt" rows="7" maxlength="8000" required>${esc(profile.systemPrompt)}</textarea></label>
+          <label class="check"><input type="checkbox" name="agentEnabled" ${profile.agentEnabled ? 'checked' : ''}><span>Учні можуть вмикати режим агента: робота з файлами, створення документів, навички й плагіни</span></label>
+          <div class="ai-actions"><button class="primary" type="submit">Зберегти профіль</button></div>
+        </form>
+      </section>
+      <section class="panel" aria-labelledby="aiSkillsTitle">
+        <div class="panel-head"><div><span class="kicker">SKILL.md</span><h2 id="aiSkillsTitle">Навички</h2></div><span class="muted-copy">${skills.filter(skill => skill.enabled).length} з ${skills.length} увімкнено</span></div>
+        <p class="muted-copy">Навичка — інструкції для типового завдання: назва, опис, коли застосовувати, інструкції та інструменти. Учень обирає навичку в чаті, а в режимі агента агент може обрати її сам за умовами застосування.</p>
+        <div class="ai-actions">
+          <button class="primary" data-ai-action="skill-new">Створити навичку</button>
+          <button class="secondary" data-ai-action="skill-import">Імпорт SKILL.md</button>
+          <button class="secondary" data-ai-action="skill-export-all">Експорт усіх · ZIP</button>
+        </div>
+        <div class="ai-agent-list">${skills.map(skill => `<article class="ai-agent-item">
+          <div class="ai-agent-item-head"><div><strong>${esc(skill.name)}</strong>${skill.builtin ? ' <span class="pill">Вбудована</span>' : ''}</div>${status(skill.enabled ? 'active' : 'disabled', skill.enabled ? 'Увімкнено' : 'Вимкнено')}</div>
+          <p>${esc(skill.description) || '<span class="muted-copy">Без опису</span>'}</p>
+          <p class="muted-copy"><b>Коли:</b> ${esc(skill.when) || '—'}</p>
+          <p class="muted-copy"><b>Інструменти:</b> ${skill.tools.length ? skill.tools.map(tool => `<span class="pill code">${esc(tool)}</span>`).join(' ') : 'усі увімкнені'}</p>
+          <div class="ai-row-actions">
+            <button class="text-button" data-ai-action="skill-edit" data-id="${esc(skill.id)}">Редагувати</button>
+            <button class="text-button" data-ai-action="skill-toggle" data-id="${esc(skill.id)}" data-enabled="${skill.enabled}">${skill.enabled ? 'Вимкнути' : 'Увімкнути'}</button>
+            <button class="text-button" data-ai-action="skill-export" data-id="${esc(skill.id)}">Експорт</button>
+            <button class="text-button ai-danger-link" data-ai-action="skill-delete" data-id="${esc(skill.id)}" data-name="${esc(skill.name)}" data-builtin="${skill.builtin}">${skill.builtin ? 'Скинути' : 'Видалити'}</button>
+          </div>
+        </article>`).join('')}</div>
+      </section>
+      <section class="panel" aria-labelledby="aiPluginsTitle">
+        <div class="panel-head"><div><span class="kicker">Інструменти</span><h2 id="aiPluginsTitle">Плагіни</h2></div></div>
+        <p class="muted-copy">Плагіни дають агенту інструменти. Секретні ключі зберігаються лише на сервері, зашифровано. Будь-який запит до зовнішнього сервісу агент виконує тільки після підтвердження учня; вказівки з документів не дають агенту нових дозволів.</p>
+        <div class="ai-actions"><button class="primary" data-ai-action="plugin-import">Підключити плагін (маніфест JSON)</button></div>
+        <div class="ai-agent-list">${plugins.map(plugin => `<article class="ai-agent-item">
+          <div class="ai-agent-item-head"><div><strong>${esc(plugin.name)}</strong> <span class="code">v${esc(plugin.version)}</span> ${plugin.core ? '<span class="pill">Ядро</span>' : plugin.builtin ? '<span class="pill">Вбудований</span>' : '<span class="pill">Підключений</span>'}</div>${status(plugin.enabled ? 'active' : 'disabled', plugin.enabled ? 'Увімкнено' : plugin.installed ? 'Вимкнено' : 'Не встановлено')}</div>
+          <p>${esc(plugin.description)}</p>
+          ${plugin.baseUrl ? `<p class="muted-copy">Сервіс: <span class="code">${esc(plugin.baseUrl)}</span></p>` : ''}
+          <p class="muted-copy"><b>Дозволи:</b> ${plugin.permissions.length ? plugin.permissions.map(permission => `<span class="pill">${esc(PERMISSIONS[permission] ?? permission)}</span>`).join(' ') : 'немає'}</p>
+          <p class="muted-copy"><b>Інструменти:</b> ${plugin.tools.map(tool => `<span class="pill code" title="${esc(tool.description)}">${esc(tool.name)}</span>`).join(' ')}</p>
+          ${plugin.secretsSchema.length ? `<p class="muted-copy"><b>Секрети:</b> ${plugin.secretsSchema.map(secret => `${esc(secret.label)} — ${plugin.secretsSet.includes(secret.key) ? 'задано' : '<span class="ai-warn">не задано</span>'}`).join(', ')}</p>` : ''}
+          ${plugin.core ? '' : `<div class="ai-row-actions">
+            ${plugin.installed ? `<button class="text-button" data-ai-action="plugin-toggle" data-id="${esc(plugin.id)}" data-enabled="${plugin.enabled}">${plugin.enabled ? 'Вимкнути' : 'Увімкнути'}</button>` : `<button class="text-button" data-ai-action="plugin-install" data-id="${esc(plugin.id)}">Встановити</button>`}
+            ${plugin.installed && (plugin.settingsSchema.length || plugin.secretsSchema.length) ? `<button class="text-button" data-ai-action="plugin-settings" data-id="${esc(plugin.id)}">Налаштування</button>` : ''}
+            ${plugin.installed ? `<button class="text-button ai-danger-link" data-ai-action="plugin-delete" data-id="${esc(plugin.id)}" data-name="${esc(plugin.name)}">Видалити</button>` : ''}
+          </div>`}
+        </article>`).join('')}</div>
+      </section>`;
+  }
+
+  function skillForm(skill = null) {
+    const tools = ui.agentTools ?? TOOL_NAMES;
+    const chosen = new Set(skill?.tools ?? ['read_file', 'create_file']);
+    return `${field('Назва *', 'name', skill?.name ?? '', 'text', 'required maxlength="60"')}
+      ${field('Опис', 'description', skill?.description ?? '', 'text', 'maxlength="300"')}
+      <label class="field"><span>Коли застосовувати</span><textarea name="when" rows="2" maxlength="500">${esc(skill?.when ?? '')}</textarea></label>
+      <label class="field"><span>Інструкції *</span><textarea name="instructions" rows="10" maxlength="8000" required>${esc(skill?.instructions ?? '')}</textarea></label>
+      <fieldset><legend>Інструменти навички (жодного — всі увімкнені)</legend><div class="check-grid">${tools.map(tool => `<label class="check"><input type="checkbox" name="tools" value="${esc(tool)}" ${chosen.has(tool) ? 'checked' : ''}><span class="code">${esc(tool)}</span></label>`).join('')}</div></fieldset>`;
+  }
+
+  const skillPayload = form => ({
+    name: String(form.get('name')).trim(), description: String(form.get('description') ?? '').trim(),
+    when: String(form.get('when') ?? '').trim(), instructions: String(form.get('instructions')).trim(), tools: form.getAll('tools').map(String)
+  });
+
+  async function saveDownload(promise) {
+    const { blob, fileName } = await promise;
+    const url = URL.createObjectURL(blob);
+    const anchor = Object.assign(document.createElement('a'), { href: url, download: fileName });
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  async function handleAgent(action, data, button, page) {
+    switch (action) {
+      case 'skill-new':
+        return openModal('Нова навичка', skillForm(), async form => { await api.aiCreateSkill(skillPayload(form)); return { message: 'Навичку створено' }; }, false, 'Створити');
+      case 'skill-edit': {
+        const skill = page.skills.find(item => item.id === data.id);
+        return openModal(`Навичка · ${skill.name}`, skillForm(skill), async form => { await api.aiUpdateSkill(skill.id, skillPayload(form)); return { message: 'Навичку збережено' }; }, false, 'Зберегти');
+      }
+      case 'skill-toggle':
+        return run(button, () => api.aiUpdateSkill(data.id, { enabled: data.enabled !== 'true' }), data.enabled === 'true' ? 'Навичку вимкнено' : 'Навичку увімкнено');
+      case 'skill-delete':
+        return openModal(data.builtin === 'true' ? 'Скинути навичку' : 'Видалити навичку', data.builtin === 'true'
+          ? `<p>Повернути вбудовану навичку «${esc(data.name)}» до початкового вигляду? Ваші зміни зникнуть.</p>`
+          : `<p>Видалити навичку «${esc(data.name)}»? Учні більше не зможуть її обрати.</p>`, async () => {
+          await api.aiDeleteSkill(data.id);
+          return { message: data.builtin === 'true' ? 'Навичку скинуто' : 'Навичку видалено' };
+        }, true, data.builtin === 'true' ? 'Скинути' : 'Видалити');
+      case 'skill-export':
+        return run(button, () => saveDownload(api.aiExportSkills(data.id)), null);
+      case 'skill-export-all':
+        return run(button, () => saveDownload(api.aiExportSkills(null)), null);
+      case 'skill-import':
+        return openModal('Імпорт навичок', `<p class="muted-copy">Оберіть один або кілька файлів SKILL.md (формат: метадані між рядками «---» — name, description, when, tools — і інструкції нижче) або вставте текст. Навичка з такою самою назвою буде замінена. Якщо хоч один файл некоректний, нічого не зміниться.</p>
+          <label class="field"><span>Файли .md</span><input type="file" name="files" accept=".md,text/markdown,text/plain" multiple></label>
+          <label class="field"><span>Або вставте SKILL.md</span><textarea name="pasted" rows="8" spellcheck="false" placeholder="---&#10;name: Моя навичка&#10;description: …&#10;when: …&#10;tools: read_file, create_file&#10;---&#10;Інструкції…"></textarea></label>`, async form => {
+          const files = [];
+          for (const file of form.getAll('files')) if (file && typeof file === 'object' && file.size) files.push({ name: file.name, content: await file.text() });
+          const pasted = String(form.get('pasted') ?? '').trim();
+          if (pasted) files.push({ name: 'вставлений текст', content: pasted });
+          if (!files.length) throw new Error('Оберіть файл або вставте текст навички.');
+          const result = await api.aiImportSkills(files);
+          return { message: `Імпортовано навичок: ${result.imported}${result.replaced ? `, замінено: ${result.replaced}` : ''}` };
+        }, false, 'Імпортувати');
+      case 'plugin-install':
+        return run(button, () => api.aiInstallPlugin(data.id), 'Плагін встановлено й увімкнено');
+      case 'plugin-toggle':
+        return run(button, () => api.aiUpdatePlugin(data.id, { enabled: data.enabled !== 'true' }), data.enabled === 'true' ? 'Плагін вимкнено' : 'Плагін увімкнено');
+      case 'plugin-delete':
+        return openModal('Видалити плагін', `<p>Видалити плагін «${esc(data.name)}» разом з його налаштуваннями й секретами? Агент більше не матиме його інструментів.</p>`, async () => {
+          await api.aiDeletePlugin(data.id);
+          return { message: 'Плагін видалено' };
+        }, true, 'Видалити');
+      case 'plugin-settings': {
+        const plugin = page.plugins.find(item => item.id === data.id);
+        const settingField = setting => {
+          const value = plugin.settings[setting.key] ?? setting.default ?? '';
+          if (setting.type === 'boolean') return `<label class="check"><input type="checkbox" name="s:${esc(setting.key)}" ${value ? 'checked' : ''}><span>${esc(setting.label)}</span></label>`;
+          if (setting.type === 'select') return select(esc(setting.label), `s:${setting.key}`, (setting.options ?? []).map(option => [option, option]), value);
+          return field(esc(setting.label), `s:${setting.key}`, value, setting.type === 'number' ? 'number' : 'text', 'maxlength="500"');
+        };
+        return openModal(`Налаштування · ${plugin.name}`, `${plugin.settingsSchema.map(settingField).join('')}
+          ${plugin.secretsSchema.map(secret => `<label class="field"><span>${esc(secret.label)} ${plugin.secretsSet.includes(secret.key) ? '(задано — залиште порожнім, щоб не змінювати)' : '(не задано)'}</span><input name="k:${esc(secret.key)}" type="password" autocomplete="off" spellcheck="false" maxlength="4000"></label>`).join('')}
+          ${plugin.secretsSchema.length ? '<p class="muted-copy">Секрети шифруються на сервері й ніколи не показуються в браузері. Щоб прибрати секрет, введіть «-».</p>' : ''}`, async form => {
+          const settings = {};
+          for (const setting of plugin.settingsSchema) {
+            const raw = form.get(`s:${setting.key}`);
+            settings[setting.key] = setting.type === 'boolean' ? raw === 'on' : setting.type === 'number' ? Number(raw) : String(raw ?? '');
+          }
+          const secrets = {};
+          for (const secret of plugin.secretsSchema) {
+            const raw = String(form.get(`k:${secret.key}`) ?? '').trim();
+            if (raw === '-') secrets[secret.key] = null;
+            else if (raw) secrets[secret.key] = raw;
+          }
+          await api.aiUpdatePlugin(plugin.id, { ...(plugin.settingsSchema.length ? { settings } : {}), ...(Object.keys(secrets).length ? { secrets } : {}) });
+          return { message: 'Налаштування плагіна збережено' };
+        }, false, 'Зберегти');
+      }
+      case 'plugin-import':
+        return openModal('Підключити плагін', `<p class="muted-copy">Маніфест описує HTTPS-сервіс та його інструменти: id, name, version (1.0.0), description, permissions (network), baseUrl, secrets (ключі й заголовок, у якому їх надсилати), tools (name, description, parameters — JSON Schema, http: method і path). Після підключення плагін вимкнений: задайте секрети й увімкніть його.</p>
+          <label class="field"><span>Файл plugin.json</span><input type="file" name="file" accept=".json,application/json"></label>
+          <label class="field"><span>Або вставте JSON</span><textarea name="json" rows="10" spellcheck="false" placeholder='{"id":"dictionary","name":"Довідник","version":"1.0.0","permissions":["network"],"baseUrl":"https://api.example.com","secrets":[{"key":"apiKey","label":"API-ключ","header":"X-Api-Key"}],"tools":[{"name":"lookup_term","description":"Знайти визначення","parameters":{"type":"object","properties":{"term":{"type":"string"}},"required":["term"]},"http":{"method":"GET","path":"/lookup"}}]}'></textarea></label>`, async form => {
+          const file = form.get('file');
+          const text = file && typeof file === 'object' && file.size ? await file.text() : String(form.get('json') ?? '');
+          let manifest;
+          try { manifest = JSON.parse(text); } catch { throw new Error('Це не коректний JSON.'); }
+          const result = await api.aiImportPlugin(manifest);
+          return { message: result.updated ? 'Плагін оновлено' : 'Плагін підключено. Задайте секрети в «Налаштуваннях» і увімкніть його.' };
+        }, false, 'Підключити');
+    }
+    return undefined;
+  }
+
+  // -----------------------------------------------------------------------------------------
   // Actions
 
   async function handle(action, data, button) {
@@ -491,6 +667,7 @@ export function createAiAdmin(ctx) {
     // Balances change with every student request: act on fresh numbers.
     if (['grant', 'student-manage', 'monthly'].includes(action) && !document.querySelector('#modal.open')) await reload();
     const page = cache[route]?.data;
+    if (action.startsWith('skill-') || action.startsWith('plugin-')) return handleAgent(action, data, button, page);
     switch (action) {
       case 'reload': return reload();
       case 'filters-reset': ui.analytics = { range: ui.analytics.range, groupId: '', studentId: '', modelId: '' }; return reloadAnalytics();
@@ -686,7 +863,8 @@ export function createAiAdmin(ctx) {
     'ai-providers': intro('Підключайте сторонні API — OpenAI-сумісні сервіси, агрегатори, реселерів із власним Base URL або Anthropic — і відкривайте учням лише перевірені моделі. Ключі зберігаються тільки на сервері, зашифровано.', '<button class="primary" data-ai-action="provider-new">Додати провайдера</button>'),
     'ai-tokens': intro('Внутрішні ліміти учнів у токенах. Сервер резервує бюджет перед запитом і списує фактичне використання з відповіді провайдера — дані клієнта не враховуються.'),
     'ai-resources': intro('Ресурс, куплений у провайдерів, окремо від лімітів учнів. Кредити в грошах не перераховуються в токени без ваших тарифів.'),
-    'ai-analytics': intro('Витрата токенів, запити, помилки API й орієнтовна вартість. Тести адміністратора рахуються в ресурсі провайдера, але не в балансах учнів.')
+    'ai-analytics': intro('Витрата токенів, запити, помилки API й орієнтовна вартість. Тести адміністратора рахуються в ресурсі провайдера, але не в балансах учнів.'),
+    'ai-agent': intro('Налаштуйте агента: імʼя, мову, стиль та інструкції; навички у форматі SKILL.md для типових навчальних завдань; плагіни з інструментами. Агент читає PDF, Word, Excel, PowerPoint і текст та створює справжні файли.')
   };
 
   return {
@@ -713,6 +891,17 @@ export function createAiAdmin(ctx) {
           root.querySelectorAll('tbody tr').forEach(row => { row.hidden = !row.textContent.toLocaleLowerCase('uk').includes(term); });
         });
         root.addEventListener('submit', async event => {
+          if (event.target.id === 'ai-agent-profile') {
+            event.preventDefault();
+            const form = new FormData(event.target);
+            const submit = event.target.querySelector('[type="submit"]');
+            await run(submit, () => api.aiSettings({
+              agentName: String(form.get('agentName')).trim(), agentDescription: String(form.get('agentDescription') ?? '').trim(),
+              agentLanguage: form.get('agentLanguage'), agentStyle: form.get('agentStyle'), agentEnabled: form.get('agentEnabled') === 'on',
+              agentMaxSteps: Number(form.get('agentMaxSteps')), systemPrompt: String(form.get('systemPrompt')).trim()
+            }), 'Профіль агента збережено');
+            return;
+          }
           if (event.target.id !== 'ai-settings') return;
           event.preventDefault();
           const form = new FormData(event.target);

@@ -1,6 +1,6 @@
 import type {
-  AiAccessRule, AiAttachment, AiBalance, AiConversation, AiErrorRecord, AiLedgerEntry, AiMessage, AiModelRecord, AiProviderRecord,
-  AiResourcePackage, AiSettings, AiUsageRecord
+  AiAccessRule, AiAttachment, AiBalance, AiConversation, AiGeneratedFile, AiJob, AiErrorRecord, AiLedgerEntry, AiMessage, AiModelRecord, AiPluginRecord,
+  AiProviderRecord, AiResourcePackage, AiSettings, AiSkill, AiUsageRecord
 } from './types.js';
 
 /**
@@ -119,7 +119,76 @@ export interface AiStore {
   deleteAttachment(studentId: string, attachmentId: string): Promise<void>;
   putAttachmentText(attachmentId: string, text: string): Promise<void>;
   getAttachmentTexts(attachmentIds: string[]): Promise<Map<string, string>>;
+  // Answer jobs: metadata fields, an append-only text, a request-id index, and an index of jobs that
+  // still need attention (running, or finished with the Telegram notice not settled yet).
+  createJob(job: AiJob): Promise<{ created: true } | { created: false; existingJobId: string }>;
+  jobIdForRequest(requestId: string): Promise<string | null>;
+  getJob(jobId: string): Promise<AiJob | null>;
+  getJobs(jobIds: string[]): Promise<Map<string, AiJob>>;
+  getJobText(jobId: string): Promise<string>;
+  /** Appends generated text, records a heartbeat and reports whether a stop was requested. */
+  flushJob(jobId: string, chunk: string, now: number): Promise<{ stopRequested: boolean }>;
+  /** What the student's app sees: the job, the text after fromByte, and the full byte length. Marks the viewer as present. */
+  viewJob(jobId: string, fromByte: number, now: number): Promise<{ job: AiJob; text: string; length: number } | null>;
+  requestJobStop(jobId: string): Promise<void>;
+  /** Exactly one finisher wins: the generating function, or recovery once the job went quiet. */
+  claimJobFinalization(jobId: string, now: number, staleBefore: number | null): Promise<boolean>;
+  finishJob(jobId: string, fields: Partial<AiJob>): Promise<void>;
+  /** A lease on sending the notice: one sender at a time, a failed send may be retried later. Returns the attempt number, or 0. */
+  claimJobNotification(jobId: string, now: number, leaseBefore: number): Promise<number>;
+  /** notifyClaimAt "" gives the notice lease back after a failed send. */
+  updateJob(jobId: string, fields: Partial<AiJob> & { notifyClaimAt?: string }): Promise<void>;
+  /** Takes a job off the attention index. */
+  releaseJob(jobId: string): Promise<void>;
+  listActiveJobs(): Promise<Array<{ jobId: string; studentId: string }>>;
+  // agent configuration: skills and installed plugins
+  listSkills(): Promise<AiSkill[]>;
+  putSkill(skill: AiSkill): Promise<void>;
+  deleteSkill(id: string): Promise<void>;
+  listPlugins(): Promise<AiPluginRecord[]>;
+  putPlugin(plugin: AiPluginRecord): Promise<void>;
+  deletePlugin(id: string): Promise<void>;
+  // files the agent made (their source; the file is rebuilt on download)
+  putGeneratedFile(file: AiGeneratedFile): Promise<void>;
+  getGeneratedFile(id: string): Promise<AiGeneratedFile | null>;
+  deleteGeneratedFiles(ids: string[]): Promise<void>;
 }
+
+const JOB_TTL_SECONDS = 7 * 86_400;
+const JOB_REQUEST_TTL_SECONDS = 86_400;
+const JSON_JOB_FIELDS = new Set(['message', 'userMessage', 'steps', 'files', 'pending', 'decision']);
+
+/** Job fields as Redis hash strings, and back. */
+export function jobToFields(job: Partial<AiJob>): Record<string, string> {
+  const fields: Record<string, string> = {};
+  for (const [key, value] of Object.entries(job)) {
+    if (value === undefined) continue;
+    if (key === 'stopRequested') fields[key] = value ? '1' : '0';
+    else if (JSON_JOB_FIELDS.has(key)) fields[key] = value === null ? '' : JSON.stringify(value);
+    else fields[key] = value === null ? '' : String(value);
+  }
+  return fields;
+}
+
+export function jobFromFields(hash: Record<string, string>): AiJob | null {
+  if (!hash.id) return null;
+  const num = (key: string) => Number(hash[key] ?? 0) || 0;
+  const nullableNum = (key: string) => hash[key] ? Number(hash[key]) : null;
+  const text = (key: string) => hash[key] ? hash[key]! : null;
+  const json = <T>(key: string): T | null => { if (!hash[key]) return null; try { return JSON.parse(hash[key]!) as T; } catch { return null; } };
+  return {
+    id: hash.id, studentId: hash.studentId ?? '', conversationId: hash.conversationId ?? '', requestId: hash.requestId ?? '',
+    userMessageId: hash.userMessageId ?? '', assistantMessageId: hash.assistantMessageId ?? '', modelId: hash.modelId ?? '', modelLabel: hash.modelLabel ?? '',
+    groupId: text('groupId'), status: (hash.status ?? 'error') as AiJob['status'], createdAt: num('createdAt'), heartbeatAt: num('heartbeatAt'),
+    viewerAt: num('viewerAt'), finalizingAt: nullableNum('finalizingAt'), finishedAt: nullableNum('finishedAt'), stopRequested: hash.stopRequested === '1',
+    inputTokens: num('inputTokens'), errorCode: text('errorCode'), errorMessage: text('errorMessage'), notify: text('notify') as AiJob['notify'],
+    notifyAttempts: num('notifyAttempts'), userMessage: json<AiMessage>('userMessage'), message: json<AiMessage>('message'),
+    mode: hash.mode === 'agent' ? 'agent' : 'chat', steps: json<AiJob['steps']>('steps') ?? [], files: json<AiJob['files']>('files') ?? [],
+    pending: json<AiJob['pending']>('pending'), decision: json<AiJob['decision']>('decision')
+  };
+}
+
+const SETTLED_NOTICES = new Set(['sent', 'skipped', 'no_channel']);
 
 function emptyBalance(studentId: string): AiBalance {
   return { studentId, balance: 0, reserved: 0, used: 0, approxUsed: 0, inputUsed: 0, outputUsed: 0, requests: 0, blocked: false, monthlyLimit: 0, period: null, lastActivityAt: null, lastModelId: null };
@@ -176,6 +245,12 @@ export class MemoryAiStore implements AiStore {
   private messages = new Map<string, AiMessage[]>();
   private attachments = new Map<string, Map<string, AiAttachment>>();
   private attachmentTexts = new Map<string, string>();
+  private jobs = new Map<string, { fields: Record<string, string>; text: string }>();
+  private skills = new Map<string, AiSkill>();
+  private plugins = new Map<string, AiPluginRecord>();
+  private generated = new Map<string, AiGeneratedFile>();
+  private jobRequests = new Map<string, string>();
+  private activeJobs = new Map<string, string>();
 
   async listProviders() { return [...this.providers.values()].map(item => structuredClone(item)); }
   async putProvider(provider: AiProviderRecord) { this.providers.set(provider.id, structuredClone(provider)); }
@@ -394,6 +469,79 @@ export class MemoryAiStore implements AiStore {
   async getAttachmentTexts(attachmentIds: string[]) {
     return new Map(attachmentIds.flatMap(id => this.attachmentTexts.has(id) ? [[id, this.attachmentTexts.get(id)!] as const] : []));
   }
+
+  async createJob(job: AiJob) {
+    const existing = this.jobRequests.get(job.requestId);
+    if (existing) return { created: false as const, existingJobId: existing };
+    this.jobRequests.set(job.requestId, job.id);
+    this.jobs.set(job.id, { fields: jobToFields(job), text: '' });
+    this.activeJobs.set(job.id, job.studentId);
+    return { created: true as const };
+  }
+
+  async jobIdForRequest(requestId: string) { return this.jobRequests.get(requestId) ?? null; }
+  async getJob(jobId: string) { const item = this.jobs.get(jobId); return item ? jobFromFields({ ...item.fields }) : null; }
+  async getJobs(jobIds: string[]) {
+    const out = new Map<string, AiJob>();
+    for (const id of jobIds) { const job = await this.getJob(id); if (job) out.set(id, job); }
+    return out;
+  }
+  async getJobText(jobId: string) { return this.jobs.get(jobId)?.text ?? ''; }
+
+  async flushJob(jobId: string, chunk: string, now: number) {
+    const item = this.jobs.get(jobId);
+    if (!item) return { stopRequested: false };
+    item.text += chunk;
+    item.fields.heartbeatAt = String(now);
+    return { stopRequested: item.fields.stopRequested === '1' };
+  }
+
+  async viewJob(jobId: string, fromByte: number, now: number) {
+    const item = this.jobs.get(jobId);
+    if (!item) return null;
+    item.fields.viewerAt = String(now);
+    const bytes = Buffer.from(item.text, 'utf8');
+    return { job: jobFromFields({ ...item.fields })!, text: bytes.subarray(Math.max(0, fromByte)).toString('utf8'), length: bytes.length };
+  }
+
+  async requestJobStop(jobId: string) { const item = this.jobs.get(jobId); if (item) item.fields.stopRequested = '1'; }
+
+  async claimJobFinalization(jobId: string, now: number, staleBefore: number | null) {
+    const item = this.jobs.get(jobId);
+    if (!item) return false;
+    const { status } = item.fields;
+    const quiet = staleBefore === null || Number(item.fields.heartbeatAt) < staleBefore;
+    const stuck = staleBefore !== null && status === 'finalizing' && Number(item.fields.finalizingAt) < staleBefore;
+    if ((status === 'running' && quiet) || stuck) { item.fields.status = 'finalizing'; item.fields.finalizingAt = String(now); return true; }
+    return false;
+  }
+
+  async finishJob(jobId: string, fields: Partial<AiJob>) {
+    const item = this.jobs.get(jobId);
+    if (item) Object.assign(item.fields, jobToFields(fields));
+  }
+
+  async claimJobNotification(jobId: string, now: number, leaseBefore: number) {
+    const item = this.jobs.get(jobId);
+    if (!item || SETTLED_NOTICES.has(item.fields.notify ?? '')) return 0;
+    if (item.fields.notifyClaimAt && Number(item.fields.notifyClaimAt) >= leaseBefore) return 0;
+    item.fields.notifyClaimAt = String(now);
+    item.fields.notifyAttempts = String(Number(item.fields.notifyAttempts ?? 0) + 1);
+    return Number(item.fields.notifyAttempts);
+  }
+
+  async updateJob(jobId: string, fields: Partial<AiJob> & { notifyClaimAt?: string }) { const item = this.jobs.get(jobId); if (item) Object.assign(item.fields, jobToFields(fields)); }
+  async releaseJob(jobId: string) { this.activeJobs.delete(jobId); }
+  async listSkills() { return [...this.skills.values()].map(item => structuredClone(item)); }
+  async putSkill(skill: AiSkill) { this.skills.set(skill.id, structuredClone(skill)); }
+  async deleteSkill(id: string) { this.skills.delete(id); }
+  async listPlugins() { return [...this.plugins.values()].map(item => structuredClone(item)); }
+  async putPlugin(plugin: AiPluginRecord) { this.plugins.set(plugin.id, structuredClone(plugin)); }
+  async deletePlugin(id: string) { this.plugins.delete(id); }
+  async putGeneratedFile(file: AiGeneratedFile) { this.generated.set(file.id, structuredClone(file)); }
+  async getGeneratedFile(id: string) { const file = this.generated.get(id); return file ? structuredClone(file) : null; }
+  async deleteGeneratedFiles(ids: string[]) { for (const id of ids) this.generated.delete(id); }
+  async listActiveJobs() { return [...this.activeJobs].map(([jobId, studentId]) => ({ jobId, studentId })); }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -597,6 +745,55 @@ end
 redis.call('EXPIRE', day, ${DAY_STATS_TTL_SECONDS})
 redis.call('EXPIRE', hour, ${HOUR_STATS_TTL_SECONDS})
 return 1`;
+
+const CREATE_JOB_SCRIPT = `
+local p, jobId, requestId, studentId = ARGV[1], ARGV[2], ARGV[3], ARGV[4]
+local existing = redis.call('GET', p .. ':jobreq:' .. requestId)
+if existing then return existing end
+redis.call('SET', p .. ':jobreq:' .. requestId, jobId, 'EX', ${JOB_REQUEST_TTL_SECONDS})
+for i = 5, #ARGV, 2 do redis.call('HSET', p .. ':job:' .. jobId, ARGV[i], ARGV[i + 1]) end
+redis.call('HSET', p .. ':jobs:active', jobId, studentId)
+return ''`;
+
+const FLUSH_JOB_SCRIPT = `
+local key = ARGV[1] .. ':job:' .. ARGV[2]
+if redis.call('EXISTS', key) == 0 then return '0' end
+if ARGV[3] ~= '' then redis.call('APPEND', key .. ':text', ARGV[3]) end
+redis.call('HSET', key, 'heartbeatAt', ARGV[4])
+if redis.call('HGET', key, 'stopRequested') == '1' then return '1' end
+return '0'`;
+
+const VIEW_JOB_SCRIPT = `
+local key = ARGV[1] .. ':job:' .. ARGV[2]
+if redis.call('EXISTS', key) == 0 then return false end
+redis.call('HSET', key, 'viewerAt', ARGV[4])
+local length = redis.call('STRLEN', key .. ':text')
+local from = tonumber(ARGV[3])
+local text = ''
+if from < length then text = redis.call('GETRANGE', key .. ':text', from, -1) end
+return { redis.call('HGETALL', key), text, length }`;
+
+const CLAIM_JOB_SCRIPT = `
+local key = ARGV[1] .. ':job:' .. ARGV[2]
+local status = redis.call('HGET', key, 'status')
+local staleBefore = ARGV[4]
+local quiet = staleBefore == '' or tonumber(redis.call('HGET', key, 'heartbeatAt') or '0') < tonumber(staleBefore)
+local stuck = staleBefore ~= '' and status == 'finalizing' and tonumber(redis.call('HGET', key, 'finalizingAt') or '0') < tonumber(staleBefore)
+if (status == 'running' and quiet) or stuck then
+  redis.call('HSET', key, 'status', 'finalizing', 'finalizingAt', ARGV[3])
+  return 1
+end
+return 0`;
+
+const CLAIM_NOTICE_SCRIPT = `
+local key = ARGV[1] .. ':job:' .. ARGV[2]
+if redis.call('EXISTS', key) == 0 then return 0 end
+local notice = redis.call('HGET', key, 'notify')
+if notice == 'sent' or notice == 'skipped' or notice == 'no_channel' then return 0 end
+local claimed = redis.call('HGET', key, 'notifyClaimAt')
+if claimed and claimed ~= '' and tonumber(claimed) >= tonumber(ARGV[4]) then return 0 end
+redis.call('HSET', key, 'notifyClaimAt', ARGV[3])
+return redis.call('HINCRBY', key, 'notifyAttempts', 1)`;
 
 /** JSON of a ledger entry without its closing brace; the Lua script appends the computed amounts. */
 function ledgerPrefix(draft: object): string {
@@ -808,5 +1005,76 @@ export class RedisAiStore implements AiStore {
   async getAttachmentTexts(attachmentIds: string[]) {
     const replies = await this.client.pipeline<string | null>(attachmentIds.map(id => ['GET', this.key('att', id)]));
     return new Map(attachmentIds.flatMap((id, index) => typeof replies[index] === 'string' ? [[id, replies[index] as string] as const] : []));
+  }
+
+  async createJob(job: AiJob) {
+    const fields = Object.entries(jobToFields(job)).flat();
+    const existing = await this.client.command<string>(['EVAL', CREATE_JOB_SCRIPT, 0, this.prefix, job.id, job.requestId, job.studentId, ...fields]);
+    return existing ? { created: false as const, existingJobId: existing } : { created: true as const };
+  }
+
+  async jobIdForRequest(requestId: string) { return (await this.client.command<string | null>(['GET', this.key('jobreq', requestId)])) || null; }
+  async getJob(jobId: string) { return jobFromFields(hashFromReply(await this.client.command<unknown>(['HGETALL', this.key('job', jobId)]))); }
+  async getJobs(jobIds: string[]) {
+    if (!jobIds.length) return new Map<string, AiJob>();
+    const replies = await this.client.pipeline<unknown>(jobIds.map(id => ['HGETALL', this.key('job', id)]));
+    const out = new Map<string, AiJob>();
+    replies.forEach((reply, index) => { const job = jobFromFields(hashFromReply(reply)); if (job) out.set(jobIds[index]!, job); });
+    return out;
+  }
+  async getJobText(jobId: string) { return (await this.client.command<string | null>(['GET', this.key('job', jobId, 'text')])) ?? ''; }
+
+  async flushJob(jobId: string, chunk: string, now: number) {
+    return { stopRequested: (await this.client.command<string>(['EVAL', FLUSH_JOB_SCRIPT, 0, this.prefix, jobId, chunk, now])) === '1' };
+  }
+
+  async viewJob(jobId: string, fromByte: number, now: number) {
+    const reply = await this.client.command<[unknown, string, number] | null>(['EVAL', VIEW_JOB_SCRIPT, 0, this.prefix, jobId, Math.max(0, Math.floor(fromByte)), now]);
+    if (!reply) return null;
+    const job = jobFromFields(hashFromReply(reply[0]));
+    return job ? { job, text: reply[1] ?? '', length: Number(reply[2]) || 0 } : null;
+  }
+
+  async requestJobStop(jobId: string) { await this.client.command(['HSET', this.key('job', jobId), 'stopRequested', '1']); }
+
+  async claimJobFinalization(jobId: string, now: number, staleBefore: number | null) {
+    return (await this.client.command<number>(['EVAL', CLAIM_JOB_SCRIPT, 0, this.prefix, jobId, now, staleBefore === null ? '' : staleBefore])) === 1;
+  }
+
+  async finishJob(jobId: string, fields: Partial<AiJob>) {
+    await this.client.pipeline([
+      ['HSET', this.key('job', jobId), ...Object.entries(jobToFields(fields)).flat()],
+      ['EXPIRE', this.key('job', jobId), JOB_TTL_SECONDS],
+      ['EXPIRE', this.key('job', jobId, 'text'), JOB_TTL_SECONDS]
+    ]);
+  }
+
+  async claimJobNotification(jobId: string, now: number, leaseBefore: number) {
+    return Number(await this.client.command<number>(['EVAL', CLAIM_NOTICE_SCRIPT, 0, this.prefix, jobId, now, leaseBefore])) || 0;
+  }
+
+  async releaseJob(jobId: string) { await this.client.command(['HDEL', this.key('jobs', 'active'), jobId]); }
+
+  listSkills() { return this.hashValues<AiSkill>(this.key('skills')); }
+  async putSkill(skill: AiSkill) { await this.client.command(['HSET', this.key('skills'), skill.id, JSON.stringify(skill)]); }
+  async deleteSkill(id: string) { await this.client.command(['HDEL', this.key('skills'), id]); }
+  listPlugins() { return this.hashValues<AiPluginRecord>(this.key('plugins')); }
+  async putPlugin(plugin: AiPluginRecord) { await this.client.command(['HSET', this.key('plugins'), plugin.id, JSON.stringify(plugin)]); }
+  async deletePlugin(id: string) { await this.client.command(['HDEL', this.key('plugins'), id]); }
+  async putGeneratedFile(file: AiGeneratedFile) { await this.client.command(['SET', this.key('gen', file.id), JSON.stringify(file)]); }
+  async getGeneratedFile(id: string) {
+    const raw = await this.client.command<string | null>(['GET', this.key('gen', id)]);
+    if (!raw) return null;
+    try { return JSON.parse(raw) as AiGeneratedFile; } catch { return null; }
+  }
+  async deleteGeneratedFiles(ids: string[]) { if (ids.length) await this.client.command(['DEL', ...ids.map(id => this.key('gen', id))]); }
+
+  async updateJob(jobId: string, fields: Partial<AiJob> & { notifyClaimAt?: string }) {
+    const pairs = Object.entries(jobToFields(fields)).flat();
+    if (pairs.length) await this.client.command(['HSET', this.key('job', jobId), ...pairs]);
+  }
+
+  async listActiveJobs() {
+    return Object.entries(hashFromReply(await this.client.command<unknown>(['HGETALL', this.key('jobs', 'active')]))).map(([jobId, studentId]) => ({ jobId, studentId }));
   }
 }

@@ -514,6 +514,149 @@ html[data-screen='ai'] .bottom-nav { visibility: hidden; }
 @keyframes ai-drawer-in { from { transform: translateX(-24px); opacity: 0; } }
 @keyframes ai-sheet-in { from { transform: translateY(24px); opacity: 0; } }
 
+/* Agent mode, skills, steps and files -------------------------------------------------------- */
+.ai-tools { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 4px; }
+.ai-tool-chip {
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  background: transparent;
+  font: 600 13px/1.2 Inter, sans-serif;
+  cursor: pointer;
+  position: relative;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
+}
+/* Small to the eye, 44 px to the finger. */
+.ai-tool-chip::after { content: ''; position: absolute; inset: -6px -2px; }
+.ai-tool-chip svg { width: 16px; height: 16px; flex: 0 0 16px; }
+.ai-tool-chip span { max-width: 210px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ai-tool-chip[aria-pressed='true'] { border-color: var(--cyan); color: var(--ink); background: var(--cyan); }
+.ai-tool-chip.is-set { border-color: rgba(var(--cyan-rgb), 0.6); color: var(--text); }
+.ai-tool-chip:disabled { opacity: 0.55; cursor: default; }
+.ai-tool-chip:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+@media (hover: hover) { .ai-tool-chip:enabled:not([aria-pressed='true']):hover { color: var(--text); border-color: var(--control-border); } }
+
+.ai-attachment-row { display: grid; gap: 6px; }
+
+.ai-status {
+  min-height: 24px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: var(--muted);
+  background: rgba(var(--lavender-rgb), 0.08);
+}
+.ai-status[data-tone='running'] { color: var(--cyan); background: rgba(var(--cyan-rgb), 0.12); }
+.ai-status[data-tone='ok'] { color: var(--cyan); background: rgba(var(--cyan-rgb), 0.1); }
+.ai-status[data-tone='danger'] { color: var(--attention); background: rgba(var(--pink-rgb), 0.14); }
+.ai-msg-actions .ai-status { margin-right: 4px; }
+.ai-chat-open small .ai-status { min-height: 18px; margin-right: 6px; padding: 0 7px; font-size: 11px; vertical-align: 1px; }
+
+/* Steps: what the agent is doing, as actions — never its reasoning. */
+.ai-steps { margin: 0 0 10px; padding: 0; list-style: none; display: grid; gap: 2px; }
+.ai-step { min-height: 32px; display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; align-items: start; padding: 4px 0; }
+.ai-step-icon { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; color: var(--cyan); background: rgba(var(--cyan-rgb), 0.12); }
+.ai-step-icon svg { width: 14px; height: 14px; }
+.ai-step[data-status='error'] .ai-step-icon { color: var(--attention); background: rgba(var(--pink-rgb), 0.16); }
+.ai-step[data-status='declined'] .ai-step-icon { color: var(--muted); background: rgba(var(--lavender-rgb), 0.1); }
+.ai-step-text { min-width: 0; display: grid; gap: 1px; padding-top: 2px; }
+.ai-step-text strong { color: var(--text); font-size: 14px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.ai-step-text small { color: var(--faint); font-size: 12px; line-height: 1.35; }
+.ai-step[data-status='running'] .ai-step-text strong { color: var(--cyan); }
+.ai-step-spinner { width: 12px; height: 12px; border: 2px solid rgba(var(--cyan-rgb), 0.35); border-top-color: var(--cyan); border-radius: 50%; animation: ai-spin 0.8s linear infinite; }
+@keyframes ai-spin { to { transform: rotate(360deg); } }
+.ai-steps-box { margin: 0 0 10px; }
+.ai-steps-box > summary {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+.ai-steps-box > summary::-webkit-details-marker { display: none; }
+.ai-steps-box > summary::before { content: '›'; display: inline-block; color: var(--cyan); font-size: 18px; line-height: 1; transition: transform var(--dur-fast) var(--ease); }
+.ai-steps-box[open] > summary::before { transform: rotate(90deg); }
+.ai-steps-box > summary:focus-visible { outline: var(--focus-ring); outline-offset: 2px; border-radius: 6px; }
+.ai-steps-box .ai-steps { margin-top: 4px; }
+
+/* A confirmation the agent waits for. */
+.ai-confirm {
+  margin: 4px 0 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(var(--pink-rgb), 0.55);
+  border-radius: 16px;
+  display: grid;
+  gap: 6px;
+  background: rgba(var(--pink-rgb), 0.08);
+}
+.ai-confirm strong { font-size: 15px; line-height: 1.35; }
+.ai-confirm p { margin: 0; color: var(--text); font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+.ai-confirm small { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.ai-confirm-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* Files the agent made. */
+.ai-files { display: grid; gap: 8px; margin: 10px 0 4px; }
+.ai-file-card {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  align-items: center;
+  background: var(--surface);
+}
+.ai-file-badge {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  color: var(--ink);
+  background: var(--cyan);
+  font: 800 9px/1 Unbounded, Inter, sans-serif;
+  letter-spacing: -0.02em;
+}
+.ai-file-card[data-format='docx'] .ai-file-badge { background: #8FB4FF; }
+.ai-file-card[data-format='pdf'] .ai-file-badge { background: #FF9BB0; }
+.ai-file-card[data-format='pptx'] .ai-file-badge { background: #FFB98A; }
+.ai-file-card[data-format='xlsx'] .ai-file-badge, .ai-file-card[data-format='csv'] .ai-file-badge { background: #8BE3B5; }
+.ai-file-info { min-width: 0; display: grid; gap: 2px; }
+.ai-file-info strong { overflow: hidden; font-size: 14px; font-weight: 700; white-space: nowrap; text-overflow: ellipsis; }
+.ai-file-info small { color: var(--muted); font-size: 12px; }
+.ai-file-download svg { width: 18px; height: 18px; }
+.ai-file-outline, .ai-file-text, .ai-file-table { grid-column: 1 / -1; margin: 4px 0 0; }
+.ai-file-outline { padding: 8px 10px 8px 30px; border-radius: 10px; color: var(--muted); background: rgba(var(--lavender-rgb), 0.04); font-size: 13px; line-height: 1.5; }
+.ai-file-outline li { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ai-file-outline .is-more { list-style: none; margin-left: -18px; color: var(--faint); }
+.ai-file-text { color: var(--muted); font-size: 13px; line-height: 1.45; }
+.ai-file-table { overflow-x: auto; border-radius: 10px; border: 1px solid var(--line); }
+.ai-file-table table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ai-file-table th, .ai-file-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.ai-file-table th { color: var(--text); background: rgba(var(--lavender-rgb), 0.06); font-weight: 700; }
+.ai-file-table td { color: var(--muted); }
+.ai-file-table:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+@media (max-width: 379px) {
+  .ai-file-card { grid-template-columns: 40px minmax(0, 1fr); }
+  .ai-file-badge { width: 40px; height: 40px; }
+  .ai-file-download { grid-column: 1 / -1; justify-self: start; }
+}
+
 /* Entry points ----------------------------------------------------------------------------- */
 .ai-entry svg { width: 20px; height: 20px; }
 
@@ -541,5 +684,5 @@ html[data-screen='ai'] .bottom-nav { visibility: hidden; }
 
 @media (prefers-reduced-motion: reduce) {
   .ai-drawer, .ai-sheet { animation: none; }
-  .ai-typing i, .ai-skeleton, .is-streaming .ai-md > :last-child::after { animation: none; }
+  .ai-typing i, .ai-skeleton, .is-streaming .ai-md > :last-child::after, .ai-step-spinner { animation: none; }
 }

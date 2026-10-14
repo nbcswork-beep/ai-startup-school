@@ -8,6 +8,16 @@ async function request(path,options={},retry=true){
   const payload=response.status===204?null:await response.json().catch(()=>({}));if(!response.ok){const error=new Error(payload?.error?.message||'Не вдалося виконати захищену операцію');error.status=response.status;throw error}if(options.method&&!path.startsWith('/auth/'))announceAcademicChange();return payload;
 }
 
+/** A file from a protected endpoint (exports), with the name the server gave it. */
+async function download(path,retry=true){
+  const headers=new Headers();if(accessToken)headers.set('authorization',`Bearer ${accessToken}`);
+  const response=await fetch(`/api/v1${path}`,{headers,credentials:'include',cache:'no-store'});
+  if(response.status===401&&retry){const refreshed=await fetch('/api/v1/auth/refresh',{method:'POST',credentials:'include'});if(refreshed.ok){accessToken=(await refreshed.json()).accessToken;return download(path,false)}}
+  if(!response.ok){const payload=await response.json().catch(()=>({}));throw new Error(payload?.error?.message||'Не вдалося завантажити файл')}
+  const disposition=response.headers.get('content-disposition')??'';
+  return{blob:await response.blob(),fileName:/filename="([^"]+)"/.exec(disposition)?.[1]??'download'};
+}
+
 export const adminApi={
   async authenticate(){const response=await request('/auth/refresh',{method:'POST'},false);accessToken=response.accessToken;return response.user},
   async logout(){await request('/auth/logout',{method:'POST'},false);accessToken=''},
@@ -73,5 +83,15 @@ Object.assign(adminApi,{
   aiCreatePackage:input=>request('/admin/ai/resources/packages',json('POST',input)),
   aiUpdatePackage:(id,input)=>request(`/admin/ai/resources/packages/${id}`,json('PATCH',input)),
   aiDeletePackage:id=>request(`/admin/ai/resources/packages/${id}`,{method:'DELETE'}),
+  aiAgent:()=>request('/admin/ai/agent'),
+  aiCreateSkill:input=>request('/admin/ai/skills',json('POST',input)),
+  aiUpdateSkill:(id,input)=>request(`/admin/ai/skills/${id}`,json('PATCH',input)),
+  aiDeleteSkill:id=>request(`/admin/ai/skills/${id}`,{method:'DELETE'}),
+  aiImportSkills:files=>request('/admin/ai/skills/import',json('POST',{files})),
+  aiExportSkills:id=>download(`/admin/ai/skills/export${id?`?id=${encodeURIComponent(id)}`:''}`),
+  aiInstallPlugin:id=>request(`/admin/ai/plugins/${id}/install`,json('POST')),
+  aiImportPlugin:manifest=>request('/admin/ai/plugins/import',json('POST',{manifest})),
+  aiUpdatePlugin:(id,input)=>request(`/admin/ai/plugins/${id}`,json('PATCH',input)),
+  aiDeletePlugin:id=>request(`/admin/ai/plugins/${id}`,{method:'DELETE'}),
   aiAnalytics:filter=>request(`/admin/ai/analytics?${new URLSearchParams(Object.entries(filter).filter(([,value])=>value))}`)
 });

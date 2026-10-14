@@ -2,7 +2,7 @@ import {startAcademicSync} from './academic-sync.js';
 import { api } from './api.js';
 import { createActionGate, createNavigationGuard, navigationSection, performUiAction } from './student-interactions.js';
 import { HOMEWORK_FILE_ACCEPT, checkSelection, formatFileSize, isFinalUploadError, sendFile } from './homework-uploads.js';
-import { aiHandleBack, aiScreenMarkup, mountAiScreen } from './ai-chat.js';
+import { aiHandleBack, aiScreenMarkup, aiSelectConversation, mountAiScreen } from './ai-chat.js';
 
 const tg = window.Telegram?.WebApp;
 
@@ -1362,6 +1362,21 @@ async function renderFromLocation() {
 window.addEventListener('popstate', renderFromLocation);
 window.addEventListener('hashchange', renderFromLocation);
 
+/** «Відкрити чат» in a Telegram notice opens the Mini App with ?ai=<chat id>: go straight to that chat. */
+function openChatFromLink() {
+  const params = new URLSearchParams(location.search);
+  const id = params.get('ai');
+  if (!id) return;
+  params.delete('ai');
+  const query = params.toString();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    aiSelectConversation(id);
+    history.replaceState(history.state, '', `${location.pathname}${query ? `?${query}` : ''}#ai`);
+  } else {
+    history.replaceState(history.state, '', `${location.pathname}${query ? `?${query}` : ''}${location.hash}`);
+  }
+}
+
 async function initialize() {
   if (actionGate.has('initialize')) return actionGate.get('initialize');
   authError = '';
@@ -1370,6 +1385,7 @@ async function initialize() {
     try {
       await api.authenticate();
       await refreshData();
+      openChatFromLink();
       await renderFromLocation();
     } catch (error) { authError = error.message; errorView(authError); }
   });

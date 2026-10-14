@@ -991,7 +991,7 @@ export class MemoryRepository implements AppRepository {
     const state=await this.runtimeStore.read();this.syncDirectory(state);
     const groups=state.groups.map(group=>({id:group.id,name:group.name,status:group.status}));
     const names=new Map(groups.map(group=>[group.id,group.name]));
-    const students=Object.values(state.directory).filter(person=>person.roles.includes('student')).map(person=>({id:person.id,name:person.displayName,groupId:person.groupId,groupName:person.groupId?names.get(person.groupId)??null:null,status:state.userStatus[person.id]??person.status})).filter(student=>!['archived','deleted'].includes(student.status));
+    const students=Object.values(state.directory).filter(person=>person.roles.includes('student')).map(person=>({id:person.id,name:person.displayName,groupId:person.groupId,groupName:person.groupId?names.get(person.groupId)??null:null,status:state.userStatus[person.id]??person.status,telegramId:this.telegramForUser(state,person.id)})).filter(student=>!['archived','deleted'].includes(student.status));
     return{students,groups};
   }
 

@@ -101,6 +101,29 @@ export class RedisEmulator implements RedisCommandClient {
         this.data.set(key, { type: 'string', value: rest[1] ?? '', expiresAt });
         return { status: 'OK' };
       }
+      // String lengths and offsets are in UTF-8 bytes, as in Redis.
+      case 'APPEND': {
+        const entry = this.live(key);
+        if (entry && entry.type !== 'string') throw new RedisError('WRONGTYPE');
+        const value = (entry?.value ?? '') + (rest[1] ?? '');
+        this.data.set(key, { type: 'string', value, expiresAt: entry?.expiresAt ?? null });
+        return Buffer.byteLength(value, 'utf8');
+      }
+      case 'STRLEN': {
+        const entry = this.live(key);
+        if (entry && entry.type !== 'string') throw new RedisError('WRONGTYPE');
+        return entry ? Buffer.byteLength(entry.value, 'utf8') : 0;
+      }
+      case 'GETRANGE': {
+        const entry = this.live(key);
+        if (entry && entry.type !== 'string') throw new RedisError('WRONGTYPE');
+        const bytes = Buffer.from(entry?.value ?? '', 'utf8');
+        let start = this.integer(rest[1]), stop = this.integer(rest[2]);
+        if (start < 0) start = Math.max(0, bytes.length + start);
+        if (stop < 0) stop = bytes.length + stop;
+        if (start > stop || start >= bytes.length) return '';
+        return bytes.subarray(start, Math.min(stop, bytes.length - 1) + 1).toString('utf8');
+      }
       case 'DEL': return rest.reduce((count, item) => count + (this.live(item) && this.data.delete(item) ? 1 : 0), 0);
       case 'EXISTS': return rest.reduce((count, item) => count + (this.live(item) ? 1 : 0), 0);
       case 'EXPIRE': {
@@ -126,6 +149,12 @@ export class RedisEmulator implements RedisCommandClient {
           hash.set(rest[index]!, rest[index + 1]!);
         }
         return added;
+      }
+      case 'HSETNX': {
+        const hash = this.hash(key, true)!;
+        if (hash.has(rest[1] ?? '')) return 0;
+        hash.set(rest[1] ?? '', rest[2] ?? '');
+        return 1;
       }
       case 'HDEL': {
         const hash = this.hash(key, false);

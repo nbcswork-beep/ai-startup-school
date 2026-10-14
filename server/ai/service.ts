@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../errors/app-error.js';
 import type { FileStorage } from '../storage/file-storage.js';
+import type { AiAnswerNotifier } from './notifier.js';
 import { AiProviderError, createAdapter, safeProviderMessage, type ProviderAdapter, type ProviderConnection, type ProviderUsage } from './adapters.js';
 import { SecretBox, secretHint } from './secret-box.js';
 import { MAX_BALANCE, type AiStore, type LedgerDraft, type StatsIncrement } from './store.js';
@@ -11,7 +12,8 @@ import type {
   AiProtocol, AiProviderRecord, AiResourcePackage, AiResourceUnit, AiSettings, AiUsageRecord
 } from './types.js';
 
-export interface AiRosterStudent { id: string; name: string; groupId: string | null; groupName: string | null; status: string }
+/** telegramId is used only to deliver the "answer ready" notice; it is never sent to providers or shown in AI screens. */
+export interface AiRosterStudent { id: string; name: string; groupId: string | null; groupName: string | null; status: string; telegramId?: string | null }
 export interface AiRoster { students: AiRosterStudent[]; groups: Array<{ id: string; name: string; status: string }> }
 
 export interface AiServiceDeps {
@@ -27,6 +29,10 @@ export interface AiServiceDeps {
   fileStorage?: FileStorage | null;
   /** First pathname segment, so environments sharing one store never mix objects. */
   storagePrefix?: string;
+  /** Telegram notice when a background answer finishes; without it answers are still saved. */
+  notifier?: AiAnswerNotifier | null;
+  /** HTTP for plugins that call outside services; tests pass a stub. */
+  fetcher?: typeof fetch;
 }
 
 export const DEFAULT_SYSTEM_PROMPT = [
@@ -44,7 +50,13 @@ export const DEFAULT_SETTINGS: AiSettings = {
   requestsPerMinute: 20,
   maxConcurrentPerStudent: 2,
   lowBalanceTokens: 20_000,
-  resourceWarningPercent: 15
+  resourceWarningPercent: 15,
+  agentName: 'Помічник',
+  agentDescription: 'ШІ-асистент AI Startup School: пояснює, допомагає з документами й проєктами.',
+  agentLanguage: 'auto',
+  agentStyle: 'friendly',
+  agentEnabled: true,
+  agentMaxSteps: 8
 };
 
 const FORBIDDEN_HEADERS = new Set(['host', 'content-length', 'connection', 'transfer-encoding', 'cookie', 'te', 'upgrade', 'keep-alive', 'proxy-authorization', 'content-type', 'accept']);
@@ -409,13 +421,14 @@ export class AiService {
     return model;
   }
 
-  async updateModel(id: string, patch: Partial<Pick<AiModelRecord, 'label' | 'family' | 'enabled' | 'maxOutputTokens' | 'maxInputTokens' | 'pricing' | 'fallbackModelId' | 'apiModelId'>>) {
+  async updateModel(id: string, patch: Partial<Pick<AiModelRecord, 'label' | 'family' | 'enabled' | 'maxOutputTokens' | 'maxInputTokens' | 'pricing' | 'fallbackModelId' | 'apiModelId' | 'agent'>>) {
     const model = await this.requireModel(id);
     const next: AiModelRecord = { ...model, updatedAt: this.now().toISOString() };
     if (patch.label !== undefined) next.label = patch.label.trim() || next.apiModelId;
     if (patch.family !== undefined) next.family = patch.family;
     if (patch.maxOutputTokens !== undefined) next.maxOutputTokens = patch.maxOutputTokens;
     if (patch.maxInputTokens !== undefined) next.maxInputTokens = patch.maxInputTokens;
+    if (patch.agent !== undefined) next.agent = patch.agent;
     if (patch.pricing !== undefined) next.pricing = { ...patch.pricing, currency: patch.pricing.currency.toUpperCase() };
     if (patch.fallbackModelId !== undefined) {
       if (patch.fallbackModelId === id) throw new AppError('AI_FALLBACK_INVALID', 400, 'Модель не може бути резервною сама для себе');

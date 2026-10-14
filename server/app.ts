@@ -16,6 +16,7 @@ import { registerAdminRoutes } from './routes/admin.js';
 import { SecretBox } from './ai/secret-box.js';
 import { AiService } from './ai/service.js';
 import { AiChatService } from './ai/chat.js';
+import { TelegramAnswerNotifier, type AiAnswerNotifier } from './ai/notifier.js';
 import { MemoryAiStore, RedisAiStore, UpstashRestClient, type AiStore } from './ai/store.js';
 import type { ProviderAdapter, ProviderConnection } from './ai/adapters.js';
 import { createAiStreamHandler, registerAiRoutes } from './routes/ai.js';
@@ -28,7 +29,7 @@ import { NotificationWorker, TelegramNotificationSender, type NotificationSender
 import { createFileStorage, type FileStorage } from './storage/file-storage.js';
 import { fileLinkSigner, registerHomeworkFileRoutes, uploadPolicy } from './routes/homework-files.js';
 
-export async function buildApp(deps: { env: AppEnv; repository: AppRepository; jwt: JwtService; aiStore?: AiStore; aiAdapterFactory?: (connection: ProviderConnection) => ProviderAdapter; aiNow?: () => Date; loginLimiter?: LoginAttemptLimiter; telegramWebhookHandler?: TelegramWebhookHandler; notificationSender?:NotificationSender; fileStorage?: FileStorage | null }) {
+export async function buildApp(deps: { env: AppEnv; repository: AppRepository; jwt: JwtService; aiStore?: AiStore; aiAdapterFactory?: (connection: ProviderConnection) => ProviderAdapter; aiNow?: () => Date; loginLimiter?: LoginAttemptLimiter; telegramWebhookHandler?: TelegramWebhookHandler; notificationSender?:NotificationSender; fileStorage?: FileStorage | null; aiNotifier?: AiAnswerNotifier | null; aiFetcher?: typeof fetch }) {
   const app = Fastify({ logger: deps.env.NODE_ENV === 'test' ? false : { level: deps.env.LOG_LEVEL,redact:{paths:['req.headers.authorization','req.headers.cookie','req.headers.x-telegram-bot-api-secret-token','res.headers.set-cookie','body.initData','body.refreshToken','body.password','body.token'],censor:'[REDACTED]'} }, trustProxy: deps.env.TRUST_PROXY, bodyLimit: 32_768 });
   await app.register(cookie);
   await app.register(cors, {
@@ -45,7 +46,6 @@ export async function buildApp(deps: { env: AppEnv; repository: AppRepository; j
   app.get('/api/health', async () => { await deps.repository.ping(); return { status: 'ok' }; });
   registerTelegramWebhookRoutes(app, deps.env, deps.repository, deps.telegramWebhookHandler);
   const notificationSender=deps.notificationSender??(deps.env.TELEGRAM_BOT_TOKEN?new TelegramNotificationSender(deps.env.TELEGRAM_BOT_TOKEN):undefined);
-  registerNotificationWorkerRoute(app,deps.env,notificationSender?new NotificationWorker(deps.repository,notificationSender,deps.env.PARENT_WEEKLY_REPORT_DAY,deps.env.PARENT_WEEKLY_REPORT_HOUR_KYIV):undefined);
   const auth = new AuthService(deps.repository, deps.jwt, deps.env, new WebCredentialDirectory(deps.env.WEB_AUTH_ACCOUNTS_JSON), deps.loginLimiter ?? new MemoryLoginAttemptLimiter());
   registerAuthRoutes(app, auth, deps.env);
   const authenticate=createAuthenticate(deps.jwt,deps.repository);
@@ -76,11 +76,15 @@ export async function buildApp(deps: { env: AppEnv; repository: AppRepository; j
     allowLocalProviderUrls: deps.env.deployEnvironment === 'local',
     fileStorage,
     storagePrefix: fileConfig.pathPrefix,
+    // "Answer ready" notices go through the school bot and open the Mini App on that chat.
+    notifier: deps.aiNotifier !== undefined ? deps.aiNotifier : deps.env.TELEGRAM_BOT_TOKEN && deps.env.MINI_APP_URL ? new TelegramAnswerNotifier(deps.env.TELEGRAM_BOT_TOKEN, deps.env.MINI_APP_URL) : null,
     log: (error, message) => app.log.error({ err: error }, message),
     ...(deps.aiNow ? { now: deps.aiNow } : {}),
+    ...(deps.aiFetcher ? { fetcher: deps.aiFetcher } : {}),
     ...(deps.aiAdapterFactory ? { adapterFactory: deps.aiAdapterFactory } : {})
   });
   const aiChat = new AiChatService(ai);
+  registerNotificationWorkerRoute(app,deps.env,notificationSender?new NotificationWorker(deps.repository,notificationSender,deps.env.PARENT_WEEKLY_REPORT_DAY,deps.env.PARENT_WEEKLY_REPORT_HOUR_KYIV):undefined,()=>aiChat.sweepJobs());
   registerAiRoutes(app, { repository: deps.repository, authenticate, ai, chat: aiChat });
   app.decorate('aiStreamHandler', createAiStreamHandler({ jwt: deps.jwt, repository: deps.repository, chat: aiChat, origins: deps.env.origins }));
   registerHomeworkFileRoutes(app, deps.repository, authenticate, fileConfig);

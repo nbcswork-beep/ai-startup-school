@@ -5,9 +5,19 @@ import type { AiBalanceSource, AiProtocol } from './types.js';
  * with its own Base URL works as long as it implements that protocol faithfully.
  */
 
+export interface ToolCall { id: string; name: string; arguments: string }
+export interface ToolSpec { name: string; description: string; parameters: Record<string, unknown> }
+
 export interface ChatTurn {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  /** Assistant turns: the tools the model called. */
+  toolCalls?: ToolCall[];
+  /** Tool turns: the call this result answers. */
+  toolCallId?: string;
+  toolName?: string;
+  /** User turns: PDFs the model reads page by page as images (scans without a text layer). */
+  documents?: Array<{ title: string; data: string }>;
 }
 
 export interface ProviderConnection {
@@ -30,13 +40,16 @@ export interface ProviderUsage {
 export type StreamEvent =
   | { type: 'text'; text: string }
   | { type: 'usage'; usage: ProviderUsage }
-  | { type: 'finish'; reason: string | null };
+  | { type: 'finish'; reason: string | null }
+  | { type: 'tool_call'; call: ToolCall };
 
 export interface ChatStreamRequest {
   model: string;
   messages: ChatTurn[];
   maxOutputTokens: number;
   signal: AbortSignal;
+  /** Tools the model may call; the caller runs them and continues the conversation. */
+  tools?: ToolSpec[];
 }
 
 export interface DiscoveredModel {
@@ -226,7 +239,8 @@ class OpenAiCompatibleAdapter implements ProviderAdapter {
     let shape = { ...known };
     let response: Response | null = null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const body: Record<string, unknown> = { model: request.model, messages: request.messages, stream: true };
+      const body: Record<string, unknown> = { model: request.model, messages: request.messages.map(openAiMessage), stream: true };
+      if (request.tools?.length) { body.tools = request.tools.map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } })); body.tool_choice = 'auto'; }
       body[shape.maxCompletionTokens ? 'max_completion_tokens' : 'max_tokens'] = request.maxOutputTokens;
       if (shape.streamOptions) body.stream_options = { include_usage: true };
       response = await send(`${this.base}/chat/completions`, {
@@ -248,6 +262,7 @@ class OpenAiCompatibleAdapter implements ProviderAdapter {
 
     let usage: ProviderUsage | null = null;
     let finish: string | null = null;
+    const calls = new Map<number, ToolCall>();
     try {
       for await (const frame of readSse(response.body, request.signal)) {
         if (frame.data === '[DONE]') break;
@@ -260,6 +275,14 @@ class OpenAiCompatibleAdapter implements ProviderAdapter {
         const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : undefined;
         const text = choice?.delta?.content;
         if (typeof text === 'string' && text) yield { type: 'text', text };
+        for (const delta of Array.isArray(choice?.delta?.tool_calls) ? choice.delta.tool_calls : []) {
+          const index = numberOr(delta?.index, calls.size);
+          const call = calls.get(index) ?? { id: '', name: '', arguments: '' };
+          if (typeof delta?.id === 'string' && delta.id) call.id = delta.id;
+          if (typeof delta?.function?.name === 'string') call.name += delta.function.name;
+          if (typeof delta?.function?.arguments === 'string') call.arguments += delta.function.arguments;
+          calls.set(index, call);
+        }
         if (choice?.finish_reason) finish = String(choice.finish_reason);
         if (chunk.usage && typeof chunk.usage === 'object') {
           const reported = chunk.usage as Record<string, any>;
@@ -278,6 +301,9 @@ class OpenAiCompatibleAdapter implements ProviderAdapter {
       }
     } catch (error) {
       throw toProviderError(error, request.signal);
+    }
+    for (const [index, call] of [...calls].sort((a, b) => a[0] - b[0])) {
+      if (call.name) yield { type: 'tool_call', call: { id: call.id || `call_${index}`, name: call.name, arguments: call.arguments || '{}' } };
     }
     if (usage) yield { type: 'usage', usage };
     yield { type: 'finish', reason: finish };
@@ -339,19 +365,12 @@ class AnthropicAdapter implements ProviderAdapter {
 
   async *stream(request: ChatStreamRequest): AsyncGenerator<StreamEvent> {
     const system = request.messages.filter(message => message.role === 'system').map(message => message.content).join('\n\n');
-    // The Messages API wants strictly alternating turns that start with the user.
-    const turns: Array<{ role: 'user' | 'assistant'; content: string }> = [];
-    for (const message of request.messages) {
-      if (message.role === 'system') continue;
-      const last = turns[turns.length - 1];
-      if (last && last.role === message.role) last.content += `\n\n${message.content}`;
-      else turns.push({ role: message.role, content: message.content });
-    }
-    while (turns[0]?.role === 'assistant') turns.shift();
+    const turns = anthropicTurns(request.messages);
+    const tools = request.tools?.length ? { tools: request.tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })) } : {};
     const response = await send(`${this.base}/messages`, {
       method: 'POST',
       headers: this.headers(),
-      body: JSON.stringify({ model: request.model, max_tokens: request.maxOutputTokens, ...(system ? { system } : {}), messages: turns, stream: true }),
+      body: JSON.stringify({ model: request.model, max_tokens: request.maxOutputTokens, ...(system ? { system } : {}), messages: turns, ...tools, stream: true }),
       signal: linkSignals(request.signal, REQUEST_TIMEOUT_MS)
     });
     if (!response.ok) throw await errorFromResponse(response);
@@ -359,6 +378,8 @@ class AnthropicAdapter implements ProviderAdapter {
 
     let input = 0, cacheRead = 0, cacheWrite = 0, output = 0, sawUsage = false;
     let finish: string | null = null;
+    const calls = new Map<number, ToolCall>();
+    const finished: ToolCall[] = [];
     try {
       for await (const frame of readSse(response.body, request.signal)) {
         let payload: Record<string, any>;
@@ -373,8 +394,17 @@ class AnthropicAdapter implements ProviderAdapter {
           const usage = payload.message?.usage ?? {};
           input = numberOr(usage.input_tokens); cacheRead = numberOr(usage.cache_read_input_tokens); cacheWrite = numberOr(usage.cache_creation_input_tokens);
           output = numberOr(usage.output_tokens); sawUsage = true;
+        } else if (type === 'content_block_start') {
+          if (payload.content_block?.type === 'tool_use') calls.set(numberOr(payload.index), { id: String(payload.content_block.id ?? ''), name: String(payload.content_block.name ?? ''), arguments: '' });
+        } else if (type === 'content_block_stop') {
+          const call = calls.get(numberOr(payload.index));
+          if (call) { finished.push({ ...call, arguments: call.arguments || '{}' }); calls.delete(numberOr(payload.index)); }
         } else if (type === 'content_block_delta') {
           if (payload.delta?.type === 'text_delta' && typeof payload.delta.text === 'string' && payload.delta.text) yield { type: 'text', text: payload.delta.text };
+          if (payload.delta?.type === 'input_json_delta' && typeof payload.delta.partial_json === 'string') {
+            const call = calls.get(numberOr(payload.index));
+            if (call) call.arguments += payload.delta.partial_json;
+          }
         } else if (type === 'message_delta') {
           if (payload.usage) { output = numberOr(payload.usage.output_tokens, output); sawUsage = true; }
           if (payload.delta?.stop_reason) finish = String(payload.delta.stop_reason);
@@ -388,6 +418,7 @@ class AnthropicAdapter implements ProviderAdapter {
       if (sawUsage) failure.partialInputTokens = input + cacheRead + cacheWrite;
       throw failure;
     }
+    for (const call of [...finished, ...calls.values()]) if (call.name) yield { type: 'tool_call', call: { ...call, arguments: call.arguments || '{}' } };
     if (sawUsage) {
       yield { type: 'usage', usage: { inputTokens: input + cacheRead + cacheWrite, outputTokens: output, reasoningTokens: 0, cachedTokens: cacheRead, cacheWriteTokens: cacheWrite } };
     }
@@ -397,4 +428,47 @@ class AnthropicAdapter implements ProviderAdapter {
   async balance(): Promise<null> {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Turn shapes per protocol.
+
+function openAiMessage(turn: ChatTurn): Record<string, unknown> {
+  if (turn.role === 'tool') return { role: 'tool', tool_call_id: turn.toolCallId ?? '', content: turn.content };
+  if (turn.role === 'assistant' && turn.toolCalls?.length) {
+    return { role: 'assistant', content: turn.content || null, tool_calls: turn.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } })) };
+  }
+  if (turn.role === 'user' && turn.documents?.length) {
+    return { role: 'user', content: [{ type: 'text', text: turn.content }, ...turn.documents.map(document => ({ type: 'file', file: { filename: document.title, file_data: `data:application/pdf;base64,${document.data}` } }))] };
+  }
+  return { role: turn.role, content: turn.content };
+}
+
+type AnthropicBlock = Record<string, unknown>;
+
+/** The Messages API wants alternating user/assistant turns that start with the user; tool results are user turns. */
+function anthropicTurns(messages: ChatTurn[]): Array<{ role: 'user' | 'assistant'; content: AnthropicBlock[] }> {
+  const turns: Array<{ role: 'user' | 'assistant'; content: AnthropicBlock[] }> = [];
+  for (const message of messages) {
+    if (message.role === 'system') continue;
+    const role = message.role === 'assistant' ? 'assistant' : 'user';
+    const blocks: AnthropicBlock[] = [];
+    if (message.role === 'tool') {
+      blocks.push({ type: 'tool_result', tool_use_id: message.toolCallId ?? '', content: message.content || '(порожньо)' });
+    } else {
+      for (const document of message.documents ?? []) blocks.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: document.data }, title: document.title });
+      if (message.content) blocks.push({ type: 'text', text: message.content });
+      for (const call of message.toolCalls ?? []) {
+        let input: unknown = {};
+        try { input = JSON.parse(call.arguments || '{}'); } catch { input = {}; }
+        blocks.push({ type: 'tool_use', id: call.id, name: call.name, input: input && typeof input === 'object' ? input : {} });
+      }
+    }
+    if (!blocks.length) continue;
+    const last = turns[turns.length - 1];
+    if (last && last.role === role) last.content.push(...blocks);
+    else turns.push({ role, content: blocks });
+  }
+  while (turns[0]?.role === 'assistant') turns.shift();
+  return turns;
 }

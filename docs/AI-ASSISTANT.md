@@ -10,7 +10,10 @@ Students chat with real models through the school's own API connections. The sch
 | Key encryption | `server/ai/secret-box.ts` |
 | Balances, reservations, chats, usage counters (Redis Lua + in-memory twin) | `server/ai/store.ts` |
 | Admin logic: providers, models, access, tokens, resources, analytics | `server/ai/service.ts` |
-| Student chat and streaming | `server/ai/chat.ts` |
+| Student chat, answer jobs, attachments, agent runs | `server/ai/chat.ts` |
+| Agent loop, skills, plugins | `server/ai/agent/` |
+| Documents: read and write PDF, Word, Excel, CSV, PowerPoint, text | `server/ai/documents/` |
+| Telegram «answer ready» notice | `server/ai/notifier.ts` |
 | HTTP routes | `server/routes/ai.ts` |
 | Streaming Vercel function | `api/ai-stream.ts` (+ rewrite in `vercel.json`) |
 | Student OS screen | `src/ai-chat.js`, `src/ai-markdown.js`, `src/ai-chat.css` |
@@ -31,6 +34,10 @@ Everything lives in Upstash Redis under `AI_REDIS_PREFIX` (default `SESSION_REDI
 | `usage`, `errors` | last 2000 requests and 200 provider errors |
 | `stats:d:{day}`, `stats:h:{hour}` | counters for analytics (Kyiv time), kept 400 days / 3 days |
 | `conv:{student}`, `msgs:{conversation}` | chats and messages, per student |
+| `job:{id}`, `job:{id}:text`, `jobreq:{request}`, `jobs:active` | answer jobs: status, steps, files, confirmation; the text written so far; request → job; jobs still needing attention (kept 7 days) |
+| `atts:{student}`, `att:{id}` | attached files: metadata and the text read from them |
+| `gen:{id}` | files the agent made: their source; the file is rebuilt on download |
+| `skills`, `plugins` | the school's skills and installed plugins (secrets sealed) |
 
 ## Honest token accounting
 
@@ -40,6 +47,94 @@ Everything lives in Upstash Redis under `AI_REDIS_PREFIX` (default `SESSION_REDI
 4. When the provider reports no usage (some gateways; stopped or broken streams) the charge is an estimate of the prompt plus the text actually received, flagged as approximate in the message, the journal, the admin table and analytics.
 5. A provider error before any text costs the student nothing. A reservation that is never settled (crashed function) expires after 6 minutes and charges only its prompt estimate.
 6. The client never sends token counts; the request id is derived on the server from the student id and a client UUID, so a retried request runs once.
+
+## Answers run on the server (background jobs)
+
+Every answer is a **job** in Redis, not a browser connection. The streaming function generates it and writes the text to storage every second; the app only watches.
+
+- Closing the Mini App, switching apps, locking the phone or losing the network does not stop the answer. Only **«Стоп»** does (`POST /api/v1/ai/jobs/:id/stop`); the generating function sees the flag within a second.
+- A reopened app finds the running job (`GET /api/v1/ai/conversations/:id` returns `job`; the list marks chats «Генерується», «Готово», «Помилка») and follows it with `GET /api/v1/ai/jobs/:id?from=<bytes>`. A retried request with the same `clientRequestId` joins the existing job instead of starting a second answer.
+- A job whose function died (crash, the 300 s limit) goes quiet; after 60 s it is finished from what reached storage: the partial answer is saved as «Помилка · відповідь перервалася» and charged by estimate. This recovery runs when the student opens the chat, after every answer, and from the notification worker (`GET /api/v1/notifications/worker`, the external hourly scheduler).
+- Exactly one finisher wins (a Lua claim), and settlement is idempotent, so a job is charged once.
+- **Telegram notice.** When an answer finishes while the student is not watching, the bot sends «✅ Ваша відповідь від ШІ готова!» (or a short failure notice) with an «Відкрити чат» button that opens the Mini App on that chat (`MINI_APP_URL?ai=<chat id>`). The text never contains the question, the answer or names. No notice when the student was watching (the stream was open, or the app asked within 10 s) or pressed «Стоп». One notice per job, with three retries on Telegram errors. The student must have started the bot; otherwise the notice is skipped.
+
+## Documents
+
+Students attach up to 5 files per message: **PDF** (15 MB), **Word .docx**, **Excel .xlsx** (10 MB), **CSV** (5 MB), **PowerPoint .pptx** (20 MB), **.txt / .md** (2 MB), **ZIP** (5 MB). Old `.doc/.xls/.ppt` get a "save as …x" hint.
+
+| Part | Files |
+|---|---|
+| Format detection, magic bytes, encodings (UTF-8, Windows-1251) | `server/ai/documents/formats.ts` |
+| Reading into Markdown | `server/ai/documents/read.ts` (+ `markdown.ts`, `csv.ts`) |
+| Building files from Markdown | `server/ai/documents/write.ts` |
+
+- **Reading keeps structure.** Word headings, lists (nested) and tables come out as Markdown (mammoth). Excel sheets and CSV become Markdown tables (exceljs; up to 400 rows × 40 columns per sheet). PowerPoint gives slide titles, bullets, tables and speaker notes. For PDF, lines are rebuilt from text positions and larger lines become headings (unpdf / pdf.js).
+- **Bytes must match the format.** A renamed text file is not accepted as PDF or Office, and Office files are checked to be the right kind of ZIP. Archives that would unpack to more than 120 MB are refused, and so are password-protected files.
+- **Scanned PDFs** (no text layer) are detected and marked. With a model on the Anthropic protocol (Claude), the PDF itself is sent to the model, which reads the page images: up to 40 pages and 4.5 MB, charged at about 1,600 tokens per page. With other models the student sees a clear message; there is no OCR on the server.
+- **Size limit for the model.** Text is capped at 250,000 characters per file. In agent mode the agent reads long files in parts.
+
+**Making files.** The agent writes Markdown, and the server builds real files: **Word** (docx, with headings, numbered and bulleted lists, tables, quotes, code, links); **PDF** (pdfmake with embedded Roboto, so Cyrillic is embedded; page numbers); **PowerPoint** (pptxgenjs; one slide per `##`, real title placeholders, overflowing slides continue, speaker notes from `>` lines); **Excel** (one sheet per table, numbers as numbers, leading zeros kept, frozen header); **CSV** (UTF-8 with BOM so Excel shows Cyrillic); **md**; **txt**.
+
+- **Checking.** Each made file is read back with the same readers as uploads: the agent and the student see e.g. «3 заголовки, 1 табл., кирилиця на місці».
+- **Storage and download.** Only the source is stored (`gen:{id}`); the file is rebuilt on download through a signed 10-minute link (`/api/v1/ai/files?token=`), which Telegram's own downloader can fetch. Deleting a chat deletes its files.
+
+## Agent mode
+
+The «Агент» switch in the composer turns on multi-step work. The admin can turn it off for everyone, and per model.
+
+- **Loop** (`server/ai/agent/run.ts`). The model gets the tools of the enabled plugins and either answers or calls tools; the results go back to it. Limits:
+  - the step budget («Кроків за одне завдання», default 8);
+  - a token budget reserved up front (never more than the balance; charged once with the sum of all calls);
+  - the function's time budget;
+  - «Стоп».
+  Long tool results are shortened to fit the model's context.
+- **Steps, not reasoning.** The student sees what happens («Читаю «Тема.docx»», «Створено «Конспект.docx»», «Перевіряю…») with status and errors. The model's own words between tool calls are not shown.
+- **Confirmation.** A tool with the `network` permission (any outside service) stops and asks the student, naming exactly what will be sent and where («Дозволити / Відхилити», 2 minutes, then skipped). The run survives the app being closed and reopened while it waits.
+- **Safety.**
+  - The tool set of a run comes from the school's configuration only.
+  - Text inside documents is data: the prompt says so, and nothing in a document can enable a plugin or a permission.
+  - A model without tool support gets a clear error; mark such models in Admin OS («Режим агента» in the model settings).
+
+## Skills (SKILL.md)
+
+A skill is a name, description, «when to use», instructions and a list of tools:
+
+```
+---
+name: Конспект
+description: Стислий структурований конспект теми або документа.
+when: Учень просить конспект, тези, стислий виклад…
+tools: read_file, create_file
+---
+Інструкції в Markdown…
+```
+
+- **Built-in skills:** Конспект, Пояснення теми, Підготовка до іспиту, Оформлення доповіді, Презентація. They can be edited, disabled, or reset to the shipped version.
+- **Admin OS → ШІ · Агент:** create, edit, enable/disable, delete, import one or several `SKILL.md` files (all or nothing; a skill with the same name is replaced), and export one (`SKILL.md`) or all (ZIP of `name/SKILL.md`).
+- **Picked by the student:** its instructions go into the system prompt, and in agent mode only its tools are offered.
+- **«Авто» in agent mode:** the agent sees the list of enabled skills and loads one itself (`use_skill`) when the task matches. The message shows which skill was used.
+
+## Plugins
+
+Every tool goes through one interface (`server/ai/agent/plugins.ts`): name, description, JSON Schema, permission, run. The core never changes for a new plugin.
+
+- **Built-in:**
+  - «Документи» (core: `read_file`, `create_file`);
+  - «Навички» (core: `use_skill`);
+  - «Калькулятор» (`calculate`, a safe parser, preinstalled);
+  - «Вікіпедія» (`wikipedia_search`, network, not installed by default).
+- **Imported plugins** are a JSON manifest:
+  - fields: `id`, `name`, `version`, `description`, `permissions` (`network`, `compute`), `baseUrl`, `settings`, `secrets` (with the header to send them in), `tools` (with `http: {method, path}`);
+  - a generic runner calls them: HTTPS to public addresses only, no redirects, 15 s timeout, answer cut at 12,000 characters, and always after the student's confirmation.
+- **Secrets** are sealed with AES-GCM on the server, never returned to the browser, and opened only for the request that needs them. A plugin with missing secrets cannot be enabled.
+- **Admin OS:** install, enable/disable, settings, secrets, remove (the core plugins cannot be removed or disabled).
+
+## Dependencies added
+
+`unpdf` (PDF text), `mammoth` (Word → HTML), `docx` (Word output), `pdfmake` (PDF output with Roboto), `exceljs` (Excel in and out), `pptxgenjs` (PowerPoint output), `marked` (Markdown lexer). All are loaded lazily, only when a document is read or made.
+
+- `npm audit` lists advisories in sub-dependencies on code paths this app does not use: `image-size` (pptxgenjs, images only — none are added), `sprintf-js` (mammoth's command-line tool), `uuid` v3/v5/v6 buffers (exceljs uses v4).
+- No new environment variables are needed.
 
 ## Files: ZIP both ways
 

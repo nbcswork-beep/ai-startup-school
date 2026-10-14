@@ -7,6 +7,9 @@ import type { AppRepository } from '../data/repository.js';
 import { AppError } from '../errors/app-error.js';
 import type { AiChatService } from '../ai/chat.js';
 import { AiService } from '../ai/service.js';
+import { AgentAdmin } from '../ai/agent/config.js';
+import { createZip } from '../ai/zip.js';
+import { storageSafeName, type HomeworkFileExtension } from '../storage/file-types.js';
 
 const uuid = z.string().uuid();
 const note = z.string().trim().max(300).optional();
@@ -54,7 +57,8 @@ const modelPatch = z.object({
   maxOutputTokens: z.number().int().min(16).max(200_000).optional(),
   maxInputTokens: z.number().int().min(512).max(2_000_000).optional(),
   pricing: pricing.optional(),
-  fallbackModelId: uuid.nullable().optional()
+  fallbackModelId: uuid.nullable().optional(),
+  agent: z.boolean().optional()
 });
 const settingsPatch = z.object({
   defaultModelId: uuid.nullable().optional(),
@@ -63,8 +67,24 @@ const settingsPatch = z.object({
   requestsPerMinute: z.number().int().min(1).max(120).optional(),
   maxConcurrentPerStudent: z.number().int().min(1).max(5).optional(),
   lowBalanceTokens: z.number().int().min(0).max(1_000_000_000).optional(),
-  resourceWarningPercent: z.number().int().min(1).max(90).optional()
+  resourceWarningPercent: z.number().int().min(1).max(90).optional(),
+  agentName: z.string().trim().min(1).max(40).optional(),
+  agentDescription: z.string().trim().max(300).optional(),
+  agentLanguage: z.enum(['auto', 'uk', 'en', 'pl', 'de']).optional(),
+  agentStyle: z.enum(['friendly', 'concise', 'detailed', 'academic']).optional(),
+  agentEnabled: z.boolean().optional(),
+  agentMaxSteps: z.number().int().min(1).max(20).optional()
 });
+const skillBody = z.object({
+  name: z.string().max(200),
+  description: z.string().max(1000).default(''),
+  when: z.string().max(2000).default(''),
+  instructions: z.string().max(20_000),
+  tools: z.array(z.string().max(60)).max(20).default([])
+});
+const skillPatch = skillBody.partial().extend({ enabled: z.boolean().optional() });
+const skillId = z.string().regex(/^[a-zA-Z0-9-]{3,64}$/);
+const pluginId = z.string().regex(/^[a-z][a-z0-9-]{1,39}$/);
 const packageBody = z.object({
   name: z.string().trim().min(1).max(80),
   providerId: uuid,
@@ -124,6 +144,48 @@ export function registerAiRoutes(app: FastifyInstance, deps: { repository: AppRe
   });
   app.delete(`${A}/models/:id`, admin(30), async (request, reply) => { await ai.deleteModel(z.object({ id: uuid }).parse(request.params).id); return reply.status(204).send(); });
   app.post(`${A}/models/:id/test`, admin(15), async request => ai.testModel(z.object({ id: uuid }).parse(request.params).id, z.object({ prompt: z.string().trim().max(2000).optional() }).parse(request.body ?? {}).prompt));
+  // ---- Admin: the agent — profile, skills (SKILL.md), plugins
+  const agentAdmin = new AgentAdmin(ai.store, ai.deps.secrets, () => ai.now());
+  app.get(`${A}/agent`, admin(), async () => {
+    const settings = await ai.settings();
+    return {
+      profile: { agentName: settings.agentName, agentDescription: settings.agentDescription, systemPrompt: settings.systemPrompt, agentLanguage: settings.agentLanguage, agentStyle: settings.agentStyle, agentEnabled: settings.agentEnabled, agentMaxSteps: settings.agentMaxSteps },
+      skills: await agentAdmin.listSkills(),
+      plugins: await agentAdmin.listPlugins()
+    };
+  });
+  app.post(`${A}/skills`, admin(30), async (request, reply) => reply.status(201).send(await agentAdmin.createSkill(skillBody.parse(request.body))));
+  app.patch(`${A}/skills/:id`, admin(30), async request => {
+    const { id } = z.object({ id: skillId }).parse(request.params);
+    const patch = skillPatch.parse(request.body);
+    return agentAdmin.updateSkill(id, Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)));
+  });
+  app.delete(`${A}/skills/:id`, admin(30), async request => agentAdmin.deleteSkill(z.object({ id: skillId }).parse(request.params).id));
+  app.post(`${A}/skills/import`, { ...admin(20), bodyLimit: 512 * 1024 }, async request => {
+    const { files } = z.object({ files: z.array(z.object({ name: z.string().max(200), content: z.string().max(40_000) })).min(1).max(30) }).parse(request.body);
+    return agentAdmin.importSkills(files);
+  });
+  app.get(`${A}/skills/export`, admin(30), async (request, reply) => {
+    const { id } = z.object({ id: skillId.optional() }).parse(request.query);
+    const files = await agentAdmin.exportSkills(id ?? null);
+    if (id) {
+      return reply.header('content-type', 'text/markdown; charset=utf-8').header('content-disposition', 'attachment; filename="SKILL.md"').send(files[0]!.content);
+    }
+    return reply.header('content-type', 'application/zip').header('content-disposition', 'attachment; filename="skills.zip"').send(createZip(files, ai.now()));
+  });
+  app.post(`${A}/plugins/:id/install`, admin(20), async (request, reply) => reply.status(201).send(await agentAdmin.installBuiltin(z.object({ id: pluginId }).parse(request.params).id)));
+  app.post(`${A}/plugins/import`, { ...admin(20), bodyLimit: 128 * 1024 }, async (request, reply) => {
+    const { manifest } = z.object({ manifest: z.unknown() }).parse(request.body);
+    const result = await agentAdmin.importPlugin(manifest);
+    return reply.status(result.updated ? 200 : 201).send({ id: result.record.id, updated: result.updated });
+  });
+  app.patch(`${A}/plugins/:id`, admin(30), async request => {
+    const { id } = z.object({ id: pluginId }).parse(request.params);
+    const patch = z.object({ enabled: z.boolean().optional(), settings: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(), secrets: z.record(z.string(), z.string().max(4000).nullable()).optional() }).parse(request.body);
+    const record = await agentAdmin.updatePlugin(id, Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)));
+    return { id: record.id, enabled: record.enabled };
+  });
+  app.delete(`${A}/plugins/:id`, admin(30), async (request, reply) => { await agentAdmin.removePlugin(z.object({ id: pluginId }).parse(request.params).id); return reply.status(204).send(); });
   app.put(`${A}/settings`, admin(30), async request => {
     const patch = settingsPatch.parse(request.body);
     return ai.updateSettings(Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)));
@@ -209,9 +271,38 @@ export function registerAiRoutes(app: FastifyInstance, deps: { repository: AppRe
       .header('x-content-type-options', 'nosniff')
       .send(archive.bytes);
   });
+  // Answer jobs: the app follows a job by asking for the text after what it already has, and stops it with «Стоп».
+  app.get('/api/v1/ai/jobs/:id', student(240), async request => {
+    const { id } = z.object({ id: uuid }).parse(request.params);
+    const { from } = z.object({ from: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0) }).parse(request.query);
+    return chat.viewJob(request.auth.userId, id, from);
+  });
+  app.post('/api/v1/ai/jobs/:id/stop', student(30), async request => chat.stopJob(request.auth.userId, z.object({ id: uuid }).parse(request.params).id));
+  // An action that sends data outside the school waits for the student's yes.
+  app.post('/api/v1/ai/jobs/:id/confirm', student(30), async request => {
+    const { id } = z.object({ id: uuid }).parse(request.params);
+    const body = z.object({ stepId: uuid, approve: z.boolean() }).parse(request.body);
+    return chat.confirmJob(request.auth.userId, id, body.stepId, body.approve);
+  });
+  // Files the agent made: a signed link (for Telegram's downloader), then the file itself.
+  app.post('/api/v1/ai/files/:id/link', student(60), async request => chat.fileLink(request.auth.userId, z.object({ id: uuid }).parse(request.params).id));
+  app.get('/api/v1/ai/files', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const { token } = z.object({ token: z.string().min(20).max(1000) }).parse(request.query);
+    const file = await chat.fileDownload(token);
+    // Clients without RFC 5987 support get a transliterated name instead of the Cyrillic one.
+    const ascii = storageSafeName(file.fileName, (file.fileName.split('.').pop() ?? 'bin') as HomeworkFileExtension);
+    return reply
+      .header('content-type', file.mime)
+      .header('content-disposition', `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(file.fileName)}`)
+      .header('access-control-allow-origin', 'https://web.telegram.org')
+      .header('cross-origin-resource-policy', 'cross-origin')
+      .header('x-content-type-options', 'nosniff')
+      .send(file.bytes);
+  });
   app.post('/api/v1/ai/conversations/:id/stream', { ...student(30), bodyLimit: 262_144 }, async (request, reply) => {
     const { id } = z.object({ id: z.union([uuid, z.literal('new')]) }).parse(request.params);
     const body = chatBody.parse(request.body);
+    // The connection closing only stops the live view; the answer goes on and is saved.
     const abort = new AbortController();
     reply.raw.on('close', () => { if (!reply.raw.writableFinished) abort.abort(); });
     const session = await chat.start(request.auth.userId, id, body, abort.signal);
@@ -225,7 +316,9 @@ const chatBody = z.object({
   content: z.string().max(40_000),
   modelId: z.string().uuid().optional(),
   clientRequestId: z.string().uuid(),
-  attachmentIds: z.array(z.string().uuid()).max(3).optional()
+  attachmentIds: z.array(z.string().uuid()).max(5).optional(),
+  mode: z.enum(['chat', 'agent']).optional(),
+  skillId: z.string().regex(/^[a-zA-Z0-9-]{3,64}$/).nullable().optional()
 });
 
 const SSE_HEADERS = {
