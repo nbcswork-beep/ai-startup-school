@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module';
 import { toCsv, parseCsv } from './csv.js';
 import { OUTPUT_FORMATS, type OutputFormat } from './formats.js';
 import { blocksToText, parseMarkdown, runsText, type Block, type ListBlock, type Run } from './markdown.js';
@@ -142,12 +141,14 @@ async function renderDocx(blocks: Block[], title: string): Promise<Buffer> {
 
 type PdfMake = { virtualfs: { writeFileSync(name: string, content: string, encoding: string): void }; setFonts(fonts: unknown): void; setUrlAccessPolicy(policy: (url: string) => boolean): void; setLocalAccessPolicy(policy: (path: string) => boolean): void; createPdf(doc: unknown): { getBuffer(): Promise<Buffer> } };
 let pdfMake: PdfMake | null = null;
-function pdfmakeInstance(): PdfMake {
+/** Plain dynamic imports, so Vercel's bundler traces pdfmake and its fonts into the function. */
+async function pdfmakeInstance(): Promise<PdfMake> {
   if (pdfMake) return pdfMake;
-  const require = createRequire(import.meta.url);
-  const instance = require('pdfmake') as PdfMake;
-  const fonts = require('pdfmake/build/vfs_fonts') as Record<string, string>;
-  for (const [name, data] of Object.entries(fonts)) instance.virtualfs.writeFileSync(name, data, 'base64');
+  const loaded = await import('pdfmake') as unknown as { default?: PdfMake } & PdfMake;
+  const instance = loaded.default ?? loaded;
+  const fontModule = await import('pdfmake/build/vfs_fonts.js') as unknown as { default?: Record<string, string> } & Record<string, string>;
+  const fonts = fontModule.default ?? fontModule;
+  for (const [name, data] of Object.entries(fonts)) if (typeof data === 'string') instance.virtualfs.writeFileSync(name, data, 'base64');
   instance.setFonts({ Roboto: { normal: 'Roboto-Regular.ttf', bold: 'Roboto-Medium.ttf', italics: 'Roboto-Italic.ttf', bolditalics: 'Roboto-MediumItalic.ttf' } });
   // Documents never fetch anything from the network or read the server's disk: fonts come from memory.
   instance.setUrlAccessPolicy(() => false);
@@ -157,7 +158,7 @@ function pdfmakeInstance(): PdfMake {
 }
 
 async function renderPdf(blocks: Block[], title: string): Promise<Buffer> {
-  const pdf = pdfmakeInstance();
+  const pdf = await pdfmakeInstance();
   const text = (runs: Run[]) => runs.map(run => ({ text: run.text, bold: run.bold, italics: run.italic, ...(run.code ? { background: '#F3F0FA' } : {}), ...(run.link ? { link: run.link, color: '#5B2BD8', decoration: 'underline' } : {}) }));
   const list = (block: ListBlock): Record<string, unknown> => ({
     [block.ordered ? 'ol' : 'ul']: block.items.map(item => item.sublist ? { stack: [{ text: text(item.runs) }, list(item.sublist)] } : { text: text(item.runs) }),
