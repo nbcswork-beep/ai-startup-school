@@ -45,6 +45,8 @@ export interface AiProviderRecord {
   balanceSource: AiBalanceSource;
   lastCheck: { ok: boolean; at: string; message: string; latencyMs: number | null } | null;
   syncedBalance: { amount: number; currency: string; at: string } | null;
+  /** Requests per minute the provider allows for all students together (free NVIDIA: about 40 per key). Null means no pacing. */
+  rateLimitPerMinute?: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -74,11 +76,16 @@ export interface AiModelRecord {
   fallbackModelId: string | null;
   /** The model can call tools, so students may use it in agent mode. Missing means yes. */
   agent?: boolean;
+  /** The model reads images (photos of pages, boards, tasks). Missing means no. */
+  vision?: boolean;
+  /** What the last capability check found; null where the provider gave no clear answer. */
+  capabilities?: { checkedAt: string; tools: boolean | null; vision: boolean | null; note: string } | null;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface AiSettings {
+  memoryEnabled: boolean;
   defaultModelId: string | null;
   systemPrompt: string;
   maxMessageChars: number;
@@ -98,6 +105,8 @@ export interface AiSettings {
   agentEnabled: boolean;
   /** Tool calls in one agent run. */
   agentMaxSteps: number;
+  /** Default model in agent mode (a stronger one, with tools); null uses the default model. */
+  agentModelId: string | null;
 }
 
 /** A skill: what it is for, when it applies, how to do it, and which tools it may use. Stored and exchanged as SKILL.md. */
@@ -311,6 +320,10 @@ export interface AiResourcePackage {
 }
 
 export interface AiConversation {
+  feedback?: Record<string, { value: 'up' | 'down'; modelId: string; skillId: string | null; at: string }>;
+  context?: { type: 'lesson' | 'homework'; id: string; title: string };
+  memory?: { text: string; throughId: string; updatedAt: string };
+
   id: string;
   studentId: string;
   title: string;
@@ -366,6 +379,8 @@ export interface AiJob {
   /** An action waiting for the student's confirmation, and the answer once given. */
   pending: AiPendingAction | null;
   decision: { stepId: string; approve: boolean } | null;
+  /** The provider's request limit is reached: the answer waits in line until this time. */
+  queuedUntil: number | null;
 }
 
 export interface AiMessageUsage {
@@ -375,7 +390,7 @@ export interface AiMessageUsage {
   approximate: boolean;
 }
 
-export type AiAttachmentKind = 'zip' | 'pdf' | 'docx' | 'xlsx' | 'csv' | 'pptx' | 'txt' | 'md';
+export type AiAttachmentKind = 'jpg' | 'png' | 'webp' | 'zip' | 'pdf' | 'docx' | 'xlsx' | 'csv' | 'pptx' | 'txt' | 'md';
 
 /** A file a student attached to the chat. Its text lives in a separate key; the file in private storage. */
 export interface AiAttachment {
@@ -413,6 +428,10 @@ export interface AiMessageAttachment {
 }
 
 export interface AiMessage {
+  /** A successful revision supersedes a whole exchange; originals remain stored. */
+  revision?: { userId: string; assistantId: string };
+  feedback?: 'up' | 'down' | null;
+
   id: string;
   role: 'user' | 'assistant';
   content: string;

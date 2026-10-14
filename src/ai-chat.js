@@ -2,6 +2,7 @@
 // in (PDF, Word, Excel, CSV, PowerPoint, text, ZIP) and out, an agent mode that works in steps, and
 // skills. Answers are generated on the server as jobs: the app watches a job and can come back to it
 // after it was closed; only «Стоп» ends one early. The balance always comes from the server.
+import { preparePhoto } from './ai-photos.js';
 import { escapeText, renderMarkdown } from './ai-markdown.js';
 import { formatFileSize, sendFile } from './homework-uploads.js';
 
@@ -24,6 +25,8 @@ const state = {
   messagesFor: null,
   messagesLoading: false,
   modelId: null,
+  /** The student chose the model themself; otherwise agent mode uses the school's agent model. */
+  modelPicked: false,
   /** The answer being generated: { jobId, conversationId, user, text, offset, modelLabel, mode, steps, files, action, viewing, ... } */
   pending: null,
   error: null,
@@ -36,7 +39,9 @@ const state = {
   /** Files for the next message: { key, file, name, size, kind, status, progress, id, upload, ... } */
   attachments: [],
   agent: readLocal(AGENT_KEY) === '1',
-  skillId: null
+  skillId: null,
+  reviseMessageId: null,
+  context: null
 };
 
 let root = null;
@@ -73,11 +78,14 @@ const icons = {
   retry: icon('<path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/>'),
   cross: icon('<path d="M7 7l10 10M17 7 7 17"/>'),
   minus: icon('<path d="M6 12h12"/>'),
+  photo: icon('<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 4 3.5 2.5-2 4.5 3.5"/>'),
+  up: icon('<path d="M7 11v9H4.5a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1zM7 11l4-7.5a2 2 0 0 1 2.6 2.2L13 9.5h5.3a2 2 0 0 1 2 2.4l-1.4 6.5a2 2 0 0 1-2 1.6H7"/>'),
+  down: icon('<path d="M17 13V4h2.5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1zM17 13l-4 7.5a2 2 0 0 1-2.6-2.2l.6-3.8H5.7a2 2 0 0 1-2-2.4l1.4-6.5a2 2 0 0 1 2-1.6H17"/>'),
   agent: icon('<path d="M12 3v3M5.6 5.6l2.1 2.1M3 12h3M18.4 5.6l-2.1 2.1M21 12h-3"/><circle cx="12" cy="14" r="5"/><path d="M10.5 14h3"/>')
 };
 
 const fileWord = count => plural(count, 'файл', 'файли', 'файлів');
-const KIND_LABEL = { pdf: 'PDF', docx: 'Word', xlsx: 'Excel', csv: 'CSV', pptx: 'PowerPoint', txt: 'Текст', md: 'Markdown', zip: 'ZIP' };
+const KIND_LABEL = { jpg: 'Фото', png: 'Фото', webp: 'Фото', pdf: 'PDF', docx: 'Word', xlsx: 'Excel', csv: 'CSV', pptx: 'PowerPoint', txt: 'Текст', md: 'Markdown', zip: 'ZIP' };
 
 const SUGGESTIONS = [
   ['Поясни простіше', 'Поясни простими словами, що таке MVP і навіщо він стартапу.'],
@@ -90,6 +98,19 @@ const AGENT_SUGGESTIONS = [
   ['Презентація', 'Створи презентацію на 8 слайдів за прикріпленим матеріалом.'],
   ['PDF для повторення', 'Підготуй PDF з питаннями для самоперевірки за цією темою.'],
   ['Таблиця Excel', 'Витягни всі таблиці з документа в Excel.']
+];
+
+const LESSON_SUGGESTIONS = [
+  ['Головна ідея', 'Поясни головну ідею цього уроку простими словами.'],
+  ['Ще приклад', 'Наведи ще один приклад до цього уроку з життя.'],
+  ['Перевір мене', 'Постав мені 3 запитання, щоб перевірити, чи я зрозумів урок.'],
+  ['Для мого проєкту', 'Як застосувати цей урок у моєму проєкті?']
+];
+const HOMEWORK_SUGGESTIONS = [
+  ['З чого почати', 'Допоможи розібратися із завданням. З чого почати?'],
+  ['Поясни умову', 'Поясни умову завдання простішими словами.'],
+  ['Я застряг', 'Я застряг. Дай одну підказку, але не готову відповідь.'],
+  ['Як перевірити себе', 'Як мені перевірити, що я виконав завдання правильно?']
 ];
 
 function plural(count, one, few, many) {
@@ -117,13 +138,40 @@ function shortTime(value) {
 function currentConversation() { return state.conversations.find(item => item.id === state.currentId) ?? null; }
 function models() { return state.me?.models ?? []; }
 function skills() { return state.me?.skills ?? []; }
-function selectedModel() {
+function chosenModel() {
   return models().find(model => model.id === state.modelId) ?? models().find(model => model.id === state.me?.defaultModelId) ?? models()[0] ?? null;
 }
+/** The model the next message goes to. Agent mode needs a model with tools: the school's agent model unless the student picked one. */
+function selectedModel() {
+  const chosen = chosenModel();
+  let model = chosen;
+  if (agentOn()) {
+    const agentDefault = models().find(item => item.id === state.me?.agent?.defaultModelId) ?? null;
+    if (!state.modelPicked && agentDefault) model = agentDefault;
+    else model = chosen?.agent !== false ? chosen : agentDefault ?? models().find(item => item.agent !== false) ?? chosen;
+  }
+  if (hasPhotos() && !model?.vision && !state.modelPicked) {
+    model = models().find(item => item.vision && (!agentOn() || item.agent !== false)) ?? model;
+  }
+  return model;
+}
 function selectedSkill() { return skills().find(skill => skill.id === state.skillId) ?? null; }
-function attachmentKinds() { return state.me?.limits?.attachments?.kinds ?? FALLBACK_KINDS; }
-/** Agent mode is on only where the school allows it and the chosen model can call tools. */
-function agentAvailable() { return Boolean(state.me?.agent?.enabled) && selectedModel()?.agent !== false; }
+const PHOTO_KINDS = new Set(['jpg', 'png', 'webp']);
+/** A photo is resized on the phone before upload, so the original may be much larger than the stored copy. */
+const MAX_PHOTO_SOURCE_BYTES = 20 * 1024 * 1024;
+function visionAvailable() { return models().some(model => model.vision); }
+function attachmentKinds() {
+  const kinds = state.me?.limits?.attachments?.kinds ?? FALLBACK_KINDS;
+  return visionAvailable() ? kinds : kinds.filter(kind => !PHOTO_KINDS.has(kind.extension));
+}
+function pickerAccept() {
+  const kinds = attachmentKinds();
+  const photos = kinds.some(kind => PHOTO_KINDS.has(kind.extension)) ? ['.jpeg', 'image/jpeg', 'image/png', 'image/webp'] : [];
+  return [...kinds.map(kind => `.${kind.extension}`), ...photos].join(',');
+}
+function hasPhotos() { return state.attachments.some(item => PHOTO_KINDS.has(item.kind) && item.status !== 'error'); }
+/** Agent mode is on only where the school allows it and some model can call tools. */
+function agentAvailable() { return Boolean(state.me?.agent?.enabled) && models().some(model => model.agent !== false); }
 function agentOn() { return state.agent && agentAvailable(); }
 
 /** Why the student cannot send right now, or null. */
@@ -153,6 +201,7 @@ export function aiScreenMarkup() {
     <div class="ai-thread" id="aiThread" role="log" aria-live="polite" aria-relevant="additions" tabindex="-1"></div>
     <button type="button" class="ai-to-bottom" data-ai="to-bottom" aria-label="До останнього повідомлення" hidden>${icons.down}</button>
     <form class="ai-composer" id="aiComposer" novalidate>
+      <div id="aiContextNote" class="ai-context-note" hidden></div>
       <div class="ai-tools" id="aiTools" hidden>
         <button type="button" class="ai-tool-chip" data-ai="agent" aria-pressed="false">${icons.agent}<span>Агент</span></button>
         <button type="button" class="ai-tool-chip" data-ai="skills" aria-haspopup="dialog" aria-expanded="false"><span>Навичка: авто</span>${icons.chevron}</button>
@@ -181,7 +230,7 @@ export function aiScreenMarkup() {
 function attachmentChip(item) {
   const kind = item.kind ?? 'zip';
   const facts = [KIND_LABEL[kind] ?? kind.toUpperCase(), item.pages ? `${item.pages} стор.` : '', kind === 'zip' && item.fileCount ? `${item.fileCount} ${fileWord(item.fileCount)}` : '', formatFileSize(item.size)].filter(Boolean).join(' · ');
-  return `<span class="ai-file-chip">${kind === 'zip' ? icons.archive : icons.doc}<span><strong>${escapeText(item.name)}</strong><small>${escapeText(facts)}</small></span></span>`;
+  return `<span class="ai-file-chip">${kind === 'zip' ? icons.archive : PHOTO_KINDS.has(kind) ? icons.photo : icons.doc}<span><strong>${escapeText(item.name)}</strong><small>${escapeText(facts)}</small></span></span>`;
 }
 
 const STEP_ICON = { running: '<span class="ai-step-spinner" aria-hidden="true"></span>', done: icons.check, error: icons.cross, declined: icons.minus };
@@ -238,13 +287,21 @@ function confirmMarkup(action) {
 
 function statusPill(label, tone) { return `<span class="ai-status" data-tone="${tone}">${label}</span>`; }
 
+function lastUser() { return [...state.messages].reverse().find(message => message.role === 'user'); }
+function controls(message) {
+  if (state.pending || !message.id) return '';
+  const id = escapeText(message.id);
+  if (message.role === 'user') return message.id === lastUser()?.id ? `<button type="button" class="ai-icon-action" data-ai="edit-message" data-id="${id}" aria-label="Редагувати останній запит">${icons.edit}</button>` : '';
+  return `<button type="button" class="ai-icon-action" data-ai="vote-up" data-id="${id}" aria-label="Корисна відповідь" aria-pressed="${message.feedback === 'up'}">${icons.up}</button><button type="button" class="ai-icon-action" data-ai="vote-down" data-id="${id}" aria-label="Некорисна відповідь" aria-pressed="${message.feedback === 'down'}">${icons.down}</button>${message.id === state.messages.at(-1)?.id ? `<button type="button" class="ai-icon-action" data-ai="regenerate" aria-label="Згенерувати ще раз">${icons.retry}</button>` : ''}`;
+}
+
 function messageMarkup(message, { streaming = false } = {}) {
   if (message.role === 'user') {
     const files = message.attachments?.length ? `<div class="ai-file-chips">${message.attachments.map(attachmentChip).join('')}</div>` : '';
     return `<article class="ai-msg ai-msg--user" data-message="${escapeText(message.id ?? '')}">
       ${files}
       <div class="ai-bubble">${escapeText(message.content).replace(/\n/g, '<br>')}</div>
-      <div class="ai-msg-actions"><button type="button" class="ai-icon-action" data-ai="copy" data-id="${escapeText(message.id ?? '')}" aria-label="Копіювати повідомлення">${icons.copy}</button></div>
+      <div class="ai-msg-actions"><button type="button" class="ai-icon-action" data-ai="copy" data-id="${escapeText(message.id ?? '')}" aria-label="Копіювати повідомлення">${icons.copy}</button>${controls(message)}</div>
     </article>`;
   }
   const usage = message.usage;
@@ -265,14 +322,20 @@ function messageMarkup(message, { streaming = false } = {}) {
       <div class="ai-md">${renderMarkdown(message.content)}</div>
       ${fileCards(message.files)}
       ${message.archive?.fileCount ? `<button type="button" class="btn btn--secondary btn--sm ai-zip" data-ai="zip" data-id="${escapeText(message.id ?? '')}" aria-label="Завантажити ZIP: ${message.archive.fileCount} ${fileWord(message.archive.fileCount)}">${icons.download}<span>Завантажити ZIP · ${message.archive.fileCount} ${fileWord(message.archive.fileCount)}</span></button>` : ''}
-      <div class="ai-msg-actions"><button type="button" class="ai-icon-action" data-ai="copy" data-id="${escapeText(message.id ?? '')}" aria-label="Копіювати відповідь">${icons.copy}</button>${status}${meta ? `<span class="ai-meta"${usage?.approximate ? ' title="Провайдер не повідомив точну кількість — показано оцінку"' : ''}>${meta}</span>` : ''}</div>
+      <div class="ai-msg-actions"><button type="button" class="ai-icon-action" data-ai="copy" data-id="${escapeText(message.id ?? '')}" aria-label="Копіювати відповідь">${icons.copy}</button>${controls(message)}${status}${meta ? `<span class="ai-meta"${usage?.approximate ? ' title="Провайдер не повідомив точну кількість — показано оцінку"' : ''}>${meta}</span>` : ''}</div>
     </div>
   </article>`;
 }
 
 /** The answer being made: its steps, a confirmation if one waits, text so far, files so far. */
+function queueWait(pending) {
+  const until = pending.queuedUntil ? new Date(pending.queuedUntil).getTime() : 0;
+  return until > Date.now() ? Math.max(1, Math.round((until - Date.now()) / 1000)) : 0;
+}
+
 function pendingMarkup(pending) {
-  const label = pending.stopping ? 'Зупиняємо…' : pending.action ? 'Чекає на вашу відповідь' : 'Генерується';
+  const wait = queueWait(pending);
+  const label = pending.stopping ? 'Зупиняємо…' : pending.action ? 'Чекає на вашу відповідь' : wait ? `У черзі · ≈ ${wait} с` : 'Генерується';
   return `<article class="ai-msg ai-msg--assistant is-streaming" data-message="pending">
     <span class="ai-avatar" aria-hidden="true">${icons.spark}</span>
     <div class="ai-answer">
@@ -280,6 +343,7 @@ function pendingMarkup(pending) {
       ${confirmMarkup(pending.action)}
       <div class="ai-md">${pendingText(pending)}</div>
       ${fileCards(pending.files, { live: true })}
+      ${wait && !pending.text ? '<p class="ai-queue-note">Зараз багато запитів до ШІ, тому відповідь стоїть у черзі. Вона почнеться сама — можна закрити застосунок.</p>' : ''}
       <div class="ai-msg-actions">${statusPill(label, 'running')}${pending.modelLabel ? `<span class="ai-meta">${escapeText(pending.modelLabel)}</span>` : ''}</div>
     </div>
   </article>`;
@@ -292,14 +356,23 @@ function pendingText(pending) {
 function emptyMarkup() {
   const block = blocker();
   const agent = agentOn();
-  const list = agent ? AGENT_SUGGESTIONS : SUGGESTIONS;
-  const attachHint = state.me?.limits?.attachments?.enabled ? ' Можна прикріпити PDF, Word, Excel, PowerPoint, текст або ZIP.' : '';
+  const context = state.context;
+  const homework = context?.type === 'homework';
+  const list = homework ? HOMEWORK_SUGGESTIONS : context ? LESSON_SUGGESTIONS : agent ? AGENT_SUGGESTIONS : SUGGESTIONS;
+  const attachHint = state.me?.limits?.attachments?.enabled ? ` Можна прикріпити ${visionAvailable() ? 'фото, ' : ''}PDF, Word, Excel, PowerPoint, текст або ZIP.` : '';
+  const title = context ? `«${escapeText(context.title)}»` : '';
+  const heading = homework ? 'Підказки до завдання' : context ? 'Питання про урок' : agent ? 'Що зробити?' : 'Чим допомогти?';
+  const intro = homework
+    ? `Асистент бачить умову ${title} і підкаже, з чого почати, але не розвʼяже завдання за вас.`
+    : context
+      ? `Асистент бачить матеріал уроку ${title} і пояснить, що незрозуміло.`
+      : agent
+        ? `Агент працює кроками: читає ваші файли, застосовує навички й створює документи — Word, PDF, презентації, таблиці.${attachHint}`
+        : `Питайте про урок, ідею проєкту чи код. Асистент пояснює й підказує, а рішення лишається за вами.${attachHint}`;
   return `<div class="ai-empty">
     <span class="ai-empty-mark" aria-hidden="true">${agent ? icons.agent : icons.spark}</span>
-    <h2>${agent ? 'Що зробити?' : 'Чим допомогти?'}</h2>
-    <p>${agent
-      ? `Агент працює кроками: читає ваші файли, застосовує навички й створює документи — Word, PDF, презентації, таблиці.${attachHint}`
-      : `Питайте про урок, ідею проєкту чи код. Асистент пояснює й підказує, а рішення лишається за вами.${attachHint}`}</p>
+    <h2>${heading}</h2>
+    <p>${intro}</p>
     <div class="ai-suggestions">${list.map(([text, prompt]) => `<button type="button" class="ai-suggestion" data-ai="suggest" data-text="${escapeText(prompt)}" ${block ? 'disabled' : ''}>${escapeText(text)}</button>`).join('')}</div>
   </div>`;
 }
@@ -420,12 +493,13 @@ function renderComposer() {
   const max = state.me?.limits?.attachments?.maxPerMessage ?? 1;
   if (attach) {
     attach.hidden = !state.me?.limits?.attachments?.enabled;
-    attach.disabled = Boolean(block) || !state.me || Boolean(state.pending) || state.attachments.length >= max;
+    attach.disabled = Boolean(block) || !state.me || Boolean(state.pending) || Boolean(state.reviseMessageId) || state.attachments.length >= max;
     $('#aiComposer')?.classList.toggle('can-attach', !attach.hidden);
   }
   renderTools();
   const picker = $('#aiFile');
-  if (picker) picker.accept = attachmentKinds().map(kind => `.${kind.extension}`).join(',');
+  if (picker) picker.accept = pickerAccept();
+  renderHeader();
   const length = input.value.length;
   if (hint) {
     hint.textContent = length > limit * 0.8 ? `${numberFormat.format(length)} / ${numberFormat.format(limit)}` : '';
@@ -436,6 +510,11 @@ function renderComposer() {
 }
 
 function renderTools() {
+  const note = $('#aiContextNote');
+  if (note) {
+    note.hidden = !state.context && !state.reviseMessageId;
+    note.innerHTML = state.reviseMessageId ? '<span class="ai-context-text">Редагування останнього запиту</span><button type="button" class="ai-icon-action" data-ai="cancel-edit">Скасувати</button>' : state.context ? `<span class="ai-context-text">${escapeText((state.context.type === 'homework' ? 'Підказки до завдання: ' : 'Урок: ') + state.context.title)}</span>` : '';
+  }
   const tools = $('#aiTools');
   if (!tools) return;
   const agentChip = tools.querySelector('[data-ai="agent"]');
@@ -448,7 +527,7 @@ function renderTools() {
     const unsupported = showAgent && !agentAvailable();
     agentChip.setAttribute('aria-pressed', String(agentOn()));
     agentChip.disabled = Boolean(state.pending) || unsupported;
-    agentChip.title = unsupported ? 'Ця модель не працює в режимі агента' : 'Агент виконує завдання кроками: читає файли й створює документи';
+    agentChip.title = unsupported ? 'Жодна доступна модель не працює в режимі агента' : 'Агент виконує завдання кроками: читає файли й створює документи';
   }
   if (skillChip) {
     skillChip.hidden = !showSkills;
@@ -480,7 +559,7 @@ function renderAttachments() {
     const progress = item.status === 'uploading' ? `<span class="ai-attachment-progress" aria-hidden="true"><i style="width:${Math.round((item.progress ?? 0) * 100)}%"></i></span>` : '';
     const notes = [...(item.warnings ?? []), ...(item.skipped ?? []).slice(0, 12).map(skip => `${skip.path}: ${skip.reason}`)];
     return `<div class="ai-attachment" data-state="${item.status}" data-key="${item.key}">
-      <span class="ai-attachment-icon" aria-hidden="true">${(item.kind ?? 'zip') === 'zip' ? icons.archive : icons.doc}</span>
+      <span class="ai-attachment-icon" aria-hidden="true">${(item.kind ?? 'zip') === 'zip' ? icons.archive : PHOTO_KINDS.has(item.kind) ? icons.photo : icons.doc}</span>
       <span class="ai-attachment-text"><strong>${escapeText(item.name)}</strong><small role="status"${notes.length ? ` title="${escapeText(notes.join('\n'))}"` : ''}>${escapeText(attachmentStatus(item))}</small>${progress}</span>
       ${item.status === 'error' && item.retryable ? `<button type="button" class="ai-icon-action" data-ai="attachment-retry" data-key="${item.key}" aria-label="Завантажити «${escapeText(item.name)}» ще раз">${icons.retry}</button>` : '<span></span>'}
       <button type="button" class="ai-icon-action" data-ai="attachment-remove" data-key="${item.key}" aria-label="Прибрати ${escapeText(item.name)}">${icons.close}</button>
@@ -563,9 +642,14 @@ function renderSheetList() {
   }
   if (title) title.textContent = 'Модель';
   const selected = selectedModel();
-  list.innerHTML = models().map(model => `<button type="button" class="ai-model-option${model.id === selected?.id ? ' is-selected' : ''}" data-ai="pick-model" data-id="${escapeText(model.id)}" role="menuitemradio" aria-checked="${model.id === selected?.id}">
-    <span><strong>${escapeText(model.label)}</strong><small>${escapeText(familyLabel(model.family))}${model.agent === false ? ' · без режиму агента' : ''}</small></span>${model.id === selected?.id ? icons.check : ''}
-  </button>`).join('');
+  const agent = agentOn();
+  list.innerHTML = models().map(model => {
+    const unusable = agent && model.agent === false;
+    const facts = [familyLabel(model.family), model.vision ? 'бачить фото' : '', model.id === state.me?.agent?.defaultModelId ? 'для агента' : '', model.agent === false ? 'без режиму агента' : ''].filter(Boolean).join(' · ');
+    return `<button type="button" class="ai-model-option${model.id === selected?.id ? ' is-selected' : ''}" data-ai="pick-model" data-id="${escapeText(model.id)}" role="menuitemradio" aria-checked="${model.id === selected?.id}" ${unusable ? 'disabled' : ''}>
+    <span><strong>${escapeText(model.label)}</strong><small>${escapeText(facts)}</small></span>${model.id === selected?.id ? icons.check : ''}
+  </button>`;
+  }).join('');
 }
 
 function familyLabel(family) {
@@ -634,9 +718,11 @@ async function openConversation(id, { silent = false } = {}) {
     const result = await deps.api.aiConversation(id);
     if (state.currentId !== id) return;
     state.messages = result.messages;
+    state.context = result.conversation.context ?? null;
+    state.reviseMessageId = null;
     state.messagesFor = id;
     const modelId = result.conversation.modelId;
-    if (modelId && models().some(model => model.id === modelId)) state.modelId = modelId;
+    if (modelId && models().some(model => model.id === modelId)) { state.modelId = modelId; state.modelPicked = false; }
     const job = result.job;
     if (job && ACTIVE.has(job.status) && (!state.pending || state.pending.jobId !== job.id)) {
       // Reconnect to the answer the server is still writing.
@@ -669,13 +755,25 @@ async function refreshMe() {
   renderHeader();
 }
 
+export function aiStartLearningContext(context) {
+  if (state.pending) return false;
+  newChat(); state.context = context;
+  state.skillId = context.type === 'homework' ? 'skill-homework-hints' : null;
+  state.agent = false;
+  writeStorage(DRAFT_KEY + ':new', context.type === 'homework' ? 'Допоможи розібратися із завданням. З чого почати?' : 'Поясни головну ідею цього уроку простими словами.');
+  return true;
+}
+
 function newChat() {
   if (state.pending) return;
   setCurrent(null);
+  state.reviseMessageId = null;
+  state.context = null;
   state.messages = [];
   state.messagesFor = null;
   state.error = null;
   state.modelId = state.me?.defaultModelId ?? state.modelId;
+  state.modelPicked = false;
   state.drawer = false;
   const input = $('#aiInput');
   if (input) input.value = readStorage(`${DRAFT_KEY}:new`) ?? '';
@@ -715,7 +813,7 @@ function pendingFromJob(job) {
   return {
     jobId: job.id, conversationId: job.conversationId, user: job.userMessage ?? { role: 'user', content: '' },
     text: job.mode === 'agent' ? '' : job.text ?? '', offset: job.mode === 'agent' ? 0 : job.offset ?? 0,
-    modelLabel: job.model?.label ?? '', mode: job.mode ?? 'chat', steps: job.steps ?? [], files: job.files ?? [], action: job.pending ?? null,
+    modelLabel: job.model?.label ?? '', mode: job.mode ?? 'chat', steps: job.steps ?? [], files: job.files ?? [], action: job.pending ?? null, queuedUntil: job.queuedUntil ?? null,
     controller: null, viewing: null, finished: false, stopping: false, sentAttachments: []
   };
 }
@@ -733,6 +831,10 @@ function showFinished(pending, result) {
     const user = result.userMessage ?? pending.user;
     if (user && !state.messages.some(item => item.id === user.id)) state.messages.push(user);
     state.messages.push(result.message);
+    if (user?.revision) {
+      state.messages = state.messages.filter(message => ![user.revision.userId, user.revision.assistantId].includes(message.id));
+    }
+    state.reviseMessageId = null;
   }
   if (result.message) {
     // Sent files belong to the chat now; files of an unanswered message stay attached for another try.
@@ -750,7 +852,8 @@ function showFinished(pending, result) {
 }
 
 function applyView(pending, view) {
-  const structural = JSON.stringify([view.steps, view.files, view.pending]) !== JSON.stringify([pending.steps, pending.files, pending.action]);
+  const structural = JSON.stringify([view.steps, view.files, view.pending, view.queuedUntil ?? null]) !== JSON.stringify([pending.steps, pending.files, pending.action, pending.queuedUntil ?? null]);
+  pending.queuedUntil = view.queuedUntil ?? null;
   pending.text += view.text ?? '';
   pending.offset = view.offset ?? pending.offset;
   pending.steps = view.steps ?? [];
@@ -815,6 +918,7 @@ async function send(rawText) {
   if (text.length > limit) { state.error = { message: `Повідомлення задовге: максимум ${numberFormat.format(limit)} символів` }; renderThread(); return; }
   const conversationId = state.currentId ?? 'new';
   const model = selectedModel();
+  if (ready.some(item => PHOTO_KINDS.has(item.kind)) && !model?.vision) { state.error = { message: 'Для фото оберіть модель з позначкою «бачить фото».' }; renderThread(); return; }
   const agent = agentOn();
   const skill = selectedSkill();
   const controller = new AbortController();
@@ -829,13 +933,15 @@ async function send(rawText) {
   state.error = null;
   state.stick = true;
   const input = $('#aiInput');
-  if (input) { input.value = ''; writeStorage(`${DRAFT_KEY}:${conversationId}`, null); }
+  if (input && input.value.trim() === text) { input.value = ''; writeStorage(`${DRAFT_KEY}:${conversationId}`, null); }
   renderAll();
   deps.haptic?.('selection');
 
   try {
     const response = await deps.api.aiStream(conversationId, {
       content: text, clientRequestId: crypto.randomUUID(),
+      ...(state.reviseMessageId ? { reviseMessageId: state.reviseMessageId } : {}),
+      ...(state.context ? { context: { type: state.context.type, id: state.context.id } } : {}),
       ...(model ? { modelId: model.id } : {}), ...(ready.length ? { attachmentIds: ready.map(item => item.id) } : {}),
       mode: agent ? 'agent' : 'chat', ...(skill ? { skillId: skill.id } : {})
     }, controller.signal);
@@ -848,6 +954,7 @@ async function send(rawText) {
           pending.jobId = data.jobId;
           pending.conversationId = data.conversationId;
           pending.modelLabel = data.model?.label ?? pending.modelLabel;
+          if (data.model?.id && models().some(item => item.id === data.model.id)) state.modelId = data.model.id;
           pending.mode = data.mode ?? pending.mode;
           pending.steps = data.steps ?? pending.steps;
           if (data.userMessage) pending.user = data.userMessage;
@@ -856,7 +963,8 @@ async function send(rawText) {
           void refreshList();
           renderThread();
           return;
-        case 'delta': pending.text += data.text; schedulePendingRender(); return;
+        case 'delta': if (pending.queuedUntil) { pending.queuedUntil = null; renderThread(); } pending.text += data.text; schedulePendingRender(); return;
+        case 'queue': pending.queuedUntil = data.until ? new Date(data.until).toISOString() : null; renderThread(); return;
         case 'reset': pending.text = ''; schedulePendingRender(); return;
         case 'steps': pending.steps = data.steps ?? []; renderThread(); return;
         case 'files': pending.files = data.files ?? []; renderThread(); return;
@@ -955,6 +1063,11 @@ async function uploadAttachment(item) {
   renderComposer();
   const current = () => state.attachments.includes(item);
   try {
+    if (PHOTO_KINDS.has(item.kind) && !item.prepared) {
+      item.file = await preparePhoto(item.file);
+      if (!current()) return;
+      item.name = item.file.name; item.size = item.file.size; item.kind = 'jpg'; item.prepared = true;
+    }
     if (!item.id) {
       const reserved = await deps.api.aiReserveAttachment({ name: item.name, size: item.size });
       item.id = reserved.attachment.id;
@@ -991,12 +1104,13 @@ function attachFiles(fileList) {
   const max = state.me.limits?.attachments?.maxPerMessage ?? 1;
   for (const file of [...(fileList ?? [])]) {
     if (state.attachments.length >= max) { state.error = { message: `До одного повідомлення можна прикріпити до ${max} ${fileWord(max)}.` }; break; }
-    const extension = (/\.([^.]+)$/.exec(file.name)?.[1] ?? '').toLowerCase().replace('markdown', 'md');
+    const extension = (/\.([^.]+)$/.exec(file.name)?.[1] ?? '').toLowerCase().replace('markdown', 'md').replace('jpeg', 'jpg');
     const kind = kinds.find(item => item.extension === extension);
+    const photo = PHOTO_KINDS.has(extension);
     const base = { key: `a${++attachmentKey}`, file, name: file.name, size: file.size, kind: kind?.extension ?? null, status: 'error', progress: 0, id: null, upload: null, files: [], skipped: [], estimatedTokens: 0, retryable: false };
-    if (!kind) state.attachments.push({ ...base, error: ['doc', 'xls', 'ppt'].includes(extension) ? `Формат .${extension} не підтримується — збережіть як .${extension}x.` : 'Такий формат не підтримується.' });
+    if (!kind) state.attachments.push({ ...base, error: photo ? 'Фото поки не підтримуються: жодна доступна модель не розпізнає зображення.' : ['doc', 'xls', 'ppt'].includes(extension) ? `Формат .${extension} не підтримується — збережіть як .${extension}x.` : 'Такий формат не підтримується.' });
     else if (!file.size) state.attachments.push({ ...base, error: 'Файл порожній.' });
-    else if (file.size > kind.maxBytes) state.attachments.push({ ...base, error: `Завеликий: для ${kind.label} максимум ${formatFileSize(kind.maxBytes)}.` });
+    else if (file.size > (photo ? MAX_PHOTO_SOURCE_BYTES : kind.maxBytes)) state.attachments.push({ ...base, error: `Завеликий: для ${kind.label} максимум ${formatFileSize(photo ? MAX_PHOTO_SOURCE_BYTES : kind.maxBytes)}.` });
     else { const item = { ...base, status: 'uploading' }; state.attachments.push(item); void uploadAttachment(item); }
   }
   renderComposer();
@@ -1094,12 +1208,33 @@ function onClick(event) {
   const action = target.dataset.ai;
   const id = target.dataset.id;
   switch (action) {
+    case 'edit-message': {
+      if (state.pending || id !== lastUser()?.id) break;
+      state.reviseMessageId = id;
+      const input = $('#aiInput'); input.value = lastUser().content; input.focus(); renderComposer(); break;
+    }
+    case 'cancel-edit': state.reviseMessageId = null; $('#aiInput').value = ''; renderComposer(); break;
+    case 'regenerate': {
+      if (state.pending || !lastUser()) break;
+      state.reviseMessageId = lastUser().id;
+      const answer = state.messages.at(-1);
+      state.agent = answer?.mode === 'agent'; state.skillId = answer?.skill?.id ?? null;
+      void send(lastUser().content); break;
+    }
+    case 'vote-up': case 'vote-down': {
+      const message = state.messages.find(item => item.id === id);
+      if (!message || state.pending) break;
+      const vote = action === 'vote-up' ? 'up' : 'down';
+      const value = message.feedback === vote ? null : vote;
+      target.disabled = true;
+      void deps.api.aiFeedback(state.currentId, id, value).then(() => { message.feedback = value; renderThread(); }).catch(error => { state.error = { message: error.message }; renderThread(); }); break;
+    }
     case 'back': deps.onBack(); break;
     case 'chats': state.drawer = !state.drawer; state.sheet = false; state.renaming = null; state.confirmDelete = null; renderLayers(); if (state.drawer) { void refreshList(); $('#aiDrawer button')?.focus(); } break;
     case 'new': newChat(); break;
     case 'model': if (models().length > 1 && !state.pending) { state.sheet = 'model'; state.drawer = false; renderLayers(); $('#aiSheetList button')?.focus(); } break;
     case 'skills': if (!state.pending) { state.sheet = 'skill'; state.drawer = false; renderLayers(); $('#aiSheetList button')?.focus(); } break;
-    case 'pick-model': state.modelId = id; state.sheet = false; renderAll(); $('#aiInput')?.focus(); break;
+    case 'pick-model': state.modelId = id; state.modelPicked = true; state.sheet = false; renderAll(); $('#aiInput')?.focus(); break;
     case 'pick-skill': state.skillId = id || null; state.sheet = false; renderAll(); $('#aiInput')?.focus(); break;
     case 'agent':
       state.agent = !agentOn();
@@ -1287,7 +1422,7 @@ export function mountAiScreen(element, dependencies) {
   root.addEventListener('keydown', onKeydown);
   root.addEventListener('scroll', onScroll, true);
   const file = $('#aiFile');
-  if (file) file.accept = attachmentKinds().map(kind => `.${kind.extension}`).join(',');
+  if (file) file.accept = pickerAccept();
   syncViewport();
   const input = $('#aiInput');
   if (input) input.value = readStorage(`${DRAFT_KEY}:${state.currentId ?? 'new'}`) ?? '';

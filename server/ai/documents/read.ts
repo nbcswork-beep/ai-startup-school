@@ -64,6 +64,7 @@ export async function extractDocument(kind: DocumentKind, bytes: Buffer): Promis
     throw new DocumentReadError(`Вміст файлу не схожий на ${kind.toUpperCase()}. Можливо, файл просто перейменовано — збережіть його у потрібному форматі.`);
   }
   switch (kind) {
+    case 'jpg': case 'png': case 'webp': throw new DocumentReadError('Фотографії передаються моделі окремо.');
     case 'pdf': return readPdf(bytes);
     case 'docx': return readDocx(bytes);
     case 'xlsx': return readXlsx(bytes);

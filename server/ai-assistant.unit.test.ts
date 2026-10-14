@@ -305,7 +305,7 @@ describe('AI assistant — student chat and honest token accounting', () => {
     expect(failed.error).toMatchObject({ code: 'AI_PROVIDER_ERROR', usage: { charged: 0 } });
     expect((await student.call('GET', '/api/v1/ai/me')).json().balance.available).toBe(100_000);
 
-    mock.failNextChats(429, 1);
+    mock.failNextChats(429, 3);
     expect((await student.send('Перевантаження')).error).toMatchObject({ code: 'AI_PROVIDER_BUSY' });
 
     expect((await admin.call('PATCH', `/api/v1/admin/ai/models/${ids['echo-1']}`, { fallbackModelId: ids['echo-2'] })).statusCode).toBe(200);
@@ -582,7 +582,7 @@ describe('AI assistant — student chat and honest token accounting', () => {
     const limits = (await student.call('GET', '/api/v1/ai/me')).json().limits.attachments;
     expect(limits).toMatchObject({ enabled: true, maxPerMessage: 5 });
     expect(limits.kinds).toContainEqual({ extension: 'zip', label: 'ZIP', maxBytes: 5 * 1024 * 1024 });
-    expect(limits.kinds.map((kind: { extension: string }) => kind.extension)).toEqual(['pdf', 'docx', 'xlsx', 'csv', 'pptx', 'txt', 'md', 'zip']);
+    expect(limits.kinds.map((kind: { extension: string }) => kind.extension)).toEqual(['jpg', 'png', 'webp', 'pdf', 'docx', 'xlsx', 'csv', 'pptx', 'txt', 'md', 'zip']);
 
     const archive = createZip([
       { path: 'src/app.js', content: "console.log('мій код');\n" },

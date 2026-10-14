@@ -35,9 +35,9 @@ export async function countTokens(text: string): Promise<number> {
 const PER_MESSAGE_OVERHEAD = 4;
 const PER_REQUEST_OVERHEAD = 3;
 
-export async function countChatTokens(messages: Array<{ content: string }>): Promise<number> {
+export async function countChatTokens(messages: Array<{ content: string; images?: Array<unknown> }>): Promise<number> {
   let total = PER_REQUEST_OVERHEAD;
-  for (const message of messages) total += PER_MESSAGE_OVERHEAD + await countTokens(message.content);
+  for (const message of messages) total += PER_MESSAGE_OVERHEAD + await countTokens(message.content) + (message.images?.length ?? 0) * 4096;
   return total;
 }
 

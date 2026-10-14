@@ -5,10 +5,13 @@ import { readZipEntries, ZipFormatError } from '../zip.js';
  * really are that format: a renamed text file is never treated as a PDF or an Office document.
  */
 
-export type DocumentKind = 'pdf' | 'docx' | 'xlsx' | 'csv' | 'pptx' | 'txt' | 'md' | 'zip';
+export type DocumentKind = 'jpg' | 'png' | 'webp' | 'pdf' | 'docx' | 'xlsx' | 'csv' | 'pptx' | 'txt' | 'md' | 'zip';
 export type OutputFormat = 'docx' | 'pdf' | 'pptx' | 'xlsx' | 'csv' | 'md' | 'txt';
 
 export const DOCUMENT_KINDS: Record<DocumentKind, { label: string; mime: string; maxBytes: number }> = {
+  jpg: { label: 'Фото JPEG', mime: 'image/jpeg', maxBytes: 135000 },
+  png: { label: 'Фото PNG', mime: 'image/png', maxBytes: 135000 },
+  webp: { label: 'Фото WebP', mime: 'image/webp', maxBytes: 135000 },
   pdf: { label: 'PDF', mime: 'application/pdf', maxBytes: 15 * 1024 * 1024 },
   docx: { label: 'Word', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', maxBytes: 10 * 1024 * 1024 },
   xlsx: { label: 'Excel', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', maxBytes: 10 * 1024 * 1024 },
@@ -39,6 +42,7 @@ export function isOutputFormat(value: string): value is OutputFormat {
 export function kindFromName(name: string): { kind: DocumentKind } | { error: string } {
   const extension = (/\.([^.]+)$/.exec(name.trim())?.[1] ?? '').toLowerCase();
   if (Object.hasOwn(DOCUMENT_KINDS, extension)) return { kind: extension as DocumentKind };
+  if (extension === 'jpeg') return { kind: 'jpg' };
   if (extension === 'markdown') return { kind: 'md' };
   if (LEGACY[extension]) return { error: `Формат .${extension} не підтримується. Збережіть файл як .${LEGACY[extension]} і прикріпіть ще раз.` };
   return { error: 'Можна прикріпити PDF, Word (.docx), Excel (.xlsx, .csv), PowerPoint (.pptx), .txt, .md або ZIP.' };
@@ -48,6 +52,9 @@ const ZIP_MARKERS: Partial<Record<DocumentKind, string>> = { docx: 'word/documen
 
 /** Checks the bytes against the kind. Text kinds must be text: no NUL bytes. */
 export function matchesKind(kind: DocumentKind, bytes: Buffer): boolean {
+  if (kind === 'jpg') return bytes.length > 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff && bytes.subarray(-2).equals(Buffer.from([0xff, 0xd9]));
+  if (kind === 'png') return bytes.length >= 33 && bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])) && bytes.toString('ascii',12,16) === 'IHDR' && bytes.readUInt32BE(16) > 0 && bytes.readUInt32BE(20) > 0 && bytes.readUInt32BE(16) * bytes.readUInt32BE(20) <= 16000000;
+  if (kind === 'webp') return bytes.length >= 20 && bytes.toString('ascii',0,4) === 'RIFF' && bytes.toString('ascii',8,12) === 'WEBP' && bytes.readUInt32LE(4) + 8 === bytes.length;
   if (kind === 'pdf') return bytes.subarray(0, 1024).includes(Buffer.from('%PDF-'));
   if (kind === 'zip' || ZIP_MARKERS[kind]) {
     if (bytes.length < 4 || bytes.readUInt32LE(0) !== 0x04034b50) return false;

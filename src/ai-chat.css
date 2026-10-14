@@ -594,6 +594,13 @@ html[data-screen='ai'] .bottom-nav { visibility: hidden; }
 .ai-steps-box .ai-steps { margin-top: 4px; }
 
 /* A confirmation the agent waits for. */
+.ai-queue-note {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .ai-confirm {
   margin: 4px 0 12px;
   padding: 12px 14px;
@@ -686,3 +693,9 @@ html[data-screen='ai'] .bottom-nav { visibility: hidden; }
   .ai-drawer, .ai-sheet { animation: none; }
   .ai-typing i, .ai-skeleton, .is-streaming .ai-md > :last-child::after, .ai-step-spinner { animation: none; }
 }
+
+.ai-context-note { grid-column: 1 / -1; display: flex; align-items: center; gap: 4px; min-height: 32px; font-size: 13px; color: var(--muted); }
+.ai-context-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-context-note .ai-icon-action { width: auto; height: 32px; padding: 0 10px; color: var(--cyan); font-size: 13px; font-weight: 600; }
+.ai-icon-action[aria-pressed="true"] { color: var(--cyan); background: rgba(var(--lavender-rgb), 0.12); }
+@media (hover: hover) { .ai-msg .ai-msg-actions .ai-icon-action[aria-pressed="true"] { opacity: 1; } }

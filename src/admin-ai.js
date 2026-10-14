@@ -76,7 +76,7 @@ export function createAiAdmin(ctx) {
       const [resources, providers] = await Promise.all([api.aiResources(), api.aiProviders()]);
       return { ...resources, providerList: providers.providers };
     },
-    'ai-analytics': () => api.aiAnalytics(ui.analytics),
+    'ai-analytics': async () => { const [data, feedback] = await Promise.all([api.aiAnalytics(ui.analytics), api.aiFeedback()]); return { ...data, feedback: feedback.rows }; },
     'ai-agent': () => api.aiAgent()
   };
 
@@ -138,6 +138,7 @@ export function createAiAdmin(ctx) {
       </div>`).join('') : '<p class="muted-copy">Ключів немає — провайдер не працюватиме, доки ви не додасте ключ.</p>'}</div>
       ${provider.headers.length ? `<p class="muted-copy">Додаткові заголовки: ${provider.headers.map(header => `<span class="pill">${esc(header.name)}${header.hint ? ` ••••${esc(header.hint)}` : ''}</span>`).join(' ')}</p>` : ''}
       <p class="muted-copy">Баланс у провайдера: ${provider.balanceSource === 'none' ? 'метод отримання не вибрано' : provider.syncedBalance ? `<strong class="ai-strong">${money(provider.syncedBalance.amount, provider.syncedBalance.currency)}</strong> · підтверджено провайдером ${fmt(provider.syncedBalance.at)}` : 'ще не синхронізовано'}</p>
+      <p class="muted-copy">${provider.rateLimitPerMinute ? `Спільна черга: до ${num(provider.rateLimitPerMinute)} запитів за хвилину` : 'Без обмеження запитів за хвилину'}</p>
       <p class="muted-copy">Моделей підключено: ${providerModels.length}${providerModels.length ? ` (${providerModels.filter(model => model.enabled).length} увімкнено)` : ''}</p>
       ${provider.recentErrors?.length ? `<details class="ai-errors"><summary>Останні помилки API (${provider.recentErrors.length})</summary>${provider.recentErrors.map(item => `<p><span class="code">${fmt(item.at)}</span> ${item.status ? `HTTP ${item.status} · ` : ''}${esc(item.code)} — ${esc(item.message)}</p>`).join('')}</details>` : ''}
       <div class="ai-actions">
@@ -162,13 +163,14 @@ export function createAiAdmin(ctx) {
     const { providers, models, settings } = data;
     const providerName = id => providers.find(item => item.id === id)?.name ?? '—';
     const rows = models.map(model => `<tr>
-      <td><strong>${esc(model.label)}</strong><small class="code">${esc(model.apiModelId)}</small>${settings.defaultModelId === model.id ? '<span class="pill ai-pill-accent">За замовчуванням</span>' : ''}</td>
+      <td><strong>${esc(model.label)}</strong><small class="code">${esc(model.apiModelId)}</small>${settings.defaultModelId === model.id ? '<span class="pill ai-pill-accent">За замовчуванням</span>' : ''}${settings.agentModelId === model.id ? '<span class="pill ai-pill-accent">Для агента</span>' : ''}${model.vision ? '<span class="pill">Фото</span>' : ''}${model.agent === false ? '<span class="pill">Без агента</span>' : ''}</td>
       <td>${esc(providerName(model.providerId))}<small>${esc(FAMILIES.find(([id]) => id === model.family)?.[1] ?? model.family)}</small></td>
       <td>${status(model.enabled ? 'active' : 'disabled', model.enabled ? 'Доступна учням' : 'Вимкнена')}<small>${model.verifiedAt ? `Перевірено ${fmt(model.verifiedAt)}` : 'Не перевірено запитом'}</small>${model.lastTestError ? `<small class="ai-warn">${esc(model.lastTestError)}</small>` : ''}</td>
       <td>${num(model.maxInputTokens)} / ${num(model.maxOutputTokens)}<small>вхід / вихід, токенів</small></td>
       <td>${priceLabel(model)}</td>
       <td>${model.fallbackModelId ? esc(models.find(item => item.id === model.fallbackModelId)?.label ?? '—') : '—'}</td>
       <td class="actions">
+        <button class="text-button" data-ai-action="model-probe" data-id="${model.id}">Фото й інструменти</button>
         <button class="text-button" data-ai-action="model-test" data-id="${model.id}">Тест</button>
         <button class="text-button" data-ai-action="model-toggle" data-id="${model.id}" data-enabled="${model.enabled}">${model.enabled ? 'Вимкнути' : 'Увімкнути'}</button>
         ${settings.defaultModelId !== model.id && model.enabled ? `<button class="text-button" data-ai-action="model-default" data-id="${model.id}">Основна</button>` : ''}
@@ -188,6 +190,7 @@ export function createAiAdmin(ctx) {
           <label class="field ai-wide"><span>Системна інструкція (не показується учням)</span><textarea name="systemPrompt" maxlength="8000" required>${esc(settings.systemPrompt)}</textarea></label>
           ${select('Модель за замовчуванням', 'defaultModelId', [['', 'Перша доступна'], ...models.filter(model => model.enabled).map(model => [model.id, model.label])], settings.defaultModelId ?? '')}
           ${field('Максимум символів у повідомленні', 'maxMessageChars', settings.maxMessageChars, 'number', 'min="200" max="32000" required')}
+          <label class="check"><input type="checkbox" name="memoryEnabled" ${settings.memoryEnabled !== false ? 'checked' : ''}><span>Стискати довгі діалоги в памʼять (токени враховуються)</span></label>
           ${field('Запитів на хвилину на учня', 'requestsPerMinute', settings.requestsPerMinute, 'number', 'min="1" max="120" required')}
           ${field('Одночасних відповідей на учня', 'maxConcurrentPerStudent', settings.maxConcurrentPerStudent, 'number', 'min="1" max="5" required')}
           ${field('«Ліміт закінчується» нижче, токенів', 'lowBalanceTokens', settings.lowBalanceTokens, 'number', 'min="0" required')}
@@ -197,6 +200,7 @@ export function createAiAdmin(ctx) {
       </section>`;
   }
 
+  const providerRate = form => numberOrNull(form.get('rateLimitPerMinute'));
   const providerForm = (provider = null) => `
     ${field('Назва *', 'name', provider?.name ?? '', 'text', 'required maxlength="80" placeholder="Напр. OpenRouter школи"')}
     ${select('Протокол *', 'protocol', [['openai', 'OpenAI-compatible (Chat Completions)'], ['anthropic', 'Anthropic Messages API']], provider?.protocol ?? 'openai')}
@@ -204,6 +208,8 @@ export function createAiAdmin(ctx) {
     <p class="muted-copy">Приклади: https://api.openai.com/v1 · https://openrouter.ai/api/v1 · https://api.deepseek.com · https://dashscope-intl.aliyuncs.com/compatible-mode/v1 · https://api.anthropic.com</p>
     ${provider ? '' : `${field('API Key *', 'apiKey', '', 'password', 'required minlength="8" maxlength="1000" autocomplete="off" spellcheck="false"')}${field('Назва ключа', 'keyLabel', '', 'text', 'maxlength="60" placeholder="Основний ключ"')}`}
     <label class="field"><span>Додаткові заголовки авторизації — по одному на рядок, «Назва: значення»${provider ? '. Порожнє значення залишає збережене.' : ''}</span><textarea name="headers" spellcheck="false" placeholder="HTTP-Referer: https://school.example">${provider ? provider.headers.map(header => `${esc(header.name)}: `).join('\n') : ''}</textarea></label>
+    ${field('Загальний ліміт запитів за хвилину', 'rateLimitPerMinute', provider?.rateLimitPerMinute ?? '', 'number', 'min="1" max="10000" placeholder="Для NVIDIA рекомендовано 35"')}
+    <p class="muted-copy">Спільна черга для всіх учнів. Порожнє поле вимикає обмеження; для нового NVIDIA-провайдера автоматично ставиться 35.</p>
     ${select('Баланс провайдера', 'balanceSource', [['none', 'Не отримувати'], ['openrouter', 'OpenRouter (/credits)'], ['deepseek', 'DeepSeek (/user/balance)']], provider?.balanceSource ?? 'none')}
     <p class="muted-copy">Ключ шифрується на сервері й більше ніколи не показується — лише останні 4 символи.</p>`;
 
@@ -229,6 +235,8 @@ export function createAiAdmin(ctx) {
       </fieldset>
       ${select('Резервна модель (лише якщо ця не відповіла, до початку відповіді)', 'fallbackModelId', [['', 'Без резервної'], ...others], model?.fallbackModelId ?? '')}
       ${model ? `<label class="check"><input type="checkbox" name="agent" ${model.agent === false ? '' : 'checked'}><span>Режим агента: модель уміє викликати інструменти (читати й створювати файли). Вимкніть для моделей без підтримки tools.</span></label>` : ''}
+      ${model ? `<label class="check"><input type="checkbox" name="vision" ${model.vision ? 'checked' : ''}><span>Модель розпізнає фотографії</span></label>` : ''}
+      ${model?.capabilities ? `<p class="muted-copy">${esc(model.capabilities.note)}</p>` : ''}
       ${model ? '' : '<p class="muted-copy">Модель зʼявиться у списку вимкненою. Щоб відкрити її учням, натисніть «Увімкнути» — сервер спершу надішле справжній тестовий запит.</p>'}`;
   }
 
@@ -240,6 +248,7 @@ export function createAiAdmin(ctx) {
     maxInputTokens: Number(form.get('maxInputTokens')),
     pricing: { currency: String(form.get('currency') || 'USD').toUpperCase(), inputPer1M: numberOrNull(form.get('inputPer1M')), outputPer1M: numberOrNull(form.get('outputPer1M')), cachedInputPer1M: numberOrNull(form.get('cachedInputPer1M')) },
     fallbackModelId: form.get('fallbackModelId') || null,
+    vision: form.get('vision') === 'on',
     ...(form.has('agent') || form.get('apiModelId') ? { agent: form.get('agent') === 'on' } : {})
   });
 
@@ -460,6 +469,7 @@ export function createAiAdmin(ctx) {
         ${metric('Тести адміністратора', filtered ? '—' : num(t.adminTests), 'не списуються з учнів')}
       </div>
       <section class="panel ai-section"><div class="panel-head"><div><span class="kicker">Динаміка</span><h2>Витрата токенів</h2><span>${f.range === 'day' ? 'Останні 24 години, по годинах' : f.range === 'week' ? 'Останні 7 днів' : 'Останні 30 днів'} · час Києва</span></div></div>${chart(data.series, data.range)}</section>
+      <section class="panel ai-section"><h2>Оцінки відповідей · за весь час</h2><p class="muted-copy">Лише оцінки у збережених чатах; фільтри витрат не застосовуються.</p><div class="table-wrap"><table><thead><tr><th>Модель</th><th>Навичка</th><th>👍</th><th>👎</th></tr></thead><tbody>${(data.feedback ?? []).map(row => `<tr><td>${esc(row.model)}</td><td>${esc(row.skill ?? 'Без навички')}</td><td>${num(row.up)}</td><td>${num(row.down)}</td></tr>`).join('') || '<tr><td colspan="4">Оцінок ще немає</td></tr>'}</tbody></table></div></section>
       <div class="grid-3 ai-breakdowns">
         <section class="panel"><div class="panel-head"><div><span class="kicker">Моделі</span><h2>Розхід за моделями</h2></div></div>${bars(data.byModel, item => `${esc(item.label)}${item.costMicros !== null && item.currency ? ` <small>${money(item.costMicros / 1_000_000, item.currency)}</small>` : ''}`)}</section>
         <section class="panel"><div class="panel-head"><div><span class="kicker">Групи</span><h2>Розхід за групами</h2></div></div>${bars(data.byGroup, item => esc(item.name))}</section>
@@ -503,6 +513,7 @@ export function createAiAdmin(ctx) {
         <div class="panel-head"><div><span class="kicker">Профіль</span><h2 id="aiAgentProfile">Агент для учнів</h2></div>${status(profile.agentEnabled ? 'active' : 'disabled', profile.agentEnabled ? 'Режим агента увімкнено' : 'Режим агента вимкнено')}</div>
         <form id="ai-agent-profile" class="ai-agent-form">
           <div class="ai-two">${field('Імʼя агента *', 'agentName', profile.agentName, 'text', 'required maxlength="40"')}${field('Кроків за одне завдання', 'agentMaxSteps', profile.agentMaxSteps, 'number', 'min="1" max="20" required')}</div>
+          ${select('Модель для агента', 'agentModelId', [['', 'Основна доступна модель'], ...(data.models ?? []).filter(model => model.enabled && model.agent !== false).map(model => [model.id, model.label])], profile.agentModelId ?? '')}
           ${field('Опис (бачать учні)', 'agentDescription', profile.agentDescription, 'text', 'maxlength="300"')}
           <div class="ai-two">${select('Мова відповідей', 'agentLanguage', LANGUAGES, profile.agentLanguage)}${select('Стиль', 'agentStyle', STYLES, profile.agentStyle)}</div>
           <label class="field"><span>Інструкції (системний промпт для всіх відповідей)</span><textarea name="systemPrompt" rows="7" maxlength="8000" required>${esc(profile.systemPrompt)}</textarea></label>
@@ -676,7 +687,7 @@ export function createAiAdmin(ctx) {
           await api.aiCreateProvider({
             name: String(form.get('name')).trim(), protocol: form.get('protocol'), baseUrl: String(form.get('baseUrl')).trim(),
             apiKey: String(form.get('apiKey')).trim(), keyLabel: String(form.get('keyLabel') ?? '').trim() || undefined,
-            headers: parseHeaders(form.get('headers')), balanceSource: form.get('balanceSource'), enabled: true
+            headers: parseHeaders(form.get('headers')), balanceSource: form.get('balanceSource'), rateLimitPerMinute: providerRate(form), enabled: true
           });
           cache['ai-providers'] = null;
           return { message: 'Провайдера додано. Перевірте зʼєднання й додайте моделі.' };
@@ -684,7 +695,7 @@ export function createAiAdmin(ctx) {
       case 'provider-edit': {
         const provider = page.providers.find(item => item.id === data.id);
         return openModal(`Редагувати · ${provider.name}`, providerForm(provider), async form => {
-          await api.aiUpdateProvider(provider.id, { name: String(form.get('name')).trim(), protocol: form.get('protocol'), baseUrl: String(form.get('baseUrl')).trim(), headers: parseHeaders(form.get('headers')), balanceSource: form.get('balanceSource') });
+          await api.aiUpdateProvider(provider.id, { name: String(form.get('name')).trim(), protocol: form.get('protocol'), baseUrl: String(form.get('baseUrl')).trim(), headers: parseHeaders(form.get('headers')), balanceSource: form.get('balanceSource'), rateLimitPerMinute: providerRate(form) });
           return { message: 'Провайдера оновлено. Якщо змінилась адреса або протокол, моделі треба перевірити знову.' };
         }, false, 'Зберегти');
       }
@@ -769,6 +780,11 @@ export function createAiAdmin(ctx) {
           await api.aiDeleteModel(data.id);
           return { message: 'Модель видалено' };
         }, true, 'Видалити');
+      case 'model-probe': {
+        const result = await run(button, () => api.aiProbeModel(data.id));
+        if (result) showInfo('Можливості моделі', `<p>${esc(result.note)}</p><p class="muted-copy">Виконано два пробні запити. Баланси учнів не змінюються.</p>`);
+        return;
+      }
       case 'model-test': {
         const model = page.models.find(item => item.id === data.id);
         const result = await run(button, () => api.aiTestModel(data.id));
@@ -898,7 +914,7 @@ export function createAiAdmin(ctx) {
             await run(submit, () => api.aiSettings({
               agentName: String(form.get('agentName')).trim(), agentDescription: String(form.get('agentDescription') ?? '').trim(),
               agentLanguage: form.get('agentLanguage'), agentStyle: form.get('agentStyle'), agentEnabled: form.get('agentEnabled') === 'on',
-              agentMaxSteps: Number(form.get('agentMaxSteps')), systemPrompt: String(form.get('systemPrompt')).trim()
+              agentMaxSteps: Number(form.get('agentMaxSteps')), agentModelId: form.get('agentModelId') || null, systemPrompt: String(form.get('systemPrompt')).trim()
             }), 'Профіль агента збережено');
             return;
           }
@@ -910,7 +926,7 @@ export function createAiAdmin(ctx) {
             systemPrompt: String(form.get('systemPrompt')).trim(), defaultModelId: form.get('defaultModelId') || null,
             maxMessageChars: Number(form.get('maxMessageChars')), requestsPerMinute: Number(form.get('requestsPerMinute')),
             maxConcurrentPerStudent: Number(form.get('maxConcurrentPerStudent')), lowBalanceTokens: Number(form.get('lowBalanceTokens')),
-            resourceWarningPercent: Number(form.get('resourceWarningPercent'))
+            resourceWarningPercent: Number(form.get('resourceWarningPercent')), memoryEnabled: form.get('memoryEnabled') === 'on'
           }), 'Налаштування збережено');
         });
       }

@@ -18,6 +18,8 @@ export interface ChatTurn {
   toolName?: string;
   /** User turns: PDFs the model reads page by page as images (scans without a text layer). */
   documents?: Array<{ title: string; data: string }>;
+  /** User turns: photos for models that see images (base64, JPEG/PNG/WebP). */
+  images?: Array<{ mime: string; data: string }>;
 }
 
 export interface ProviderConnection {
@@ -63,6 +65,10 @@ export type ProviderErrorCode = 'auth' | 'rate_limit' | 'quota' | 'not_found' | 
 export class AiProviderError extends Error {
   /** Input tokens the provider already reported before the stream failed, when it did. */
   partialInputTokens: number | null = null;
+  /** How long the provider asked to wait (Retry-After), for rate limits. */
+  retryAfterMs: number | null = null;
+  /** The request ended while it waited in line, before the provider was asked: nothing to charge. */
+  unsent = false;
 
   constructor(readonly code: ProviderErrorCode, message: string, readonly status: number | null = null) {
     super(message);
@@ -123,7 +129,14 @@ async function errorFromResponse(response: Response): Promise<AiProviderError> {
     message = typeof parsed.error === 'string' ? parsed.error : String(parsed.error?.message ?? parsed.message ?? raw);
   } catch { /* plain text body */ }
   const safe = safeProviderMessage(message) || `HTTP ${response.status}`;
-  return new AiProviderError(errorCodeForStatus(response.status, safe), safe, response.status);
+  const error = new AiProviderError(errorCodeForStatus(response.status, safe), safe, response.status);
+  const retryAfter = response.headers.get('retry-after');
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    const at = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retryAfter) - Date.now();
+    if (Number.isFinite(at) && at > 0) error.retryAfterMs = Math.min(at, 120_000);
+  }
+  return error;
 }
 
 function linkSignals(signal: AbortSignal, timeoutMs: number): AbortSignal {
@@ -438,8 +451,16 @@ function openAiMessage(turn: ChatTurn): Record<string, unknown> {
   if (turn.role === 'assistant' && turn.toolCalls?.length) {
     return { role: 'assistant', content: turn.content || null, tool_calls: turn.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } })) };
   }
-  if (turn.role === 'user' && turn.documents?.length) {
-    return { role: 'user', content: [{ type: 'text', text: turn.content }, ...turn.documents.map(document => ({ type: 'file', file: { filename: document.title, file_data: `data:application/pdf;base64,${document.data}` } }))] };
+  if (turn.role === 'user' && (turn.documents?.length || turn.images?.length)) {
+    // Images go before the text: NVIDIA's vision models expect that order, and the others accept it.
+    return {
+      role: 'user',
+      content: [
+        ...(turn.images ?? []).map(image => ({ type: 'image_url', image_url: { url: `data:${image.mime};base64,${image.data}` } })),
+        { type: 'text', text: turn.content },
+        ...(turn.documents ?? []).map(document => ({ type: 'file', file: { filename: document.title, file_data: `data:application/pdf;base64,${document.data}` } }))
+      ]
+    };
   }
   return { role: turn.role, content: turn.content };
 }
@@ -456,6 +477,7 @@ function anthropicTurns(messages: ChatTurn[]): Array<{ role: 'user' | 'assistant
     if (message.role === 'tool') {
       blocks.push({ type: 'tool_result', tool_use_id: message.toolCallId ?? '', content: message.content || '(порожньо)' });
     } else {
+      for (const image of message.images ?? []) blocks.push({ type: 'image', source: { type: 'base64', media_type: image.mime, data: image.data } });
       for (const document of message.documents ?? []) blocks.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: document.data }, title: document.title });
       if (message.content) blocks.push({ type: 'text', text: message.content });
       for (const call of message.toolCalls ?? []) {

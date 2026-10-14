@@ -123,7 +123,8 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
       }
     } catch (error) {
       failure = error instanceof AiProviderError ? error : new AiProviderError('network', error instanceof Error ? error.message : 'Невідома помилка');
-      if (reported === null) {
+      // A call that never left the queue cost nothing.
+      if (reported === null && !failure.unsent) {
         approximate = true;
         usage.inputTokens += failure.partialInputTokens ?? inputNow;
         usage.outputTokens += text ? await countTokens(text) : 0;

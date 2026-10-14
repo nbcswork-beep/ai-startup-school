@@ -28,7 +28,8 @@ const providerCreate = z.object({
   keyLabel: z.string().trim().max(60).optional(),
   headers: z.array(header).max(10).default([]),
   balanceSource: z.enum(['none', 'openrouter', 'deepseek']).default('none'),
-  enabled: z.boolean().default(true)
+  enabled: z.boolean().default(true),
+  rateLimitPerMinute: z.number().int().min(1).max(10_000).nullable().optional()
 });
 const providerPatch = z.object({
   name: z.string().trim().min(1).max(80).optional(),
@@ -36,7 +37,8 @@ const providerPatch = z.object({
   baseUrl: z.string().trim().min(8).max(500).optional(),
   enabled: z.boolean().optional(),
   balanceSource: z.enum(['none', 'openrouter', 'deepseek']).optional(),
-  headers: z.array(header).max(10).optional()
+  headers: z.array(header).max(10).optional(),
+  rateLimitPerMinute: z.number().int().min(1).max(10_000).nullable().optional()
 });
 const pricing = z.object({ currency: currency.default('USD'), inputPer1M: price.default(null), outputPer1M: price.default(null), cachedInputPer1M: price.default(null) });
 const modelCreate = z.object({
@@ -58,7 +60,8 @@ const modelPatch = z.object({
   maxInputTokens: z.number().int().min(512).max(2_000_000).optional(),
   pricing: pricing.optional(),
   fallbackModelId: uuid.nullable().optional(),
-  agent: z.boolean().optional()
+  agent: z.boolean().optional(),
+  vision: z.boolean().optional()
 });
 const settingsPatch = z.object({
   defaultModelId: uuid.nullable().optional(),
@@ -73,7 +76,9 @@ const settingsPatch = z.object({
   agentLanguage: z.enum(['auto', 'uk', 'en', 'pl', 'de']).optional(),
   agentStyle: z.enum(['friendly', 'concise', 'detailed', 'academic']).optional(),
   agentEnabled: z.boolean().optional(),
-  agentMaxSteps: z.number().int().min(1).max(20).optional()
+  agentMaxSteps: z.number().int().min(1).max(20).optional(),
+  memoryEnabled: z.boolean().optional(),
+  agentModelId: uuid.nullable().optional()
 });
 const skillBody = z.object({
   name: z.string().max(200),
@@ -144,12 +149,14 @@ export function registerAiRoutes(app: FastifyInstance, deps: { repository: AppRe
   });
   app.delete(`${A}/models/:id`, admin(30), async (request, reply) => { await ai.deleteModel(z.object({ id: uuid }).parse(request.params).id); return reply.status(204).send(); });
   app.post(`${A}/models/:id/test`, admin(15), async request => ai.testModel(z.object({ id: uuid }).parse(request.params).id, z.object({ prompt: z.string().trim().max(2000).optional() }).parse(request.body ?? {}).prompt));
+  app.post(`${A}/models/:id/probe`, admin(10), async request => ai.probeModel(z.object({ id: uuid }).parse(request.params).id));
   // ---- Admin: the agent — profile, skills (SKILL.md), plugins
   const agentAdmin = new AgentAdmin(ai.store, ai.deps.secrets, () => ai.now());
   app.get(`${A}/agent`, admin(), async () => {
     const settings = await ai.settings();
     return {
-      profile: { agentName: settings.agentName, agentDescription: settings.agentDescription, systemPrompt: settings.systemPrompt, agentLanguage: settings.agentLanguage, agentStyle: settings.agentStyle, agentEnabled: settings.agentEnabled, agentMaxSteps: settings.agentMaxSteps },
+      profile: { agentName: settings.agentName, agentDescription: settings.agentDescription, systemPrompt: settings.systemPrompt, agentLanguage: settings.agentLanguage, agentStyle: settings.agentStyle, agentEnabled: settings.agentEnabled, agentMaxSteps: settings.agentMaxSteps, agentModelId: settings.agentModelId ?? null },
+      models: await ai.store.listModels(),
       skills: await agentAdmin.listSkills(),
       plugins: await agentAdmin.listPlugins()
     };
@@ -242,6 +249,12 @@ export function registerAiRoutes(app: FastifyInstance, deps: { repository: AppRe
   app.get(`${A}/usage`, admin(), async request => ({ usage: await ai.store.listUsage(z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) }).parse(request.query).limit) }));
 
   // ---- Student: assistant. Every id comes from the session; conversations are looked up under it.
+  app.get(A + '/feedback', admin(), async () => ({ rows: await chat.feedbackSummary() }));
+  app.put('/api/v1/ai/conversations/:id/messages/:messageId/feedback', student(30), async request => {
+    const params = z.object({ id: uuid, messageId: uuid }).parse(request.params);
+    const { value } = z.object({ value: z.enum(['up','down']).nullable() }).parse(request.body);
+    return chat.feedback(request.auth.userId, params.id, params.messageId, value);
+  });
   app.get('/api/v1/ai/me', student(), async request => chat.me(request.auth.userId));
   app.get('/api/v1/ai/conversations', student(), async request => ({ conversations: await chat.listConversations(request.auth.userId) }));
   app.post('/api/v1/ai/conversations', student(20), async (request, reply) => reply.status(201).send(await chat.createConversation(request.auth.userId, z.object({ title: z.string().trim().max(80).optional() }).parse(request.body ?? {}).title)));
@@ -313,6 +326,8 @@ export function registerAiRoutes(app: FastifyInstance, deps: { repository: AppRe
 }
 
 const chatBody = z.object({
+  reviseMessageId: uuid.optional(),
+  context: z.object({ type: z.enum(['lesson', 'homework']), id: uuid }).optional(),
   content: z.string().max(40_000),
   modelId: z.string().uuid().optional(),
   clientRequestId: z.string().uuid(),

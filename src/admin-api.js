@@ -70,6 +70,8 @@ Object.assign(adminApi,{
   aiCreateModel:input=>request('/admin/ai/models',json('POST',input)),
   aiUpdateModel:(id,input)=>request(`/admin/ai/models/${id}`,json('PATCH',input)),
   aiDeleteModel:id=>request(`/admin/ai/models/${id}`,{method:'DELETE'}),
+  aiFeedback: ()=>request('/admin/ai/feedback'),
+  aiProbeModel: id=>request(`/admin/ai/models/${id}/probe`,json('POST',{})),
   aiTestModel:(id,prompt)=>request(`/admin/ai/models/${id}/test`,json('POST',prompt?{prompt}:{})),
   aiSettings:input=>request('/admin/ai/settings',json('PUT',input)),
   aiSetAccess:(scope,id,input)=>request(`/admin/ai/access/${scope}/${id}`,json('PUT',input)),

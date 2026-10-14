@@ -24,6 +24,7 @@ type Decision = { tool: { name: string; args: Record<string, unknown> } } | { te
 
 /** The scripted agent's next move, from the conversation so far and the tools on offer. */
 export function agentDecision(turns: Turn[], tools: string[]): Decision {
+  if (tools.includes('get_school_time')) return { tool: { name: 'get_school_time', args: {} } };
   const system = turns.filter(turn => turn.role === 'system').map(turn => turn.text).join('\n');
   const user = [...turns].reverse().find(turn => turn.role === 'user' && !turn.toolName)?.text ?? '';
   const results = turns.filter(turn => turn.role === 'tool');
@@ -168,7 +169,10 @@ export class MockProviderServer {
   private async openai(body: any, response: ServerResponse, json: (status: number, payload: unknown) => void): Promise<void> {
     const model = String(body?.model ?? '');
     const forced = this.failures.shift();
-    if (forced) return json(forced, { error: { message: forced === 429 ? 'Rate limit reached for requests' : 'Upstream overloaded' } });
+    if (forced) {
+      if (forced === 429) response.setHeader('Retry-After', '0.01');
+      return json(forced, { error: { message: forced === 429 ? 'Rate limit reached for requests' : 'Upstream overloaded' } });
+    }
     const failure = /^fail-(\d{3})$/.exec(model);
     if (failure) {
       const status = Number(failure[1]);

@@ -2,7 +2,7 @@ import {startAcademicSync} from './academic-sync.js';
 import { api } from './api.js';
 import { createActionGate, createNavigationGuard, navigationSection, performUiAction } from './student-interactions.js';
 import { HOMEWORK_FILE_ACCEPT, checkSelection, formatFileSize, isFinalUploadError, sendFile } from './homework-uploads.js';
-import { aiHandleBack, aiScreenMarkup, aiSelectConversation, mountAiScreen } from './ai-chat.js';
+import { aiStartLearningContext, aiHandleBack, aiScreenMarkup, aiSelectConversation, mountAiScreen } from './ai-chat.js';
 
 const tg = window.Telegram?.WebApp;
 
@@ -658,6 +658,7 @@ function homeworkPage() {
         <div><dt>Нагорода</dt><dd>+${homework.xpReward} XP</dd></div>
       </dl>
     </header>
+    <button type="button" class="btn btn--secondary btn--block" data-ai-learning="homework" data-id="${escapeHtml(homework.id)}" data-title="${escapeHtml(homework.title)}">Допомога ШІ з цим завданням</button>
     <section class="hw-card hw-task" aria-labelledby="hwTaskTitle"><h2 class="hw-card-title" id="hwTaskTitle">Завдання</h2><p class="hw-text">${escapeHtml(homework.instructions)}</p></section>
     ${videos.length ? `<section class="lesson-section homework-videos"><span class="section-kicker">ВІДЕО ДО ЗАВДАННЯ</span><div class="hw-link-list">${videos.map(resource => `<button type="button" class="btn btn--secondary btn--row btn--block homework-video-btn" data-external="${escapeHtml(resource.url)}"><span class="btn-label">${videoIcon()}<span>Відео — ${escapeHtml(resource.title)}</span></span>${externalIcon()}</button>`).join('')}</div></section>` : ''}
     ${materials.length ? `<section class="lesson-section homework-materials"><span class="section-kicker">МАТЕРІАЛИ ДО ЗАВДАННЯ</span><div class="hw-link-list">${materials.map(resource => `<button type="button" class="btn btn--secondary btn--row btn--block homework-material-btn" data-external="${escapeHtml(resource.url)}"><span class="btn-label">${escapeHtml(resource.title)}</span>${externalIcon()}</button>`).join('')}</div></section>` : ''}
@@ -830,6 +831,7 @@ function lessonPage() {
   return `<section class="page lesson-page">
     ${backButton('lesson')}
     <div class="page-title"><span class="section-kicker">УРОК ${lesson.number} · ${escapeHtml(lesson.moduleTitle)}</span><span class="zone-code">${lesson.estimatedMinutes} ХВ · +${lesson.xpReward} XP</span><h1>${escapeHtml(lesson.title)}</h1><p>${escapeHtml(lesson.summary)}</p></div>
+    <button type="button" class="btn btn--secondary btn--block" data-ai-learning="lesson" data-id="${escapeHtml(lesson.id)}" data-title="${escapeHtml(lesson.title)}">Спитати ШІ про цей урок</button>
     ${lesson.content.explanation ? `<section class="lesson-console"><span>КЛЮЧОВА ІДЕЯ</span><h2>${escapeHtml(lesson.content.conceptName)}</h2><p>${escapeHtml(lesson.content.explanation)}</p></section>` : ''}
     ${lesson.content.examples.length ? `<section class="lesson-section"><span class="section-kicker">ПРИКЛАДИ</span>${lesson.content.examples.map(example => `<article><i></i><p>${escapeHtml(example)}</p></article>`).join('')}</section>` : ''}
     ${lesson.content.task.prompt ? `<section class="lesson-task"><span class="section-kicker">ТВІЙ ХІД</span><h2>${escapeHtml(lesson.content.task.prompt)}</h2><p>${escapeHtml(lesson.content.task.hint)}</p></section>` : ''}
@@ -1215,6 +1217,11 @@ function render(tab, updateHistory = true) {
 }
 
 function wirePage() {
+  // The page knows which lesson or homework it shows; the server loads its material and checks access.
+  view.querySelectorAll('[data-ai-learning]').forEach(button => { button.onclick = () => {
+    aiStartLearningContext({ type: button.dataset.aiLearning, id: button.dataset.id, title: button.dataset.title });
+    render('ai');
+  }; });
   view.querySelectorAll('[data-back]').forEach(button => { button.onclick = () => goBack(button.dataset.back); });
   view.querySelectorAll('[data-tab]').forEach(element => {
     element.onclick = event => {

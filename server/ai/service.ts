@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { AppError } from '../errors/app-error.js';
 import type { FileStorage } from '../storage/file-storage.js';
 import type { AiAnswerNotifier } from './notifier.js';
-import { AiProviderError, createAdapter, safeProviderMessage, type ProviderAdapter, type ProviderConnection, type ProviderUsage } from './adapters.js';
+import { AiProviderError, createAdapter, safeProviderMessage, type ChatStreamRequest, type ProviderAdapter, type ProviderConnection, type ProviderUsage, type StreamEvent } from './adapters.js';
+import { probeImage } from './probe-image.js';
 import { SecretBox, secretHint } from './secret-box.js';
 import { MAX_BALANCE, type AiStore, type LedgerDraft, type StatsIncrement } from './store.js';
 import { daysSince, dayKey, hourKey, monthKey, recentDays, recentHours } from './time.js';
@@ -17,6 +18,7 @@ export interface AiRosterStudent { id: string; name: string; groupId: string | n
 export interface AiRoster { students: AiRosterStudent[]; groups: Array<{ id: string; name: string; status: string }> }
 
 export interface AiServiceDeps {
+  repository?: Pick<import('../data/repository.js').AppRepository, 'getLesson' | 'listHomework'>;
   store: AiStore;
   secrets: SecretBox;
   roster: () => Promise<AiRoster>;
@@ -44,6 +46,7 @@ export const DEFAULT_SYSTEM_PROMPT = [
 ].join('\n');
 
 export const DEFAULT_SETTINGS: AiSettings = {
+  memoryEnabled: true,
   defaultModelId: null,
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   maxMessageChars: 8000,
@@ -56,7 +59,8 @@ export const DEFAULT_SETTINGS: AiSettings = {
   agentLanguage: 'auto',
   agentStyle: 'friendly',
   agentEnabled: true,
-  agentMaxSteps: 8
+  agentMaxSteps: 8,
+  agentModelId: null
 };
 
 const FORBIDDEN_HEADERS = new Set(['host', 'content-length', 'connection', 'transfer-encoding', 'cookie', 'te', 'upgrade', 'keep-alive', 'proxy-authorization', 'content-type', 'accept']);
@@ -93,7 +97,7 @@ function validateHeaders(headers: Array<{ name: string; value: string }>): Array
 export function providerDto(provider: AiProviderRecord) {
   return {
     id: provider.id, name: provider.name, protocol: provider.protocol, baseUrl: provider.baseUrl, enabled: provider.enabled,
-    balanceSource: provider.balanceSource, lastCheck: provider.lastCheck, syncedBalance: provider.syncedBalance,
+    balanceSource: provider.balanceSource, lastCheck: provider.lastCheck, syncedBalance: provider.syncedBalance, rateLimitPerMinute: providerRateLimit(provider),
     createdAt: provider.createdAt, updatedAt: provider.updatedAt,
     keys: provider.keys.map(({ secret: _secret, ...key }) => key),
     headers: provider.headers.map(({ secret: _secret, ...header }) => header)
@@ -144,6 +148,49 @@ export class AiService {
   }
 
   /** Decrypted connection for one key of a provider. Never leaves the server. */
+  /**
+   * One model call under the provider's request limit. It waits for a free slot (telling the caller
+   * how long, so the student sees the queue), and when the provider still answers 429 it waits as
+   * asked (Retry-After) and tries again, up to twice — only while nothing has been streamed.
+   */
+  async *streamPaced(provider: AiProviderRecord, keyId: string, request: ChatStreamRequest, onQueue?: (waitMs: number | null) => void): AsyncGenerator<StreamEvent> {
+    for (let retry = 0; ; retry += 1) {
+      await this.waitForSlot(provider, request.signal, onQueue);
+      let produced = false;
+      try {
+        for await (const event of this.adapter(this.connection(provider, keyId)).stream(request)) { produced = true; yield event; }
+        return;
+      } catch (error) {
+        if (!(error instanceof AiProviderError) || error.code !== 'rate_limit' || produced || retry >= RATE_LIMIT_RETRIES) throw error;
+        const wait = error.retryAfterMs ?? 2_000 * 2 ** retry;
+        // Never retry sooner than the provider requested. Let a long cooldown surface to the user.
+        if (wait > MAX_RETRY_WAIT_MS) throw error;
+        onQueue?.(wait);
+        await pause(wait, request.signal);
+        onQueue?.(null);
+      }
+    }
+  }
+
+  /** Waits until the provider's per-minute limit has room for one more request. */
+  private async waitForSlot(provider: AiProviderRecord, signal: AbortSignal, onQueue?: (waitMs: number | null) => void): Promise<void> {
+    const limit = providerRateLimit(provider);
+    if (!limit || limit <= 0) return;
+    const giveUpAt = Date.now() + MAX_QUEUE_WAIT_MS;
+    let waited = false;
+    while (true) {
+      if (signal.aborted) throw unsent(new AiProviderError('aborted', 'Генерацію зупинено'));
+      let wait: number;
+      try { wait = await this.store.acquireRateSlot(provider.id, limit, this.now().getTime()); }
+      catch (error) { this.log(error, 'AI rate slot check failed'); wait = 0; } // storage trouble must not stop answers
+      if (wait <= 0) { if (waited) onQueue?.(null); return; }
+      if (Date.now() + wait > giveUpAt) throw unsent(new AiProviderError('rate_limit', 'Забагато запитів до ШІ одночасно. Спробуйте за хвилину.', 429));
+      waited = true;
+      onQueue?.(wait);
+      await pause(Math.min(wait, 3_000), signal);
+    }
+  }
+
   connection(provider: AiProviderRecord, keyId: string): ProviderConnection {
     const key = provider.keys.find(item => item.id === keyId);
     if (!key) throw new AppError('AI_KEY_NOT_FOUND', 404, 'Ключ не знайдено');
@@ -247,7 +294,7 @@ export class AiService {
     return provider;
   }
 
-  async createProvider(input: { name: string; protocol: AiProtocol; baseUrl: string; apiKey: string; keyLabel?: string | undefined; headers: Array<{ name: string; value: string }>; balanceSource: AiBalanceSource; enabled: boolean }) {
+  async createProvider(input: { name: string; protocol: AiProtocol; baseUrl: string; apiKey: string; keyLabel?: string | undefined; headers: Array<{ name: string; value: string }>; balanceSource: AiBalanceSource; enabled: boolean; rateLimitPerMinute?: number | null | undefined }) {
     const now = this.now().toISOString();
     const baseUrl = validateProviderBaseUrl(input.baseUrl, Boolean(this.deps.allowLocalProviderUrls));
     const headers = validateHeaders(input.headers);
@@ -255,13 +302,14 @@ export class AiService {
       id: randomUUID(), name: input.name.trim(), protocol: input.protocol, baseUrl, enabled: input.enabled, balanceSource: input.balanceSource,
       keys: [{ id: randomUUID(), label: input.keyLabel?.trim() || 'Основний ключ', secret: this.deps.secrets.seal(input.apiKey.trim()), hint: secretHint(input.apiKey.trim()), enabled: true, createdAt: now, lastUsedAt: null, lastError: null }],
       headers: headers.map(header => ({ name: header.name, secret: this.deps.secrets.seal(header.value), hint: secretHint(header.value) })),
-      lastCheck: null, syncedBalance: null, createdAt: now, updatedAt: now
+      lastCheck: null, syncedBalance: null, createdAt: now, updatedAt: now,
+      rateLimitPerMinute: input.rateLimitPerMinute ?? (/integrate\.api\.nvidia\.com/i.test(baseUrl) ? 35 : null)
     };
     await this.store.putProvider(provider);
     return providerDto(provider);
   }
 
-  async updateProvider(id: string, patch: { name?: string | undefined; protocol?: AiProtocol | undefined; baseUrl?: string | undefined; enabled?: boolean | undefined; balanceSource?: AiBalanceSource | undefined; headers?: Array<{ name: string; value: string }> | undefined }) {
+  async updateProvider(id: string, patch: { name?: string | undefined; protocol?: AiProtocol | undefined; baseUrl?: string | undefined; enabled?: boolean | undefined; balanceSource?: AiBalanceSource | undefined; headers?: Array<{ name: string; value: string }> | undefined; rateLimitPerMinute?: number | null | undefined }) {
     const provider = await this.requireProvider(id);
     const next: AiProviderRecord = { ...provider, updatedAt: this.now().toISOString() };
     if (patch.name !== undefined) next.name = patch.name.trim();
@@ -269,6 +317,7 @@ export class AiService {
     if (patch.baseUrl !== undefined) next.baseUrl = validateProviderBaseUrl(patch.baseUrl, Boolean(this.deps.allowLocalProviderUrls));
     if (patch.enabled !== undefined) next.enabled = patch.enabled;
     if (patch.balanceSource !== undefined) next.balanceSource = patch.balanceSource;
+    if (patch.rateLimitPerMinute !== undefined) next.rateLimitPerMinute = patch.rateLimitPerMinute;
     if (patch.headers !== undefined) {
       // An empty value keeps the stored secret for that header name.
       const existing = new Map(provider.headers.map(header => [header.name.toLowerCase(), header]));
@@ -421,7 +470,7 @@ export class AiService {
     return model;
   }
 
-  async updateModel(id: string, patch: Partial<Pick<AiModelRecord, 'label' | 'family' | 'enabled' | 'maxOutputTokens' | 'maxInputTokens' | 'pricing' | 'fallbackModelId' | 'apiModelId' | 'agent'>>) {
+  async updateModel(id: string, patch: Partial<Pick<AiModelRecord, 'label' | 'family' | 'enabled' | 'maxOutputTokens' | 'maxInputTokens' | 'pricing' | 'fallbackModelId' | 'apiModelId' | 'agent' | 'vision'>>) {
     const model = await this.requireModel(id);
     const next: AiModelRecord = { ...model, updatedAt: this.now().toISOString() };
     if (patch.label !== undefined) next.label = patch.label.trim() || next.apiModelId;
@@ -429,6 +478,7 @@ export class AiService {
     if (patch.maxOutputTokens !== undefined) next.maxOutputTokens = patch.maxOutputTokens;
     if (patch.maxInputTokens !== undefined) next.maxInputTokens = patch.maxInputTokens;
     if (patch.agent !== undefined) next.agent = patch.agent;
+    if (patch.vision !== undefined) next.vision = patch.vision;
     if (patch.pricing !== undefined) next.pricing = { ...patch.pricing, currency: patch.pricing.currency.toUpperCase() };
     if (patch.fallbackModelId !== undefined) {
       if (patch.fallbackModelId === id) throw new AppError('AI_FALLBACK_INVALID', 400, 'Модель не може бути резервною сама для себе');
@@ -457,7 +507,9 @@ export class AiService {
     await this.requireModel(id);
     await this.store.deleteModel(id);
     const [settings, rules, models] = await Promise.all([this.settings(), this.store.listAccessRules(), this.store.listModels()]);
-    if (settings.defaultModelId === id) await this.store.putSettings({ ...settings, defaultModelId: null });
+    if (settings.defaultModelId === id || settings.agentModelId === id) {
+      await this.store.putSettings({ ...settings, defaultModelId: settings.defaultModelId === id ? null : settings.defaultModelId, agentModelId: settings.agentModelId === id ? null : settings.agentModelId });
+    }
     for (const rule of rules) {
       if (!rule.modelIds?.includes(id) && rule.defaultModelId !== id) continue;
       await this.store.putAccessRule({ ...rule, modelIds: rule.modelIds ? rule.modelIds.filter(item => item !== id) : null, defaultModelId: rule.defaultModelId === id ? null : rule.defaultModelId });
@@ -478,7 +530,7 @@ export class AiService {
       let text = '';
       let usage: ProviderUsage | null = null;
       try {
-        for await (const event of this.adapter(this.connection(provider, key.id)).stream({
+        for await (const event of this.streamPaced(provider, key.id, {
           model: model.apiModelId, messages, maxOutputTokens: Math.min(model.maxOutputTokens, prompt ? 512 : 64), signal: AbortSignal.timeout(60_000)
         })) {
           if (event.type === 'text') text += event.text;
@@ -510,12 +562,80 @@ export class AiService {
     return { ok: false as const, code: failure.code, status: failure.status, message, latencyMs: Date.now() - started };
   }
 
+  /**
+   * Finds out what a model can do with two tiny real requests: whether it calls a tool when asked,
+   * and whether it sees a picture (a plain red square). Marks the model accordingly. Costs a few
+   * hundred provider tokens, never a student's.
+   */
+  async probeModel(id: string) {
+    const model = await this.requireModel(id);
+    const provider = await this.requireProvider(model.providerId);
+    const key = provider.keys.find(item => item.enabled);
+    if (!key) throw new AppError('AI_KEY_REQUIRED', 400, 'Додайте або увімкніть API-ключ провайдера');
+    const run = async (request: Omit<ChatStreamRequest, 'model' | 'signal'>) => {
+      let text = '';
+      let usage: ProviderUsage | null = null;
+      const calls: string[] = [];
+      for await (const event of this.streamPaced(provider, key.id, { ...request, model: model.apiModelId, signal: AbortSignal.timeout(60_000) })) {
+        if (event.type === 'text') text += event.text;
+        else if (event.type === 'tool_call') calls.push(event.call.name);
+        else if (event.type === 'usage') usage = event.usage;
+      }
+      const measured = usage ?? { inputTokens: await countChatTokens(request.messages), outputTokens: await countTokens(text + calls.join(' ')), reasoningTokens: 0, cachedTokens: 0, cacheWriteTokens: 0 };
+      const now = this.now();
+      await this.store.recordUsage({ usage: null, error: null, day: dayKey(now), hour: hourKey(now), increments: this.statsIncrements({ studentId: null, groupId: null, model, usage: measured, charged: 0, uncharged: 0, approximate: !usage, error: false, cost: costMicros(model, measured), test: true }) }).catch(error => this.log(error, 'AI capability usage write failed'));
+      return { text, calls };
+    };
+    const notes: string[] = [];
+    let tools: boolean | null = null;
+    try {
+      // Too small a token limit makes some NVIDIA models fail tool calls with 400, so give it room.
+      const result = await run({
+        messages: [{ role: 'user', content: 'Виклич інструмент get_school_time, щоб дізнатися час. Не відповідай текстом.' }],
+        maxOutputTokens: Math.min(model.maxOutputTokens, 512),
+        tools: [{ name: 'get_school_time', description: 'Returns the current school time.', parameters: { type: 'object', properties: {}, required: [] } }]
+      });
+      tools = result.calls.includes('get_school_time');
+      notes.push(tools ? 'Інструменти: так' : 'Інструменти: модель відповіла текстом замість виклику');
+    } catch (error) {
+      const failure = error instanceof AiProviderError ? error : new AiProviderError('network', 'Невідома помилка');
+      if (failure.code === 'bad_request' || failure.code === 'not_found') { tools = false; notes.push(`Інструменти: ні (${failure.message})`); }
+      else notes.push(`Інструменти: не перевірено (${failure.message})`);
+    }
+    let vision: boolean | null = null;
+    try {
+      const result = await run({
+        messages: [{ role: 'user', content: 'What colour is this picture? Answer with one word.', images: [{ mime: 'image/png', data: probeImage() }] }],
+        maxOutputTokens: Math.min(model.maxOutputTokens, 64)
+      });
+      vision = /red|червон|красн|czerwon|rot/i.test(result.text);
+      notes.push(vision ? 'Фото: так' : 'Фото: модель не розпізнала зображення');
+    } catch (error) {
+      const failure = error instanceof AiProviderError ? error : new AiProviderError('network', 'Невідома помилка');
+      if (failure.code === 'bad_request' || failure.code === 'not_found') { vision = false; notes.push(`Фото: ні (${failure.message})`); }
+      else notes.push(`Фото: не перевірено (${failure.message})`);
+    }
+    const fresh = await this.requireModel(id);
+    const next: AiModelRecord = {
+      ...fresh, updatedAt: this.now().toISOString(),
+      capabilities: { checkedAt: this.now().toISOString(), tools, vision, note: notes.join(' · ') },
+      ...(tools === null ? {} : { agent: tools }),
+      ...(vision === null ? {} : { vision })
+    };
+    await this.store.putModel(next);
+    return { tools, vision, note: next.capabilities!.note, model: next };
+  }
+
   // -------------------------------------------------------------------------------------------
   // Settings and access
 
   async updateSettings(patch: Partial<AiSettings>) {
     const current = await this.settings();
     if (patch.defaultModelId) await this.requireModel(patch.defaultModelId);
+    if (patch.agentModelId) {
+      const model = await this.requireModel(patch.agentModelId);
+      if (model.agent === false) throw new AppError('AI_AGENT_UNSUPPORTED', 400, `Модель «${model.label}» не викликає інструменти, тому не підходить для режиму агента.`);
+    }
     const next = { ...current, ...patch };
     await this.store.putSettings(next);
     return next;
@@ -782,4 +902,29 @@ export class AiService {
 
   /** Units used by a resource package, for validation. */
   static readonly resourceUnits: AiResourceUnit[] = ['tokens', 'credits', 'money'];
+}
+
+/** A 429 is retried twice; a provider's Retry-After is honoured up to this long. */
+const RATE_LIMIT_RETRIES = 2;
+const MAX_RETRY_WAIT_MS = 30_000;
+/** Longest a request waits in line for the provider's limit before the student is told to try later. */
+const MAX_QUEUE_WAIT_MS = 90_000;
+
+function unsent(error: AiProviderError): AiProviderError {
+  error.unsent = true;
+  return error;
+}
+
+/** Waiting in line or after a 429: an abort here means the provider has nothing to bill. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(unsent(new AiProviderError('aborted', 'Генерацію зупинено'))); return; }
+    const timer = setTimeout(() => { signal.removeEventListener('abort', stop); resolve(); }, ms);
+    const stop = () => { clearTimeout(timer); reject(unsent(new AiProviderError('aborted', 'Генерацію зупинено'))); };
+    signal.addEventListener('abort', stop, { once: true });
+  });
+}
+
+function providerRateLimit(provider: AiProviderRecord): number | null {
+  return provider.rateLimitPerMinute === undefined ? (/^https:\/\/integrate\.api\.nvidia\.com(?:\/|$)/i.test(provider.baseUrl) ? 35 : null) : provider.rateLimitPerMinute;
 }

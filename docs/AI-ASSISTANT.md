@@ -33,7 +33,8 @@ Everything lives in Upstash Redis under `AI_REDIS_PREFIX` (default `SESSION_REDI
 | `ledger`, `ledger:{student}` | journal: grants, sets, resets, blocks, monthly renewals (global) and every charge (per student) |
 | `usage`, `errors` | last 2000 requests and 200 provider errors |
 | `stats:d:{day}`, `stats:h:{hour}` | counters for analytics (Kyiv time), kept 400 days / 3 days |
-| `conv:{student}`, `msgs:{conversation}` | chats and messages, per student |
+| `conv:{student}`, `msgs:{conversation}` | chats and messages, per student; a chat also keeps its lesson/homework link, its memory summary and the student's 👍/👎 votes |
+| `rl:{provider}:{minute}` | requests sent to a provider in that minute, for its shared request limit (kept 130 s) |
 | `job:{id}`, `job:{id}:text`, `jobreq:{request}`, `jobs:active` | answer jobs: status, steps, files, confirmation; the text written so far; request → job; jobs still needing attention (kept 7 days) |
 | `atts:{student}`, `att:{id}` | attached files: metadata and the text read from them |
 | `gen:{id}` | files the agent made: their source; the file is rebuilt on download |
@@ -129,6 +130,52 @@ Every tool goes through one interface (`server/ai/agent/plugins.ts`): name, desc
 - **Secrets** are sealed with AES-GCM on the server, never returned to the browser, and opened only for the request that needs them. A plugin with missing secrets cannot be enabled.
 - **Admin OS:** install, enable/disable, settings, secrets, remove (the core plugins cannot be removed or disabled).
 
+## Rate-limited providers (free NVIDIA and others)
+
+Any provider can have **«Загальний ліміт запитів за хвилину»** (Admin OS → provider → Редагувати). It is one shared line for all students and all functions:
+
+- Every model call — chat answers, each agent step, memory summaries, admin tests — takes a slot in a sliding one-minute window in Redis (`acquireRateSlot`, one Lua script). When the window is full, the answer **waits in line**. The student sees «У черзі · ≈ N с» and a note that it starts by itself; the job keeps `queuedUntil`, so a reopened app shows the same thing. A wait longer than 90 s ends with «Забагато запитів до ШІ одночасно. Спробуйте за хвилину.»
+- A **429** from the provider is retried twice, after the provider's `Retry-After` (or 2 s, then 4 s), and only before any text was streamed. A longer cooldown than 30 s is shown as an error instead.
+- An answer stopped or given up **while waiting in line** costs nothing: the provider never received it.
+- Default: providers at `https://integrate.api.nvidia.com` get **35 requests per minute** (NVIDIA's free key allows about 40, account-wide); other providers have no limit until one is set. An empty field turns the limit off.
+
+**NVIDIA build (free).** Protocol `OpenAI-compatible`, Base URL `https://integrate.api.nvidia.com/v1`, the `nvapi-…` key. NVIDIA describes the free tier as for development and prototyping, not production; the limit is not published and was observed by users at about 40 requests per minute. Only some models call tools (agent mode) and only vision models read photos — press **Фото й інструменти** on each model.
+
+**Model capabilities.** **Фото й інструменти** sends two tiny real requests: one asks the model to call a tool, one shows it a red square. The model is marked «Режим агента» and «Модель розпізнає фотографії» accordingly (both can also be set by hand in the model's settings). Students' balances are not touched.
+
+**Agent model.** «ШІ · Агент» → **Модель для агента**: agent mode uses this model (a stronger one with tools) unless the student picks another model; plain chat keeps the default model.
+
+## Photos
+
+Students attach **JPG, PNG or WebP** photos (of a page, a board, a task) to models marked as seeing photos; with no such model the app does not offer photos.
+
+- The phone shrinks the photo before upload (longest side 1280 px or less, JPEG, at most 130 KB, camera metadata dropped), so it fits every provider's inline-image limit (NVIDIA's endpoints take about 180,000 base64 characters).
+- The server checks the bytes really are that image format and stores the photo privately like any attachment.
+- The photo goes to the model as an image part before the text (`image_url` data URL for OpenAI-compatible APIs, an `image` block for Anthropic). A follow-up question sends the latest photo message again, at most 4 images.
+- A photo is counted as about 4,096 input tokens in the estimate; the charge is what the provider reports.
+- If the chosen model does not see photos, the app switches to one that does, unless the student picked the model themself. The server refuses with «Ця модель не розпізнає фото» either way.
+
+## Answer control
+
+- **Редагувати** (last question only) and **Згенерувати ще раз** (last answer) replace the last exchange. The old pair stays stored but is hidden and no longer sent to the model; it is replaced only after the new answer succeeds. Files of the edited question are kept; new files go in a new message.
+- **👍 / 👎** under every answer can be changed or taken back. Admin OS → ШІ · Аналітика → «Оцінки відповідей» counts them per model and skill.
+
+## Chat memory
+
+Long chats do not lose their beginning. After an answer, once 8 or more older messages are not yet summarized, the same model writes a short summary (up to 1,200 characters: goal, decisions, facts, open questions). Later requests send the summary plus the newer messages.
+
+- The summary is charged honestly, together with that answer, and the reservation leaves room for it.
+- It never makes the student wait: if the provider's request limit is full, it is skipped and made after a later answer.
+- The summary is data for the model, not instructions.
+- Admin OS → Налаштування → «Стискати довгі діалоги в памʼять» turns it off.
+
+## Lesson and homework help
+
+- **«Спитати ШІ про цей урок»** on a lesson and **«Допомога ШІ з цим завданням»** on a homework open a new chat linked to it.
+- The server loads the material itself (lesson summary and content, homework instructions) with the student's own access rules, and adds it to the system prompt as data. A locked lesson or someone else's homework answers 404.
+- A chat stays linked to its lesson or homework; another lesson needs a new chat.
+- **Homework hint mode** is always on for homework chats: the assistant asks what the student tried, gives one hint at a time, explains on a different example, and does not hand over a finished solution or file. The built-in skill «Підказки до домашнього» is preselected.
+
 ## Dependencies added
 
 `unpdf` (PDF text), `mammoth` (Word → HTML), `docx` (Word output), `pdfmake` (PDF output with Roboto), `exceljs` (Excel in and out), `pptxgenjs` (PowerPoint output), `marked` (Markdown lexer). All are loaded lazily, only when a document is read or made.
@@ -176,6 +223,7 @@ No provider keys go into environment variables: they are entered in Admin OS and
 4. Edit the model: label for students, family, output/context limits, tariff per 1M tokens (optional, for cost estimates), optional fallback model.
 5. **Увімкнути** — the server sends a real test request through the API; only a model that answered becomes visible to students. **Основна** sets the default model.
 6. More keys for the same provider (**Додати ключ**) are tried in order when one fails with an auth, quota or rate-limit error, before any text was streamed. The fallback model is tried once under the same rule, and only if the student is allowed to use it.
+7. For a provider with a request limit (free NVIDIA, small plans), set **Загальний ліміт запитів за хвилину**, then press **Фото й інструменти** on each model.
 
 ## Giving a student tokens (ШІ · Токени)
 
@@ -206,6 +254,7 @@ npm test
 
 - `server/ai/ai-store.unit.test.ts` runs every balance rule twice: against the in-memory store and against the real Lua scripts in a Lua VM (`server/ai/testing/redis-emulator.ts`): reservations, settlement, never negative, 20 parallel reservations, duplicates, blocking, concurrency and rate caps, expired reservations, monthly renewal, journal.
 - `server/ai/adapters.unit.test.ts` talks HTTP to `server/ai/testing/mock-provider.ts`: streaming, usage parsing, missing usage, `max_completion_tokens` retry, errors, key redaction, stop, Anthropic, balances.
+- `server/ai-improvements.unit.test.ts`: the provider line (real millisecond timestamps in both stores, waiting, giving up, a 429 retry, an answer stopped in line costs nothing), the agent model, the capability check, photos, edit and regenerate, feedback, memory, lesson and homework context.
 - `server/ai-assistant.unit.test.ts` runs the whole app: admin setup, a model that does not exist is refused, first grant, exact charge, history, isolation between students, repeated requests, parallel students, fallback and provider failures, approximate usage, stop, blocking, group access, group grants, resources, and the streaming fetch handler.
 
 A real provider was not called in tests (no real key is used). After deploying, connect your provider, press **Перевірити зʼєднання**, enable a model (it sends one real request) and send one message from Student OS.

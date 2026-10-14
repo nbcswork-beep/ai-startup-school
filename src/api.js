@@ -82,6 +82,7 @@ export const api = {
   aiConversation: id => request(`/ai/conversations/${id}`),
   aiRename: (id, title) => request(`/ai/conversations/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
   aiDelete: id => request(`/ai/conversations/${id}`, { method: 'DELETE' }),
+  aiFeedback: (id, messageId, value) => request(`/ai/conversations/${id}/messages/${messageId}/feedback`, { method: 'PUT', body: JSON.stringify({ value }) }),
   aiStream: (conversationId, input, signal) => stream(`/ai/conversations/${conversationId}/stream`, input, signal),
   aiJob: (jobId, from = 0) => request(`/ai/jobs/${jobId}?from=${from}`),
   aiStopJob: jobId => request(`/ai/jobs/${jobId}/stop`, { method: 'POST' }),

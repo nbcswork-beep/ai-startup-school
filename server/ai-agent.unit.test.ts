@@ -275,7 +275,7 @@ describe('AI agent — skills as SKILL.md', () => {
   it('creates, edits, exports and imports skills, and students see only enabled ones', async () => {
     const { admin, student } = await ready();
     const agent = (await admin.call('GET', '/api/v1/admin/ai/agent')).json();
-    expect(agent.skills.map((skill: { name: string }) => skill.name)).toEqual(['Конспект', 'Пояснення теми', 'Підготовка до іспиту', 'Оформлення доповіді', 'Презентація']);
+    expect(agent.skills.map((skill: { name: string }) => skill.name)).toEqual(['Конспект', 'Пояснення теми', 'Підготовка до іспиту', 'Оформлення доповіді', 'Презентація', 'Підказки до домашнього']);
     expect(agent.skills[0].markdown).toMatch(/^---\nname: Конспект\ndescription: .+\nwhen: .+\ntools: read_file, create_file\n---\n\nСклади конспект/);
 
     const created = await admin.call('POST', '/api/v1/admin/ai/skills', { name: 'Есе', description: 'Есе на 300 слів', when: 'Учень просить есе', instructions: 'Пиши есе з вступом, трьома абзацами і висновком.', tools: ['create_file'] });
@@ -283,7 +283,7 @@ describe('AI agent — skills as SKILL.md', () => {
     expect((await admin.call('POST', '/api/v1/admin/ai/skills', { name: 'есе', instructions: 'x' })).json().error.code).toBe('AI_SKILL_DUPLICATE');
     expect((await admin.call('PATCH', '/api/v1/admin/ai/skills/skill-exam', { enabled: false })).statusCode).toBe(200);
     const visible = (await student.call('GET', '/api/v1/ai/me')).json().skills.map((skill: { name: string }) => skill.name);
-    expect(visible).toEqual(['Конспект', 'Пояснення теми', 'Оформлення доповіді', 'Презентація', 'Есе']);
+    expect(visible).toEqual(['Конспект', 'Пояснення теми', 'Оформлення доповіді', 'Презентація', 'Підказки до домашнього', 'Есе']);
     expect((await student.send('Привіт', { skillId: 'skill-exam' })).response.json().error.code).toBe('AI_SKILL_NOT_FOUND');
 
     // Export one as SKILL.md, all as a ZIP of folders.

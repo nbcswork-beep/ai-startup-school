@@ -141,6 +141,11 @@ export interface AiStore {
   /** Takes a job off the attention index. */
   releaseJob(jobId: string): Promise<void>;
   listActiveJobs(): Promise<Array<{ jobId: string; studentId: string }>>;
+  /**
+   * One request against a provider's per-minute limit, over a sliding minute shared by every
+   * function. Returns 0 when the request may go now, otherwise how many milliseconds to wait.
+   */
+  acquireRateSlot(providerId: string, limitPerMinute: number, now: number): Promise<number>;
   // agent configuration: skills and installed plugins
   listSkills(): Promise<AiSkill[]>;
   putSkill(skill: AiSkill): Promise<void>;
@@ -184,7 +189,7 @@ export function jobFromFields(hash: Record<string, string>): AiJob | null {
     inputTokens: num('inputTokens'), errorCode: text('errorCode'), errorMessage: text('errorMessage'), notify: text('notify') as AiJob['notify'],
     notifyAttempts: num('notifyAttempts'), userMessage: json<AiMessage>('userMessage'), message: json<AiMessage>('message'),
     mode: hash.mode === 'agent' ? 'agent' : 'chat', steps: json<AiJob['steps']>('steps') ?? [], files: json<AiJob['files']>('files') ?? [],
-    pending: json<AiJob['pending']>('pending'), decision: json<AiJob['decision']>('decision')
+    pending: json<AiJob['pending']>('pending'), decision: json<AiJob['decision']>('decision'), queuedUntil: nullableNum('queuedUntil')
   };
 }
 
@@ -247,6 +252,7 @@ export class MemoryAiStore implements AiStore {
   private attachmentTexts = new Map<string, string>();
   private jobs = new Map<string, { fields: Record<string, string>; text: string }>();
   private skills = new Map<string, AiSkill>();
+  private rateWindows = new Map<string, number>();
   private plugins = new Map<string, AiPluginRecord>();
   private generated = new Map<string, AiGeneratedFile>();
   private jobRequests = new Map<string, string>();
@@ -532,6 +538,15 @@ export class MemoryAiStore implements AiStore {
 
   async updateJob(jobId: string, fields: Partial<AiJob> & { notifyClaimAt?: string }) { const item = this.jobs.get(jobId); if (item) Object.assign(item.fields, jobToFields(fields)); }
   async releaseJob(jobId: string) { this.activeJobs.delete(jobId); }
+  async acquireRateSlot(providerId: string, limitPerMinute: number, now: number) {
+    const minute = Math.floor(now / 60_000);
+    const current = this.rateWindows.get(`${providerId}:${minute}`) ?? 0;
+    const previous = this.rateWindows.get(`${providerId}:${minute - 1}`) ?? 0;
+    const estimate = previous * (1 - (now % 60_000) / 60_000) + current;
+    if (estimate + 1 > limitPerMinute) return previous > 0 ? Math.max(250, Math.ceil(((estimate + 1 - limitPerMinute) / previous) * 60_000)) : Math.max(250, 60_000 - (now % 60_000));
+    this.rateWindows.set(`${providerId}:${minute}`, current + 1);
+    return 0;
+  }
   async listSkills() { return [...this.skills.values()].map(item => structuredClone(item)); }
   async putSkill(skill: AiSkill) { this.skills.set(skill.id, structuredClone(skill)); }
   async deleteSkill(id: string) { this.skills.delete(id); }
@@ -783,6 +798,25 @@ if (status == 'running' and quiet) or stuck then
   redis.call('HSET', key, 'status', 'finalizing', 'finalizingAt', ARGV[3])
   return 1
 end
+return 0`;
+
+const RATE_SLOT_SCRIPT = `
+local p, id, limit, now = ARGV[1], ARGV[2], tonumber(ARGV[3]), tonumber(ARGV[4])
+local minute = math.floor(now / 60000)
+local current = p .. ':rl:' .. id .. ':' .. minute
+local previous = p .. ':rl:' .. id .. ':' .. (minute - 1)
+local count = tonumber(redis.call('GET', current) or '0')
+local before = tonumber(redis.call('GET', previous) or '0')
+local into = now % 60000
+local estimate = before * (1 - into / 60000) + count
+if estimate + 1 > limit then
+  local wait = 60000 - into
+  if before > 0 then wait = math.ceil(((estimate + 1 - limit) / before) * 60000) end
+  if wait < 250 then wait = 250 end
+  return wait
+end
+redis.call('INCR', current)
+redis.call('EXPIRE', current, 130)
 return 0`;
 
 const CLAIM_NOTICE_SCRIPT = `
@@ -1054,6 +1088,10 @@ export class RedisAiStore implements AiStore {
   }
 
   async releaseJob(jobId: string) { await this.client.command(['HDEL', this.key('jobs', 'active'), jobId]); }
+
+  async acquireRateSlot(providerId: string, limitPerMinute: number, now: number) {
+    return Number(await this.client.command<number>(['EVAL', RATE_SLOT_SCRIPT, 0, this.prefix, providerId, Math.max(1, Math.floor(limitPerMinute)), now])) || 0;
+  }
 
   listSkills() { return this.hashValues<AiSkill>(this.key('skills')); }
   async putSkill(skill: AiSkill) { await this.client.command(['HSET', this.key('skills'), skill.id, JSON.stringify(skill)]); }

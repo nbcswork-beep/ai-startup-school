@@ -73,6 +73,7 @@ export async function buildApp(deps: { env: AppEnv; repository: AppRepository; j
     store: aiStore,
     secrets: SecretBox.fromEnv(deps.env),
     roster: () => deps.repository.getAiRoster(),
+    repository: deps.repository,
     allowLocalProviderUrls: deps.env.deployEnvironment === 'local',
     fileStorage,
     storagePrefix: fileConfig.pathPrefix,
