@@ -17,6 +17,9 @@ import type { AddressInfo } from 'node:net';
  *   claude-*      (Anthropic endpoint) streams with message_start / message_delta usage
  *   agent, claude-agent   a scripted agent: loads a named skill, reads every attached file, looks
  *                 something up when asked, creates the requested file, then answers — one tool per turn
+ *   cutoff-empty / cutoff-text / cutoff-tool   hit the output cap (finish_reason "length"): nothing
+ *                 visible, a partial answer, or a create_project call cut off mid-arguments. Short
+ *                 calls (model tests, titles: max tokens ≤ 600) get a normal answer.
  */
 
 interface Turn { role: string; text: string; toolName?: string }
@@ -194,14 +197,33 @@ export class MockProviderServer {
     if (model === 'needs-mct' && body.max_tokens !== undefined) {
       return json(400, { error: { message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead." } });
     }
-    if (!['echo', 'no-usage', 'slow', 'long', 'mid-error', 'needs-mct', 'agent'].some(prefix => model === prefix || model.startsWith(`${prefix}-`))) {
+    if (!['echo', 'no-usage', 'slow', 'long', 'mid-error', 'needs-mct', 'agent', 'cutoff'].some(prefix => model === prefix || model.startsWith(`${prefix}-`))) {
       return json(404, { error: { message: `The model ${model} does not exist` } });
     }
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
     const send = (payload: unknown) => response.write(`data: ${JSON.stringify(payload)}\n\n`);
     const delta = (text: string) => send({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: text }, finish_reason: null }] });
     const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-    if (model === 'agent') {
+    const cap = Number(body.max_tokens ?? body.max_completion_tokens ?? 0);
+    if (model.startsWith('cutoff-') && cap > 600) {
+      const tools = (body.tools ?? []).map((tool: any) => tool.function?.name);
+      if (model === 'cutoff-tool' && tools.includes('create_project')) {
+        const partial = '{"title":"Візитка","kind":"website","files":[{"path":"index.html","content":"<!doctype html><html lang=\\"uk\\"><head><title>Візитка';
+        send({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call_${this.requests.length}`, type: 'function', function: { name: 'create_project', arguments: '' } }] }, finish_reason: null }] });
+        send({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: partial } }] }, finish_reason: null }] });
+      } else if (model === 'cutoff-text') {
+        delta('Ось початок довгої відповіді, яка ');
+        delta('не вмістилася в');
+      }
+      // Reasoning or arguments used the whole cap: the provider says so in finish_reason.
+      send({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'length' }] });
+      send({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', choices: [], usage: { prompt_tokens: MOCK_USAGE.input, completion_tokens: cap, total_tokens: MOCK_USAGE.input + cap, completion_tokens_details: { reasoning_tokens: model === 'cutoff-empty' ? cap : 0 } } });
+      response.write('data: [DONE]\n\n');
+      response.end();
+      return;
+    }
+    if (model.startsWith('cutoff-')) delta('OK');
+    else if (model === 'agent') {
       const decision = agentDecision(this.openAiTurns(body.messages), (body.tools ?? []).map((tool: any) => tool.function?.name));
       if ('tool' in decision) {
         const args = JSON.stringify(decision.tool.args);

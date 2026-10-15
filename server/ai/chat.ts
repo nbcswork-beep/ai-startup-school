@@ -4,6 +4,7 @@ import { AiProviderError, type ChatTurn, type ProviderUsage, type StreamEvent } 
 import { costMicros, type AiService } from './service.js';
 import { dayKey, hourKey, monthKey } from './time.js';
 import { countChatTokens, countTokens, withSafetyMargin } from './tokenizer.js';
+import { BUDGET_LIMIT_NOTICE, hitOutputLimit, outputLimitNotice } from './output-limit.js';
 import type { AiAttachment, AiConversation, AiFileRef, AiGeneratedFile, AiJob, AiJobStatus, AiMessage, AiModelRecord, AiPendingAction, AiPluginRecord, AiProviderRecord, AiSkill, AiUsageStatus } from './types.js';
 import type { AnswerNoticeResult } from './notifier.js';
 import { extractArchiveText, parseAnswerFiles, renderAttachment } from './files.js';
@@ -1039,14 +1040,16 @@ export class AiChatService {
     let partialInput: number | null = null;
     let usedModel = ctx.model;
     let finishReason: string | null = null;
+    let outputCap = 0;
     const answerBudget = Math.max(1, ctx.reserved - ctx.inputEstimate);
     for (const [index, attempt] of attempts.entries()) {
       usedModel = attempt.model;
       failure = null;
+      outputCap = Math.max(1, Math.min(attempt.model.maxOutputTokens, answerBudget));
       try {
         for await (const item of this.ai.streamPaced(attempt.provider, attempt.keyId, {
           model: attempt.model.apiModelId, messages: ctx.turns,
-          maxOutputTokens: Math.max(1, Math.min(attempt.model.maxOutputTokens, answerBudget)), signal: ctx.upstream.signal
+          maxOutputTokens: outputCap, signal: ctx.upstream.signal
         }, ctx.queue)) {
           if (item.type === 'text') { text += item.text; append(item.text); ctx.event('delta', { text: item.text }); }
           else if (item.type === 'usage') usage = item.usage;
@@ -1075,7 +1078,7 @@ export class AiChatService {
       }
     }
     return {
-      text, usage, status, failure, partialInput, model: usedModel, finishReason,
+      text, usage, status, failure, partialInput, model: usedModel, finishReason, outputCap,
       stopped: reason() === 'stop', deadline: reason() === 'deadline', lost: false, latencyMs: Date.now() - ctx.startedAt, skill: ctx.state.skill,
       unsent: Boolean(failure?.unsent) && !text
     };
@@ -1216,6 +1219,13 @@ export class AiChatService {
     let jobStatus: AiJobStatus;
     let problem: { code: string; message: string } | null = null;
     if (status === 'stopped' || outcome.stopped) jobStatus = 'stopped';
+    else if (status === 'complete' && hitOutputLimit(outcome.finishReason)) {
+      // A chat answer cut off by the output cap. Usage stays «complete»: the provider did generate and is charged exactly.
+      jobStatus = text || files.length ? 'interrupted' : 'error';
+      problem = outcome.outputCap !== undefined && outcome.outputCap < usedModel.maxOutputTokens
+        ? BUDGET_LIMIT_NOTICE
+        : outputLimitNotice(text ? 'partial' : 'empty', usedModel.maxOutputTokens);
+    }
     else if (status === 'complete' && (text || files.length)) jobStatus = 'complete';
     else if (outcome.notice) { jobStatus = text || files.length ? 'interrupted' : 'error'; problem = outcome.notice; }
     else if (status === 'complete') { jobStatus = 'error'; problem = { code: 'AI_EMPTY_ANSWER', message: 'Модель повернула порожню відповідь. Спробуйте переформулювати.' }; }
@@ -1354,6 +1364,8 @@ interface JobOutcome {
   partialInput: number | null;
   model: AiModelRecord;
   finishReason: string | null;
+  /** The output-token cap of the last chat call (the model's limit, or less when the student's tokens ran low). */
+  outputCap?: number;
   /** The student pressed «Стоп». */
   stopped: boolean;
   /** The function's time budget ran out. */

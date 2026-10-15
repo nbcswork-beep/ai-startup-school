@@ -1,18 +1,23 @@
 import {announceAcademicChange} from './academic-sync.js';
+import {refreshSession} from './session-refresh.js';
 let accessToken = '';
+
+// A 401 for a token another call already replaced just retries; otherwise one shared refresh.
+async function renewAccess(sent) {
+  if (accessToken && accessToken !== sent) return true;
+  const refreshed = await refreshSession();
+  if (!refreshed.ok) return false;
+  accessToken = refreshed.payload.accessToken;
+  return true;
+}
 
 async function request(path, options = {}, retry = true) {
   const headers = new Headers(options.headers);
   if (options.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
-  if (accessToken) headers.set('authorization', `Bearer ${accessToken}`);
+  const sent = accessToken;
+  if (sent) headers.set('authorization', `Bearer ${sent}`);
   const response = await fetch(`/api/v1${path}`, { ...options, headers, credentials: 'include', cache:'no-store' });
-  if (response.status === 401 && retry && !path.startsWith('/auth/')) {
-    const refreshed = await fetch('/api/v1/auth/refresh', { method: 'POST', credentials: 'include' });
-    if (refreshed.ok) {
-      accessToken = (await refreshed.json()).accessToken;
-      return request(path, options, false);
-    }
-  }
+  if (response.status === 401 && retry && !path.startsWith('/auth/') && await renewAccess(sent)) return request(path, options, false);
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw Object.assign(new Error(payload.error?.message || 'Не вдалося завантажити дані'), { status: response.status, code: payload.error?.code });
@@ -25,15 +30,10 @@ async function request(path, options = {}, retry = true) {
 // returned unread so the caller can show the answer while it is being written.
 async function stream(path, body, signal, retry = true) {
   const headers = new Headers({ 'content-type': 'application/json', accept: 'text/event-stream' });
-  if (accessToken) headers.set('authorization', `Bearer ${accessToken}`);
+  const sent = accessToken;
+  if (sent) headers.set('authorization', `Bearer ${sent}`);
   const response = await fetch(`/api/v1${path}`, { method: 'POST', headers, body: JSON.stringify(body), credentials: 'include', cache: 'no-store', signal });
-  if (response.status === 401 && retry) {
-    const refreshed = await fetch('/api/v1/auth/refresh', { method: 'POST', credentials: 'include' });
-    if (refreshed.ok) {
-      accessToken = (await refreshed.json()).accessToken;
-      return stream(path, body, signal, false);
-    }
-  }
+  if (response.status === 401 && retry && await renewAccess(sent)) return stream(path, body, signal, false);
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw Object.assign(new Error(payload.error?.message || 'Не вдалося надіслати повідомлення'), { status: response.status, code: payload.error?.code });

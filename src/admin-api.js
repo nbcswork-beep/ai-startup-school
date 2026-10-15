@@ -1,25 +1,29 @@
 import {announceAcademicChange} from './academic-sync.js';
+import {refreshSession} from './session-refresh.js';
 let accessToken='';
 
+// A 401 for a token another call already replaced just retries; otherwise one shared refresh.
+async function renewAccess(sent){if(accessToken&&accessToken!==sent)return true;const refreshed=await refreshSession();if(!refreshed.ok)return false;accessToken=refreshed.payload.accessToken;return true}
+
 async function request(path,options={},retry=true){
-  const headers=new Headers(options.headers);if(options.body&&!headers.has('content-type'))headers.set('content-type','application/json');if(accessToken)headers.set('authorization',`Bearer ${accessToken}`);
+  const headers=new Headers(options.headers);if(options.body&&!headers.has('content-type'))headers.set('content-type','application/json');const sent=accessToken;if(sent)headers.set('authorization',`Bearer ${sent}`);
   const response=await fetch(`/api/v1${path}`,{...options,headers,credentials:'include',cache:'no-store'});
-  if(response.status===401&&retry&&!path.startsWith('/auth/')){const refreshed=await fetch('/api/v1/auth/refresh',{method:'POST',credentials:'include'});if(refreshed.ok){accessToken=(await refreshed.json()).accessToken;return request(path,options,false)}}
+  if(response.status===401&&retry&&!path.startsWith('/auth/')&&await renewAccess(sent))return request(path,options,false);
   const payload=response.status===204?null:await response.json().catch(()=>({}));if(!response.ok){const error=new Error(payload?.error?.message||'Не вдалося виконати захищену операцію');error.status=response.status;throw error}if(options.method&&!path.startsWith('/auth/'))announceAcademicChange();return payload;
 }
 
 /** A file from a protected endpoint (exports), with the name the server gave it. */
 async function download(path,retry=true){
-  const headers=new Headers();if(accessToken)headers.set('authorization',`Bearer ${accessToken}`);
+  const headers=new Headers();const sent=accessToken;if(sent)headers.set('authorization',`Bearer ${sent}`);
   const response=await fetch(`/api/v1${path}`,{headers,credentials:'include',cache:'no-store'});
-  if(response.status===401&&retry){const refreshed=await fetch('/api/v1/auth/refresh',{method:'POST',credentials:'include'});if(refreshed.ok){accessToken=(await refreshed.json()).accessToken;return download(path,false)}}
+  if(response.status===401&&retry&&await renewAccess(sent))return download(path,false);
   if(!response.ok){const payload=await response.json().catch(()=>({}));throw new Error(payload?.error?.message||'Не вдалося завантажити файл')}
   const disposition=response.headers.get('content-disposition')??'';
   return{blob:await response.blob(),fileName:/filename="([^"]+)"/.exec(disposition)?.[1]??'download'};
 }
 
 export const adminApi={
-  async authenticate(){const response=await request('/auth/refresh',{method:'POST'},false);accessToken=response.accessToken;return response.user},
+  async authenticate(){const refreshed=await refreshSession();if(!refreshed.ok){const error=new Error(refreshed.payload?.error?.message||'Не вдалося виконати захищену операцію');error.status=refreshed.status;throw error}accessToken=refreshed.payload.accessToken;return refreshed.payload.user},
   async logout(){await request('/auth/logout',{method:'POST'},false);accessToken=''},
   groupDirectory:()=>request('/admin/groups/directory'),
   group:id=>request('/admin/groups/'+id),
