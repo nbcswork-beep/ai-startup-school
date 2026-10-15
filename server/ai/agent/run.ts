@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AiProviderError, type ChatTurn, type ProviderUsage, type StreamEvent, type ToolCall } from '../adapters.js';
 import { countChatTokens, countTokens, withSafetyMargin } from '../tokenizer.js';
+import { BUDGET_LIMIT_NOTICE, hitOutputLimit, outputLimitNotice, truncatedArguments } from '../output-limit.js';
 import type { AiFileRef, AiSettings, AiSkill, AiStep, AiUsageStatus } from '../types.js';
 import type { AgentTool, ToolContext, ToolOutcome } from './plugins.js';
 
@@ -115,11 +116,13 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
     let text = '';
     const calls: ToolCall[] = [];
     let reported: ProviderUsage | null = null;
+    let finish: string | null = null;
     try {
       for await (const event of input.call(turns, toolsAllowed ? input.tools.map(entry => entry.tool) : null, Math.min(input.maxOutputTokens, room))) {
         if (event.type === 'text') { text += event.text; input.emit('delta', { text: event.text }); }
         else if (event.type === 'tool_call') calls.push(event.call);
         else if (event.type === 'usage') reported = event.usage;
+        else if (event.type === 'finish') finish = event.reason;
       }
     } catch (error) {
       failure = error instanceof AiProviderError ? error : new AiProviderError('network', error instanceof Error ? error.message : 'Невідома помилка');
@@ -147,6 +150,16 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
       approximate = true;
       usage.inputTokens += inputNow;
       usage.outputTokens += await countTokens(`${text}${calls.map(call => call.arguments).join('')}`);
+    }
+
+    // Cut off by the output cap: nothing said, a partial answer, or a tool call with half its
+    // arguments. Running or retrying that call would hit the same cap, so the student hears why.
+    if (hitOutputLimit(finish) && (!calls.length || calls.some(call => truncatedArguments(call.arguments)))) {
+      const kind = calls.length ? 'tool' : text ? 'partial' : 'empty';
+      const notice = room < input.maxOutputTokens ? BUDGET_LIMIT_NOTICE : outputLimitNotice(kind, input.maxOutputTokens);
+      if (calls.length) input.emit('reset', {});
+      const answer = calls.length ? '' : text;
+      return { text: answer, status: answer || toolCalls ? 'interrupted' : 'error', failure: null, usage, approximate, notice };
     }
 
     if (!calls.length) return { text, status: 'complete', failure: null, usage, approximate, notice: null };

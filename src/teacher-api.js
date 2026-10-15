@@ -1,18 +1,23 @@
 import {announceAcademicChange} from './academic-sync.js';
+import {refreshSession} from './session-refresh.js';
 let accessToken = '';
+
+// A 401 for a token another call already replaced just retries; otherwise one shared refresh.
+async function renewAccess(sent) {
+  if (accessToken && accessToken !== sent) return true;
+  const refreshed = await refreshSession();
+  if (!refreshed.ok) return false;
+  accessToken = refreshed.payload.accessToken;
+  return true;
+}
 
 async function request(path, options = {}, retry = true) {
   const headers = new Headers(options.headers);
   if (options.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
-  if (accessToken) headers.set('authorization', `Bearer ${accessToken}`);
+  const sent = accessToken;
+  if (sent) headers.set('authorization', `Bearer ${sent}`);
   const response = await fetch(`/api/v1${path}`, { ...options, headers, credentials: 'include', cache:'no-store' });
-  if (response.status === 401 && retry && !path.startsWith('/auth/')) {
-    const refreshed = await fetch('/api/v1/auth/refresh', { method: 'POST', credentials: 'include' });
-    if (refreshed.ok) {
-      accessToken = (await refreshed.json()).accessToken;
-      return request(path, options, false);
-    }
-  }
+  if (response.status === 401 && retry && !path.startsWith('/auth/') && await renewAccess(sent)) return request(path, options, false);
   const payload = response.status === 204 ? null : await response.json().catch(() => ({}));
   if (!response.ok) { const error=new Error(payload?.error?.message || 'Не вдалося виконати дію');error.status=response.status;throw error; }
   if(options.method&&!path.startsWith('/auth/'))announceAcademicChange();return payload;
@@ -20,9 +25,10 @@ async function request(path, options = {}, retry = true) {
 
 export const teacherApi = {
   async authenticate() {
-    const result = await request('/auth/refresh', { method: 'POST' }, false);
-    accessToken = result.accessToken;
-    return result.user;
+    const refreshed = await refreshSession();
+    if (!refreshed.ok) { const error = new Error(refreshed.payload?.error?.message || 'Не вдалося виконати дію'); error.status = refreshed.status; throw error; }
+    accessToken = refreshed.payload.accessToken;
+    return refreshed.payload.user;
   },
   async logout() { await request('/auth/logout', { method:'POST' }, false); accessToken=''; },
   groupDirectory:()=>request('/teacher/groups/directory'),
