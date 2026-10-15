@@ -9,7 +9,7 @@ import type { AiAttachment, AiConversation, AiFileRef, AiGeneratedFile, AiJob, A
 import type { AnswerNoticeResult } from './notifier.js';
 import { extractArchiveText, parseAnswerFiles, renderAttachment } from './files.js';
 import { createZip, ZipFormatError } from './zip.js';
-import { StudentProjects, projectAsset } from './projects.js';
+import { StudentProjects, projectAsset, type ProjectStreamState } from './projects.js';
 import { cleanDisplayName, storageSafeName, type HomeworkFileExtension } from '../storage/file-types.js';
 import { DOCUMENT_KINDS, matchesKind, hasCyrillic, isOutputFormat, kindFromName, OUTPUT_FORMATS, type DocumentKind, type OutputFormat } from './documents/formats.js';
 import { DocumentReadError, extractDocument, type ExtractedDocument } from './documents/read.js';
@@ -80,7 +80,7 @@ export interface ChatInput {
 
 /** Automatic continuations after the time limit, per student request (about 4 minutes each). */
 const MAX_AUTO_RESUMES = 3;
-const RESUME_PROMPT = 'Автоматичне продовження: попередній запуск зупинився через ліміт часу, збережене лишилося в чернетці. Продовжуй те саме завдання з місця зупинки: прочитай збережений проєкт через read_project і допиши файли, яких бракує, через write_project_files. Не починай заново і не переписуй готові файли без потреби. Коли все готово, коротко підсумуй зроблене.';
+const RESUME_PROMPT = 'Автоматичне продовження: попередній запуск обірвався, отриманий код збережений у чернетці. Продовжуй те саме завдання з місця зупинки. Спочатку read_project без path: chars — точна довжина, incomplete=true — файл ще недописаний. Для такого файлу прочитай кінець через read_project(path,from=max(0,chars-2000)), потім append_project_file(projectId,path,offset=chars,content=лише НОВИЙ текст,complete=true лише в останній частині). Пиши короткими частинами до 4000 символів. Готові файли не переписуй; нові додавай через write_project_files. Не починай заново. Коли всі файли завершені та перевірені, коротко підсумуй зроблене.';
 
 export interface ChatSession {
   stream: ReadableStream<Uint8Array>;
@@ -116,10 +116,10 @@ export interface AiJobView {
 }
 
 /** What the student reads after the time limit: what was saved, and whether the work goes on by itself. */
-function timeLimitNotice(files: AiFileRef[], resume: AiJob['resume'], round: number): { code: string; message: string } {
+function timeLimitNotice(files: AiFileRef[], resume: AiJob['resume'], round: number, streamInterrupted = false): { code: string; message: string } {
   if (resume) {
     const saved = files.map(file => `«${file.name.replace(/\.zip$/i, '')}»`).join(', ');
-    return { code: 'AI_TIME_CONTINUE', message: `Час одного запуску вичерпано. Збережено ${saved}; продовжую автоматично (${resume.round} з ${resume.max}).` };
+    return { code: 'AI_TIME_CONTINUE', message: `${streamInterrupted ? 'Відповідь обірвалася.' : 'Час одного запуску вичерпано.'} Збережено ${saved}; продовжую автоматично (${resume.round} з ${resume.max}).` };
   }
   if (files.length) {
     const runs = round + 1;
@@ -502,6 +502,10 @@ export class AiChatService {
   async projectPreview(token: string, path: string) {
     const file = await this.signedFile(token);
     if (file.format !== 'project') throw new AppError('AI_PROJECT_NOT_FOUND', 404, 'Проєкт не знайдено');
+    if (file.incompleteFiles?.includes(path)) return {
+      mime: path.endsWith('.html') ? 'text/html; charset=utf-8' : path.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8',
+      content: path.endsWith('.html') ? '<!doctype html><html lang="uk"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Сайт створюється</title><body><p>Код уже збережено. Агент ще дописує цю сторінку — відкрийте перегляд після завершення.</p></body></html>' : ''
+    };
     return projectAsset(file.content, path);
   }
 
@@ -823,6 +827,7 @@ export class AiChatService {
     const allowed = run.explicitSkill?.tools.length ? new Set(run.explicitSkill.tools) : null;
     // A skill saved before write_project_files existed still builds sites in parts.
     if (allowed?.has('create_project')) allowed.add('write_project_files');
+    if (allowed?.has('write_project_files')) allowed.add('append_project_file');
     const base: Omit<ToolContext, 'settings' | 'secret'> = {
       fileName: id => files.get(id)?.name ?? null,
       readFile: async (id, from) => this.readForAgent(files.get(id) ?? null, id, from, run.model, run.sentScans),
@@ -830,6 +835,7 @@ export class AiChatService {
       createProject: args => this.projects().create(run.job, args),
       readProject: args => this.projects().read(run.job.studentId, args),
       writeProject: args => this.projects().write(run.job, args),
+      appendProject: args => this.projects().append(run.job, args),
       publishProject: id => this.projects().publish(run.job.studentId, id),
       useSkill: async name => {
         const found = run.skills.find(skill => skill.name.toLowerCase() === name.trim().toLowerCase());
@@ -1129,6 +1135,7 @@ export class AiChatService {
 
   private async agentRun(ctx: Parameters<AiChatService['generate']>[0], agent: { tools: AgentTools[]; maxSteps: number }, attempts: Attempt[], reason: () => 'stop' | 'deadline' | null, append: (text: string) => void): Promise<JobOutcome> {
     const { job } = ctx;
+    const streams = new Map<string, ProjectStreamState>();
     const service = this;
     // One model call with failover between the provider's keys, before anything was streamed.
     async function* call(turns: ChatTurn[], tools: AgentTool[] | null, maxOutputTokens: number): AsyncGenerator<StreamEvent> {
@@ -1155,6 +1162,19 @@ export class AiChatService {
       turns: ctx.turns, tools: agent.tools, maxSteps: agent.maxSteps, budget: ctx.reserved,
       maxOutputTokens: ctx.model.maxOutputTokens, maxInputTokens: ctx.model.maxInputTokens, signal: ctx.upstream.signal, call,
       emit: ctx.event, steps: job.steps,
+      checkpointTool: call => {
+        const state = streams.get(call.id) ?? {};
+        streams.set(call.id, state);
+        return this.projects().checkpoint(job, call.name, call.arguments, state);
+      },
+      finishCheckpoint: (call, args) => {
+        const state = streams.get(call.id);
+        if (!state?.id || state.lastContent === undefined) return Promise.resolve(null);
+        const fixed = { ...args, projectId: state.id };
+        return call.name === 'create_project' ? this.projects().create(job, fixed)
+          : call.name === 'write_project_files' ? this.projects().write(job, fixed)
+          : call.name === 'append_project_file' ? this.projects().append(job, fixed, state) : Promise.resolve(null);
+      },
       saveSteps: steps => this.ai.store.updateJob(job.id, { steps }).catch(error => this.ai.log(error, 'AI job steps write failed')),
       addFile: async file => {
         // A project written in parts is one file: each save replaces its card.
@@ -1167,6 +1187,11 @@ export class AiChatService {
       abortReason: reason,
       recordError: error => this.ai.recordError({ provider: ctx.provider, model: ctx.model, error, studentId: job.studentId })
     });
+    // A provider may stop without a final valid tool call. A checkpoint is still a draft to finish.
+    if (result.status === 'complete' && job.files.some(file => file.preview.kind === 'project' && file.preview.incomplete)) {
+      result.status = 'interrupted'; result.text = '';
+      result.notice = { code: 'AI_PROJECT_CONTINUE', message: 'Чернетка збережена, продовжую дописувати незавершений код.' };
+    }
     append(result.text);
     return {
       text: result.text, usage: null, status: result.status, failure: result.failure, partialInput: null, model: ctx.model, finishReason: null,
@@ -1218,7 +1243,7 @@ export class AiChatService {
     const files = job.files;
     // An agent run cut off by the time limit (or by its function dying) keeps what it saved; with saved
     // work the app continues it automatically, a few times, each in a fresh run.
-    const timeUp = job.mode === 'agent' && status !== 'stopped' && !outcome.stopped && (outcome.deadline || outcome.lost || outcome.notice?.code === 'AI_TIME_LIMIT');
+    const timeUp = job.mode === 'agent' && status !== 'stopped' && !outcome.stopped && (outcome.deadline || outcome.lost || outcome.notice?.code === 'AI_TIME_LIMIT' || outcome.notice?.code === 'AI_PROJECT_CONTINUE');
     const round = job.round ?? 0;
     const resume = timeUp && files.length && round < MAX_AUTO_RESUMES ? { round: round + 1, max: MAX_AUTO_RESUMES } : null;
     let assistantMessage: AiMessage | null = null;
@@ -1270,7 +1295,7 @@ export class AiChatService {
     let jobStatus: AiJobStatus;
     let problem: { code: string; message: string } | null = null;
     if (status === 'stopped' || outcome.stopped) jobStatus = 'stopped';
-    else if (timeUp) { jobStatus = text || files.length ? 'interrupted' : 'error'; problem = timeLimitNotice(files, resume, round); }
+    else if (timeUp) { jobStatus = text || files.length ? 'interrupted' : 'error'; problem = timeLimitNotice(files, resume, round, outcome.notice?.code === 'AI_PROJECT_CONTINUE'); }
     else if (status === 'complete' && hitOutputLimit(outcome.finishReason)) {
       // A chat answer cut off by the output cap. Usage stays «complete»: the provider did generate and is charged exactly.
       jobStatus = text || files.length ? 'interrupted' : 'error';

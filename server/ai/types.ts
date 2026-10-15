@@ -164,7 +164,7 @@ export interface AiPluginRecord {
 }
 
 export type AiFilePreview =
-  | { kind: 'project'; projectKind: 'website' | 'code'; items: string[] }
+  | { kind: 'project'; projectKind: 'website' | 'code'; items: string[]; incomplete?: boolean }
   | { kind: 'outline'; items: string[] }
   | { kind: 'slides'; items: string[] }
   | { kind: 'table'; sheet: string; header: string[]; rows: string[][] }
@@ -187,6 +187,8 @@ export interface AiGeneratedFile {
   /** Published snapshot stays unchanged while a student edits the project draft. */
   publishedContent?: string | undefined;
   publishedAt?: string | undefined;
+  /** Streamed source is a draft until an explicit complete file write validates it. */
+  incompleteFiles?: string[] | undefined;
 }
 
 export interface AiFileRef {

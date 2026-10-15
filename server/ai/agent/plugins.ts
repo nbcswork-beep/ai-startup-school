@@ -30,6 +30,7 @@ export interface ToolContext {
   createProject?(args: Record<string, unknown>): Promise<ToolOutcome>;
   readProject?(args: Record<string, unknown>): Promise<ToolOutcome>;
   writeProject?(args: Record<string, unknown>): Promise<ToolOutcome>;
+  appendProject?(args: Record<string, unknown>): Promise<ToolOutcome>;
   publishProject?(id: string): Promise<{ url: string }>;
   readFile(fileId: string, from: number): Promise<ToolOutcome>;
   /** Display name of an attached file, for step labels. */
@@ -189,10 +190,11 @@ async function fetchJson(context: ToolContext, url: string): Promise<any> {
 const projects: BuiltinPlugin = {
   core: true, preinstalled: true,
   manifest: {
-    id: 'projects', name: 'Сайти та код', version: '1.1.0',
+    id: 'projects', name: 'Сайти та код', version: '1.2.0',
     description: 'Створення проєктів ZIP, статичних HTML/CSS/JS сайтів та статей блогу. Публікація після підтвердження учня.',
     permissions: ['files:read', 'files:write', 'network'], settings: [], secrets: [],
     tools: [
+      { name: 'append_project_file', description: 'Дописати короткий фрагмент у кінець файлу, не переписуючи збережений початок. Перед цим read_project: список дає chars та incomplete; прочитай кінець файлу через from=max(0,chars-2000). offset має точно дорівнювати chars. content — лише НОВИЙ текст (бажано до 4000 символів). complete=false якщо будеш ще дописувати; complete=true в останній частині, тоді файл перевіряється. Сайт з незавершеними файлами опублікувати не можна.', parameters: { type: 'object', properties: { projectId: { type: 'string' }, path: { type: 'string' }, offset: { type: 'integer', minimum: 0 }, content: { type: 'string', maxLength: 16000 }, complete: { type: 'boolean' } }, required: ['projectId', 'path', 'offset', 'content', 'complete'] } },
       { name: 'create_project', description: 'Створити проєкт: website — статичний сайт з index.html; code — вихідний код (ZIP, без запуску). Сайт будуй частинами, щоб кожен крок зберігся і не обірвався за лімітом часу: спочатку create_project з index.html і styles.css (до ~15 000 символів), потім додавай сторінки, скрипти й статті через write_project_files по 1–3 файли за виклик. З projectId повністю замінює файли існуючого проєкту (спочатку read_project); для часткових змін використовуй write_project_files. Всі посилання відносні. Зовнішні JS CDN, fetch, серверні API, форми та localStorage у перегляді недоступні. Статті SEO створюй як blog/slug.html з навігацією. Чернетка не публікується автоматично.', parameters: { type: 'object', properties: { title: { type: 'string' }, kind: { type: 'string', enum: ['website', 'code'] }, projectId: { type: 'string', description: 'id існуючого власного проєкту для оновлення' }, files: { type: 'array', maxItems: 60, items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } }, required: ['title', 'kind', 'files'] } },
       { name: 'write_project_files', description: 'Дописати або замінити 1–3 файли в збереженій чернетці проєкту projectId; решта файлів лишається. remove — шляхи файлів, які треба видалити. Так будуй сайт частинами і додавай статті: кожен виклик одразу зберігається. У чернетці можна посилатися на сторінки, які ще допишеш, але до публікації всі файли мають існувати.', parameters: { type: 'object', properties: { projectId: { type: 'string' }, files: { type: 'array', maxItems: 5, items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } }, remove: { type: 'array', maxItems: 20, items: { type: 'string' } } }, required: ['projectId'] } },
       { name: 'read_project', description: 'Прочитати власний збережений проєкт. Без path — список файлів; з path — текст файлу (частинами через from). Завжди читай існуючий сайт перед додаванням SEO-статей, збережи його дизайн та файли.', parameters: { type: 'object', properties: { projectId: { type: 'string' }, path: { type: 'string' }, from: { type: 'integer', minimum: 0 } }, required: ['projectId'] } },
@@ -200,6 +202,7 @@ const projects: BuiltinPlugin = {
     ]
   },
   tools: manifest => [
+    { ...toolBase(manifest, 'append_project_file'), permission: 'files:write', step: () => ({ kind: 'create', label: 'Дописую файл' }), run: (args, context) => context.appendProject!(args) },
     { ...toolBase(manifest, 'create_project'), permission: 'files:write', step: () => ({ kind: 'create', label: 'Збираю проєкт' }), run: (args, context) => context.createProject!(args) },
     { ...toolBase(manifest, 'write_project_files'), permission: 'files:write', step: args => ({ kind: 'create', label: `Дописую ${projectPaths(args) || 'проєкт'}` }), run: (args, context) => context.writeProject!(args) },
     { ...toolBase(manifest, 'read_project'), permission: 'files:read', step: () => ({ kind: 'read', label: 'Читаю проєкт' }), run: (args, context) => context.readProject!(args) },
@@ -265,7 +268,7 @@ export function validateManifest(input: unknown): AiPluginManifest {
   const tools: AiToolManifest[] = (Array.isArray(raw.tools) ? raw.tools : []).slice(0, 10).map((tool: any) => {
     const toolName = String(tool?.name ?? '');
     if (!TOOL_NAME.test(toolName)) fail(`Назва інструмента «${toolName}»: малі латинські літери, цифри й _.`);
-    if (['read_file', 'create_file', 'use_skill', 'create_project', 'read_project', 'publish_project'].includes(toolName)) fail(`Назва «${toolName}» зарезервована.`);
+    if (['read_file', 'create_file', 'use_skill', 'create_project', 'write_project_files', 'append_project_file', 'read_project', 'publish_project'].includes(toolName)) fail(`Назва «${toolName}» зарезервована.`);
     const method = String(tool?.http?.method ?? 'GET').toUpperCase();
     if (!['GET', 'POST'].includes(method)) fail('http.method: GET або POST.');
     const path = String(tool?.http?.path ?? '/');

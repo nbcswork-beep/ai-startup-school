@@ -43,7 +43,8 @@ export type StreamEvent =
   | { type: 'text'; text: string }
   | { type: 'usage'; usage: ProviderUsage }
   | { type: 'finish'; reason: string | null }
-  | { type: 'tool_call'; call: ToolCall };
+  | { type: 'tool_call'; call: ToolCall }
+  | { type: 'tool_call_delta'; call: ToolCall };
 
 export interface ChatStreamRequest {
   model: string;
@@ -291,10 +292,12 @@ class OpenAiCompatibleAdapter implements ProviderAdapter {
         for (const delta of Array.isArray(choice?.delta?.tool_calls) ? choice.delta.tool_calls : []) {
           const index = numberOr(delta?.index, calls.size);
           const call = calls.get(index) ?? { id: '', name: '', arguments: '' };
-          if (typeof delta?.id === 'string' && delta.id) call.id = delta.id;
+          // Once a delta is exposed, its identity must remain stable even for gateways that send id late.
+          if (!call.id) call.id = typeof delta?.id === 'string' && delta.id ? delta.id : `call_${index}`;
           if (typeof delta?.function?.name === 'string') call.name += delta.function.name;
           if (typeof delta?.function?.arguments === 'string') call.arguments += delta.function.arguments;
           calls.set(index, call);
+          if (call.name && call.arguments) yield { type: 'tool_call_delta', call: { ...call, id: call.id || `call_${index}` } };
         }
         if (choice?.finish_reason) finish = String(choice.finish_reason);
         if (chunk.usage && typeof chunk.usage === 'object') {
@@ -416,7 +419,10 @@ class AnthropicAdapter implements ProviderAdapter {
           if (payload.delta?.type === 'text_delta' && typeof payload.delta.text === 'string' && payload.delta.text) yield { type: 'text', text: payload.delta.text };
           if (payload.delta?.type === 'input_json_delta' && typeof payload.delta.partial_json === 'string') {
             const call = calls.get(numberOr(payload.index));
-            if (call) call.arguments += payload.delta.partial_json;
+            if (call) {
+              call.arguments += payload.delta.partial_json;
+              yield { type: 'tool_call_delta', call: { ...call } };
+            }
           }
         } else if (type === 'message_delta') {
           if (payload.usage) { output = numberOr(payload.usage.output_tokens, output); sawUsage = true; }

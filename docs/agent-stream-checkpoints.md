@@ -1,0 +1,15 @@
+# Project generation across function limits
+
+The agent's existing 250-second run budget stays inside the 300-second function limit. A large site can span the initial run and up to three automatic continuations, using the existing persisted job and browser continuation flow. No paid hosting feature or additional service is required.
+
+Previously, adapters assembled all tool arguments in memory and emitted a tool call only when the entire provider response ended. A deadline inside `create_project` discarded even code that had already arrived. Instructions to write smaller files alone did not fix that case.
+
+OpenAI-compatible and Anthropic adapters now expose argument snapshots while receiving them. Only offered built-in project tools with `files:write` may checkpoint. The agent saves valid file paths and the text received so far, at most once every 750 ms, with a final flush on interruption. The partial JSON reader does not evaluate code or invent missing characters. Existing ownership, path, project size and file count restrictions apply.
+
+Checkpoints are private drafts with `incompleteFiles`. Their preview says the code is being written, and publication is refused. An existing published snapshot keeps serving unchanged. A complete successful tool call validates and finalizes the same project ID.
+
+Continuation reads `read_project` for each file's `chars` and `incomplete`, reads the file tail, then uses `append_project_file` with the exact saved character offset and only new text. An incorrect offset is rejected. Streamed append finalization uses the original baseline so the checkpointed tail is not appended twice. `complete=true` validates the file and clears its unfinished flag. Replacing a complete file through `write_project_files` also clears that flag.
+
+The existing browser automatically submits eligible continuations, including after returning to a chat. Stop and the three-continuation cap still apply. Work is not guaranteed to continue while the browser is closed. A provider sending no code before the deadline cannot be checkpointed; that case still reports that nothing was saved.
+
+Regression coverage: interrupted HTTP streams for both protocols; partial escaping and Unicode; API generation, persistence, continuation, and published asset delivery; output-token truncation; exact offsets; one stable project; publication protection; ownership and unsafe paths; stale checkpoint protection. Tests use a local scripted provider, not the live paid provider.

@@ -24,7 +24,10 @@ import type { AddressInfo } from 'node:net';
 
 interface Turn { role: string; text: string; toolName?: string }
 /** `stall`: the model keeps working past the run's time limit (the request is held open that long). */
-type Decision = { tool: { name: string; args: Record<string, unknown> } } | { text: string } | { stall: number };
+type Decision = { tool: { name: string; args: Record<string, unknown> } } | { text: string } | { stall: number } | { partial: { name: string; raw: string } };
+
+export const STREAMED_PAGE = '<!doctype html><html lang="uk"><head><meta name="viewport" content="width=device-width"><title>Збережений сайт</title></head><body><h1>Код не губиться 🚀</h1><button id="go">Пуск</button><p id="out"></p><script>document.querySelector("#go").onclick=()=>{document.querySelector("#out").textContent="Працює!";};</script></body></html>';
+export const STREAMED_PREFIX = STREAMED_PAGE.slice(0, STREAMED_PAGE.indexOf('<script>') + 35);
 
 const PARTS_PAGE = (title: string, body: string) => `<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="styles.css"></head><body>${body}</body></html>`;
 
@@ -49,6 +52,14 @@ export function agentDecision(turns: Turn[], tools: string[]): Decision {
   const results = turns.filter(turn => turn.role === 'tool');
   const used = (name: string) => results.filter(turn => turn.toolName === name);
   const history = turns.filter(turn => turn.role === 'user' && !turn.toolName).map(turn => turn.text).join('\n');
+  if (history.includes('[streamed-site-fixture]') && tools.includes('create_project')) {
+    if (!user.includes('Автоматичне продовження')) return { partial: { name: 'create_project', raw: JSON.stringify({ title: 'Збережений сайт', kind: 'website', files: [{ path: 'index.html', content: STREAMED_PREFIX }] }).slice(0, -4) } };
+    const id = /projectId=([0-9a-f-]{36})/.exec(turns.map(turn => turn.text).join('\n'))?.[1];
+    if (id && !used('read_project').length) return { tool: { name: 'read_project', args: { projectId: id } } };
+    if (id && used('read_project').length === 1) return { tool: { name: 'read_project', args: { projectId: id, path: 'index.html', from: Math.max(0, STREAMED_PREFIX.length - 2000) } } };
+    if (id && !used('append_project_file').length) return { tool: { name: 'append_project_file', args: { projectId: id, path: 'index.html', offset: STREAMED_PREFIX.length, content: STREAMED_PAGE.slice(STREAMED_PREFIX.length), complete: true } } };
+    return { text: 'Сайт завершено без втрати коду.' };
+  }
   if (history.includes('[parts-fixture]') && tools.includes('create_project')) return partsDecision(turns, user, tools, used);
   // [stall-fixture]: nothing saved before the time limit. [endless-fixture]: saves a little every run, never finishes.
   if (user.includes('[stall-fixture]')) return { stall: 60_000 };
@@ -251,6 +262,13 @@ export class MockProviderServer {
     if (model.startsWith('cutoff-')) delta('OK');
     else if (model === 'agent') {
       const decision = agentDecision(this.openAiTurns(body.messages), (body.tools ?? []).map((tool: any) => tool.function?.name));
+      if ('partial' in decision) {
+        send({ choices: [{ delta: { tool_calls: [{ index: 0, id: `call_${this.requests.length}`, function: { name: decision.partial.name, arguments: '' } }] } }] });
+        for (const piece of decision.partial.raw.match(/.{1,20}/gsu) ?? []) send({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: piece } }] } }] });
+        for (let waited = 0; waited < 60_000 && !response.destroyed; waited += 25) await sleep(25);
+        if (!response.destroyed) response.end();
+        return;
+      }
       if ('stall' in decision) {
         // Held open until the app's time limit aborts the request.
         for (let waited = 0; waited < decision.stall && !response.destroyed; waited += 25) await sleep(25);
@@ -295,7 +313,7 @@ export class MockProviderServer {
     response.end();
   }
 
-  private anthropic(body: any, response: ServerResponse, json: (status: number, payload: unknown) => void): void {
+  private async anthropic(body: any, response: ServerResponse, json: (status: number, payload: unknown) => void): Promise<void> {
     if (!String(body?.model ?? '').startsWith('claude')) return json(404, { type: 'error', error: { type: 'not_found_error', message: `model: ${body?.model}` } });
     if (!body?.max_tokens) return json(400, { type: 'error', error: { type: 'invalid_request_error', message: 'max_tokens: Field required' } });
     response.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -303,6 +321,13 @@ export class MockProviderServer {
     send('message_start', { type: 'message_start', message: { id: 'msg_mock', type: 'message', role: 'assistant', content: [], model: body.model, usage: { input_tokens: 90, cache_read_input_tokens: 10, cache_creation_input_tokens: 0, output_tokens: 1 } } });
     if (body.model === 'claude-agent') {
       const decision = agentDecision(this.anthropicTurns(body), (body.tools ?? []).map((tool: any) => tool.name));
+      if ('partial' in decision) {
+        send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: `toolu_${this.requests.length}`, name: decision.partial.name, input: {} } });
+        for (const piece of decision.partial.raw.match(/.{1,20}/gsu) ?? []) send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: piece } });
+        for (let waited = 0; waited < 60_000 && !response.destroyed; waited += 25) await new Promise(resolve => setTimeout(resolve, 25));
+        if (!response.destroyed) response.end();
+        return;
+      }
       if ('stall' in decision) { response.end(); return; }
       if ('tool' in decision) {
         send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
