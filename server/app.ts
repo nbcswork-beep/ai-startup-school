@@ -29,7 +29,7 @@ import { NotificationWorker, TelegramNotificationSender, type NotificationSender
 import { createFileStorage, type FileStorage } from './storage/file-storage.js';
 import { fileLinkSigner, registerHomeworkFileRoutes, uploadPolicy } from './routes/homework-files.js';
 
-export async function buildApp(deps: { env: AppEnv; repository: AppRepository; jwt: JwtService; aiStore?: AiStore; aiAdapterFactory?: (connection: ProviderConnection) => ProviderAdapter; aiNow?: () => Date; loginLimiter?: LoginAttemptLimiter; telegramWebhookHandler?: TelegramWebhookHandler; notificationSender?:NotificationSender; fileStorage?: FileStorage | null; aiNotifier?: AiAnswerNotifier | null; aiFetcher?: typeof fetch }) {
+export async function buildApp(deps: { env: AppEnv; repository: AppRepository; jwt: JwtService; aiStore?: AiStore; aiAdapterFactory?: (connection: ProviderConnection) => ProviderAdapter; aiNow?: () => Date; loginLimiter?: LoginAttemptLimiter; telegramWebhookHandler?: TelegramWebhookHandler; notificationSender?:NotificationSender; fileStorage?: FileStorage | null; aiNotifier?: AiAnswerNotifier | null; aiFetcher?: typeof fetch; aiGenerationBudgetMs?: number }) {
   const app = Fastify({ routerOptions: { maxParamLength: 1000 }, logger: deps.env.NODE_ENV === 'test' ? false : { level: deps.env.LOG_LEVEL,redact:{paths:['req.headers.authorization','req.headers.cookie','req.headers.x-telegram-bot-api-secret-token','res.headers.set-cookie','body.initData','body.refreshToken','body.password','body.token'],censor:'[REDACTED]'} }, trustProxy: deps.env.TRUST_PROXY, bodyLimit: 32_768 });
   await app.register(cookie);
   await app.register(cors, {
@@ -82,6 +82,7 @@ export async function buildApp(deps: { env: AppEnv; repository: AppRepository; j
     log: (error, message) => app.log.error({ err: error }, message),
     ...(deps.aiNow ? { now: deps.aiNow } : {}),
     ...(deps.aiFetcher ? { fetcher: deps.aiFetcher } : {}),
+    ...(deps.aiGenerationBudgetMs ? { generationBudgetMs: deps.aiGenerationBudgetMs } : {}),
     ...(deps.aiAdapterFactory ? { adapterFactory: deps.aiAdapterFactory } : {})
   });
   const aiChat = new AiChatService(ai);

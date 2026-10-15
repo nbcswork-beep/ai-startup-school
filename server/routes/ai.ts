@@ -349,7 +349,8 @@ const chatBody = z.object({
   clientRequestId: z.string().uuid(),
   attachmentIds: z.array(z.string().uuid()).max(5).optional(),
   mode: z.enum(['chat', 'agent']).optional(),
-  skillId: z.string().regex(/^[a-zA-Z0-9-]{3,64}$/).nullable().optional()
+  skillId: z.string().regex(/^[a-zA-Z0-9-]{3,64}$/).nullable().optional(),
+  continueJobId: uuid.optional()
 });
 
 const SSE_HEADERS = {

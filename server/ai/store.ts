@@ -161,7 +161,7 @@ export interface AiStore {
 
 const JOB_TTL_SECONDS = 7 * 86_400;
 const JOB_REQUEST_TTL_SECONDS = 86_400;
-const JSON_JOB_FIELDS = new Set(['message', 'userMessage', 'steps', 'files', 'pending', 'decision']);
+const JSON_JOB_FIELDS = new Set(['message', 'userMessage', 'steps', 'files', 'pending', 'decision', 'resume']);
 
 /** Job fields as Redis hash strings, and back. */
 export function jobToFields(job: Partial<AiJob>): Record<string, string> {
@@ -189,7 +189,8 @@ export function jobFromFields(hash: Record<string, string>): AiJob | null {
     inputTokens: num('inputTokens'), errorCode: text('errorCode'), errorMessage: text('errorMessage'), notify: text('notify') as AiJob['notify'],
     notifyAttempts: num('notifyAttempts'), userMessage: json<AiMessage>('userMessage'), message: json<AiMessage>('message'),
     mode: hash.mode === 'agent' ? 'agent' : 'chat', steps: json<AiJob['steps']>('steps') ?? [], files: json<AiJob['files']>('files') ?? [],
-    pending: json<AiJob['pending']>('pending'), decision: json<AiJob['decision']>('decision'), queuedUntil: nullableNum('queuedUntil')
+    pending: json<AiJob['pending']>('pending'), decision: json<AiJob['decision']>('decision'), queuedUntil: nullableNum('queuedUntil'),
+    round: num('round'), resume: json<NonNullable<AiJob['resume']>>('resume')
   };
 }
 
