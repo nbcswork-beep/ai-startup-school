@@ -27,25 +27,26 @@ export function parseSse(body: string): SseEvent[] {
   });
 }
 
-export function aiSchool(options: { fetcher?: typeof fetch } = {}) {
+export function aiSchool(options: { fetcher?: typeof fetch; generationBudgetMs?: number } = {}) {
   const runtime = new MemoryPilotRuntimeStore(createAssignedPilotState());
   const redis = new RedisEmulator();
   const aiStore = new RedisAiStore(redis, 'aiss:test:ai:v1');
   const apps: FastifyInstance[] = [];
   const as = async (userId: string) => {
     const env = loadEnv({ NODE_ENV: 'test', DATA_BACKEND: 'memory', DEV_AUTH_ENABLED: 'true', DEV_EPHEMERAL_JWT: 'true', SESSION_TOKEN_PEPPER: 'ai-agent-test-pepper', DEV_USER_ID: userId });
-    const app = await buildApp({ env, repository: new MemoryRepository(undefined, { runtimeStore: runtime }), jwt: await createJwtService(env), aiStore, aiNotifier: null, ...(options.fetcher ? { aiFetcher: options.fetcher } : {}) });
+    const app = await buildApp({ env, repository: new MemoryRepository(undefined, { runtimeStore: runtime }), jwt: await createJwtService(env), aiStore, aiNotifier: null, ...(options.fetcher ? { aiFetcher: options.fetcher } : {}), ...(options.generationBudgetMs ? { aiGenerationBudgetMs: options.generationBudgetMs } : {}) });
     apps.push(app);
     const login = await app.inject({ method: 'POST', url: '/api/v1/auth/development' });
     expect(login.statusCode).toBe(200);
     const token = login.json().accessToken as string;
     const headers = { authorization: `Bearer ${token}` };
     const call = (method: Method, url: string, payload?: unknown) => app.inject({ method, url, headers, ...(payload === undefined ? {} : { payload: payload as object }) });
-    const send = async (content: string, options: { conversationId?: string; modelId?: string; mode?: 'chat' | 'agent'; skillId?: string; attachmentIds?: string[]; clientRequestId?: string } = {}) => {
+    const send = async (content: string, options: { conversationId?: string; modelId?: string; mode?: 'chat' | 'agent'; skillId?: string; attachmentIds?: string[]; clientRequestId?: string; continueJobId?: string } = {}) => {
       const response = await call('POST', `/api/v1/ai/conversations/${options.conversationId ?? 'new'}/stream`, {
         content, clientRequestId: options.clientRequestId ?? randomUUID(),
         ...(options.modelId ? { modelId: options.modelId } : {}), ...(options.mode ? { mode: options.mode } : {}),
-        ...(options.skillId ? { skillId: options.skillId } : {}), ...(options.attachmentIds ? { attachmentIds: options.attachmentIds } : {})
+        ...(options.skillId ? { skillId: options.skillId } : {}), ...(options.attachmentIds ? { attachmentIds: options.attachmentIds } : {}),
+        ...(options.continueJobId ? { continueJobId: options.continueJobId } : {})
       });
       const events = response.statusCode === 200 ? parseSse(response.body) : [];
       return { response, events, done: events.find(item => item.event === 'done')?.data, error: events.find(item => item.event === 'error')?.data };

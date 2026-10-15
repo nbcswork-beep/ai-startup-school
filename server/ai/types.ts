@@ -385,6 +385,10 @@ export interface AiJob {
   decision: { stepId: string; approve: boolean } | null;
   /** The provider's request limit is reached: the answer waits in line until this time. */
   queuedUntil: number | null;
+  /** 0 for a student's request; 1, 2, … for automatic continuations of it. */
+  round?: number;
+  /** The run hit the time limit after saving work: the app continues it automatically as `round`. */
+  resume?: { round: number; max: number } | null;
 }
 
 export interface AiMessageUsage {
@@ -452,4 +456,8 @@ export interface AiMessage {
   steps?: AiStep[];
   mode?: 'agent';
   skill?: { id: string; name: string } | null;
+  /** Sent by the app on the student's behalf to continue a run cut off by the time limit. */
+  auto?: boolean;
+  /** A partial agent answer whose work goes on in an automatic continuation. */
+  continued?: boolean;
 }

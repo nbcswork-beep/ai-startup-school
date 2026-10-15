@@ -44,35 +44,51 @@ export function parseProject(raw: unknown): ProjectSource {
 export function projectFromContent(content: string): ProjectSource { return parseProject(JSON.parse(content)); }
 export function projectZip(content: string): Buffer { return createZip(projectFromContent(content).files, new Date('2026-01-01T00:00:00Z')); }
 
-/** Structural checks only: generated programs are never executed in the school's backend. */
-export function checkProject(project: ProjectSource): string[] {
-  const problems: string[] = [];
+interface ProjectProblem { text: string; missing: boolean }
+
+function projectProblems(project: ProjectSource): ProjectProblem[] {
+  const problems: ProjectProblem[] = [];
+  const add = (text: string, missing = false) => { if (!problems.some(item => item.text === text)) problems.push({ text, missing }); };
   const paths = new Set(project.files.map(file => file.path));
   for (const file of project.files) {
     if (/\.html$/i.test(file.path)) {
-      if (!/<title>[^<]+<\/title>/i.test(file.content)) problems.push(`${file.path}: додай title`);
-      if (!/<meta\s+[^>]*name\s*=\s*["']viewport["']/i.test(file.content)) problems.push(`${file.path}: додай viewport`);
+      if (!/<title>[^<]+<\/title>/i.test(file.content)) add(`${file.path}: додай title`);
+      if (!/<meta\s+[^>]*name\s*=\s*["']viewport["']/i.test(file.content)) add(`${file.path}: додай viewport`);
       for (const match of file.content.matchAll(/\b(?:href|src)\s*=\s*["']([^"']+)["']/gi)) {
         const href = match[1]!;
         if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(href)) continue;
-        if (href.startsWith('/')) { problems.push(`${file.path}: посилання ${href} має бути відносним`); continue; }
+        if (href.startsWith('/')) { add(`${file.path}: посилання ${href} має бути відносним`); continue; }
         const target = href.split(/[?#]/)[0]!;
         if (!target) continue;
         let resolved = posix.normalize(posix.join(posix.dirname(file.path), target));
         if (target.endsWith('/')) resolved += '/index.html';
-        if (!paths.has(resolved)) problems.push(`${file.path}: не знайдено ${target}`);
+        if (!paths.has(resolved)) add(`${file.path}: не знайдено ${target}`, true);
       }
-      if (/<script\b[^>]*src\s*=\s*["'](?:https?:)?\/\//i.test(file.content)) problems.push(`${file.path}: зовнішні JS-бібліотеки не працюють у захищеному перегляді; додай локальний JS`);
+      if (/<script\b[^>]*src\s*=\s*["'](?:https?:)?\/\//i.test(file.content)) add(`${file.path}: зовнішні JS-бібліотеки не працюють у захищеному перегляді; додай локальний JS`);
       for (const match of file.content.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
         if (/\b(?:src|type)\s*=/i.test(match[1]!)) continue;
-        try { new Script(match[2]!, { filename: file.path }); } catch { problems.push(`${file.path}: синтаксична помилка у script`); }
+        try { new Script(match[2]!, { filename: file.path }); } catch { add(`${file.path}: синтаксична помилка у script`); }
       }
     }
     if (/\.(?:js|cjs)$/i.test(file.path) && !/^\s*(?:import|export)\b/m.test(file.content)) {
-      try { new Script(file.content, { filename: file.path }); } catch { problems.push(`${file.path}: синтаксична помилка JavaScript`); }
+      try { new Script(file.content, { filename: file.path }); } catch { add(`${file.path}: синтаксична помилка JavaScript`); }
     }
   }
-  return [...new Set(problems)].slice(0, 20);
+  return problems.slice(0, 20);
+}
+
+/** Structural checks only: generated programs are never executed in the school's backend. */
+export function checkProject(project: ProjectSource): string[] {
+  return projectProblems(project).map(problem => problem.text);
+}
+
+/**
+ * A draft built in parts links to pages it has not written yet: those are «still missing», not
+ * errors, so the draft is saved. Everything else blocks saving, and publishing needs a clean check.
+ */
+export function inspectProject(project: ProjectSource): { blocking: string[]; missing: string[] } {
+  const problems = projectProblems(project);
+  return { blocking: problems.filter(item => !item.missing).map(item => item.text), missing: problems.filter(item => item.missing).map(item => item.text) };
 }
 
 function projectPreview(project: ProjectSource): AiGeneratedFile['preview'] {
@@ -90,27 +106,53 @@ export class StudentProjects {
 
   async create(job: AiJob, args: Record<string, unknown>): Promise<ToolOutcome> {
     try {
-      if (job.files.length >= 6) throw new Error('За одне завдання можна створити до 6 файлів/проєктів.');
       const previous = typeof args.projectId === 'string' && args.projectId ? await this.owned(job.studentId, args.projectId) : null;
-      const source = parseProject(args);
-      const problems = checkProject(source);
-      if (problems.length) return { status: 'error', content: `Проєкт не збережено. Виправ і повтори create_project:\n${problems.join('\n')}`, check: { ok: false, detail: problems.join('; ').slice(0, 250) } };
-      const title = String(args.title || previous?.title || 'Мій проєкт').slice(0, 100);
-      const content = JSON.stringify(source);
-      const record: AiGeneratedFile = {
-        id: previous?.id ?? randomUUID(), studentId: job.studentId, conversationId: job.conversationId,
-        name: `${title.replace(/[^\p{L}\p{N}_ -]/gu, '').trim() || 'project'}.zip`, title, format: 'project',
-        content, size: projectZip(content).length, preview: projectPreview(source), createdAt: this.now().toISOString(),
-        ...(previous?.publishedContent ? { publishedContent: previous.publishedContent, publishedAt: previous.publishedAt } : {})
-      };
-      await this.store.putGeneratedFile(record);
-      return {
-        content: `Чернетку проєкту збережено. projectId=${record.id}. Файли: ${source.files.map(f => f.path).join(', ')}. ZIP та захищений перегляд доступні в чаті. Публікація — окрема дія publish_project; попередня опублікована версія не змінена. Перевірено структуру, локальні HTML-посилання і синтаксис звичайного JS; браузерний запуск та модульний JS не перевірялися.`,
-        label: `Збережено «${title}»`, detail: `${source.files.length} файлів`,
-        file: { id: record.id, name: record.name, format: record.format, size: record.size, preview: record.preview },
-        check: { ok: true, detail: 'Файли та посилання перевірено; код на сервері не запускався' }
-      };
+      if (!job.files.some(file => file.id === previous?.id) && job.files.length >= 6) throw new Error('За одне завдання можна створити до 6 файлів/проєктів.');
+      return await this.save(job, previous, parseProject(args), String(args.title || previous?.title || 'Мій проєкт').slice(0, 100), 'create_project');
     } catch (error) { return { status: 'error', content: error instanceof Error ? error.message : 'Не вдалося створити проєкт' }; }
+  }
+
+  /** Adds or replaces a few files in a saved draft; the others stay. Big sites are built this way, step by step. */
+  async write(job: AiJob, args: Record<string, unknown>): Promise<ToolOutcome> {
+    try {
+      const previous = await this.owned(job.studentId, String(args.projectId ?? ''));
+      if (!job.files.some(file => file.id === previous.id) && job.files.length >= 6) throw new Error('За одне завдання можна створити до 6 файлів/проєктів.');
+      const incoming = Array.isArray(args.files) ? args.files : [];
+      const remove = Array.isArray(args.remove) ? args.remove.filter((path): path is string => typeof path === 'string') : [];
+      if (!incoming.length && !remove.length) throw new Error('Передай files (1–3 файли за виклик) або remove.');
+      if (incoming.length > 5) throw new Error('За один виклик додавай до 5 файлів; решту — наступним write_project_files.');
+      const current = projectFromContent(previous.content);
+      const merged = new Map(current.files.map(file => [file.path.toLowerCase(), file]));
+      for (const path of remove) merged.delete(path.toLowerCase());
+      for (const file of incoming as Array<Partial<ProjectFile> | null>) merged.set(String(file?.path ?? '').toLowerCase(), file as ProjectFile);
+      const written = (incoming as Array<Partial<ProjectFile> | null>).map(file => String(file?.path ?? '')).filter(Boolean);
+      const label = written.length ? `Дописано ${written.slice(0, 3).join(', ')}${written.length > 3 ? ` та ще ${written.length - 3}` : ''}` : `Оновлено «${previous.title}»`;
+      return await this.save(job, previous, parseProject({ kind: current.kind, files: [...merged.values()] }), previous.title ?? 'Мій проєкт', 'write_project_files', label);
+    } catch (error) { return { status: 'error', content: error instanceof Error ? error.message : 'Не вдалося дописати проєкт' }; }
+  }
+
+  private async save(job: AiJob, previous: AiGeneratedFile | null, source: ProjectSource, title: string, tool: string, label = `Збережено «${title}»`): Promise<ToolOutcome> {
+    const { blocking, missing } = inspectProject(source);
+    if (blocking.length) return { status: 'error', content: `Проєкт не збережено. Виправ і повтори ${tool}:\n${[...blocking, ...missing].join('\n')}`, check: { ok: false, detail: blocking.join('; ').slice(0, 250) } };
+    const content = JSON.stringify(source);
+    const record: AiGeneratedFile = {
+      id: previous?.id ?? randomUUID(), studentId: job.studentId, conversationId: job.conversationId,
+      name: `${title.replace(/[^\p{L}\p{N}_ -]/gu, '').trim() || 'project'}.zip`, title, format: 'project',
+      content, size: projectZip(content).length, preview: projectPreview(source), createdAt: this.now().toISOString(),
+      ...(previous?.publishedContent ? { publishedContent: previous.publishedContent, publishedAt: previous.publishedAt } : {})
+    };
+    await this.store.putGeneratedFile(record);
+    const pending = missing.length
+      ? ` Ще бракує файлів, на які є посилання (додай їх через write_project_files до публікації):\n${missing.join('\n')}`
+      : ' Перевірено структуру, локальні HTML-посилання і синтаксис звичайного JS; браузерний запуск та модульний JS не перевірялися.';
+    return {
+      content: `Чернетку проєкту збережено. projectId=${record.id}. Файли: ${source.files.map(f => f.path).join(', ')}. ZIP та захищений перегляд доступні в чаті. Публікація — окрема дія publish_project; попередня опублікована версія не змінена.${pending}`,
+      label, detail: `${source.files.length} файлів`,
+      file: { id: record.id, name: record.name, format: record.format, size: record.size, preview: record.preview },
+      check: missing.length
+        ? { ok: true, detail: `Чернетка в роботі: ще бракує ${missing.length} ${missing.length === 1 ? 'посилання' : 'посилань'}` }
+        : { ok: true, detail: 'Файли та посилання перевірено; код на сервері не запускався' }
+    };
   }
 
   async read(studentId: string, args: Record<string, unknown>): Promise<ToolOutcome> {

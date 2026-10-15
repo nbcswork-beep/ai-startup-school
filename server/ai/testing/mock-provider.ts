@@ -23,7 +23,23 @@ import type { AddressInfo } from 'node:net';
  */
 
 interface Turn { role: string; text: string; toolName?: string }
-type Decision = { tool: { name: string; args: Record<string, unknown> } } | { text: string };
+/** `stall`: the model keeps working past the run's time limit (the request is held open that long). */
+type Decision = { tool: { name: string; args: Record<string, unknown> } } | { text: string } | { stall: number };
+
+const PARTS_PAGE = (title: string, body: string) => `<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><link rel="stylesheet" href="styles.css"></head><body>${body}</body></html>`;
+
+/** [parts-fixture]: a site built in parts that does not fit one run; the automatic continuation finishes it. */
+function partsDecision(turns: Turn[], user: string, tools: string[], used: (name: string) => Turn[]): Decision {
+  const id = /projectId=([0-9a-f-]{36})/.exec(turns.map(turn => turn.text).join('\n'))?.[1];
+  if (!user.includes('Автоматичне продовження')) {
+    if (!used('create_project').length) return { tool: { name: 'create_project', args: { title: 'Візитка', kind: 'website', files: [{ path: 'index.html', content: PARTS_PAGE('Візитка', '<main><h1>Олена</h1><p>Юна дизайнерка.</p><a href="about.html">Про мене</a></main>') }] } } };
+    if (id && !used('write_project_files').length && tools.includes('write_project_files')) return { tool: { name: 'write_project_files', args: { projectId: id, files: [{ path: 'styles.css', content: 'body{margin:0;font:18px system-ui;background:#0b1b2b;color:#f2f6ff}main{max-width:720px;margin:auto;padding:48px 24px}' }] } } };
+    return { stall: 60_000 };
+  }
+  if (id && !used('read_project').length) return { tool: { name: 'read_project', args: { projectId: id } } };
+  if (id && !used('write_project_files').length) return { tool: { name: 'write_project_files', args: { projectId: id, files: [{ path: 'about.html', content: PARTS_PAGE('Про мене — Візитка', '<main><h1>Про мене</h1><p>Малюю та верстаю сайти.</p><a href="index.html">На головну</a></main>') }] } } };
+  return { text: 'Сайт-візитку дописано: index.html, styles.css та about.html.' };
+}
 
 /** The scripted agent's next move, from the conversation so far and the tools on offer. */
 export function agentDecision(turns: Turn[], tools: string[]): Decision {
@@ -32,6 +48,16 @@ export function agentDecision(turns: Turn[], tools: string[]): Decision {
   const user = [...turns].reverse().find(turn => turn.role === 'user' && !turn.toolName)?.text ?? '';
   const results = turns.filter(turn => turn.role === 'tool');
   const used = (name: string) => results.filter(turn => turn.toolName === name);
+  const history = turns.filter(turn => turn.role === 'user' && !turn.toolName).map(turn => turn.text).join('\n');
+  if (history.includes('[parts-fixture]') && tools.includes('create_project')) return partsDecision(turns, user, tools, used);
+  // [stall-fixture]: nothing saved before the time limit. [endless-fixture]: saves a little every run, never finishes.
+  if (user.includes('[stall-fixture]')) return { stall: 60_000 };
+  if (history.includes('[endless-fixture]') && tools.includes('create_project')) {
+    const id = /projectId=([0-9a-f-]{36})/.exec(turns.map(turn => turn.text).join('\n'))?.[1];
+    if (!id) return { tool: { name: 'create_project', args: { title: 'Безкінечний', kind: 'code', files: [{ path: 'notes-0.txt', content: 'start' }] } } };
+    if (!used('write_project_files').length && !used('create_project').length) return { tool: { name: 'write_project_files', args: { projectId: id, files: [{ path: `notes-${turns.length}.txt`, content: 'more' }] } } };
+    return { stall: 60_000 };
+  }
   if (user.includes('[website-fixture]') && tools.includes('create_project') && !used('create_project').length) {
     return { tool: { name: 'create_project', args: { title: 'Космічна майстерня', kind: 'website', files: [
       { path: 'index.html', content: '<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Космічна майстерня</title><link rel="stylesheet" href="style.css"></head><body><main><p>Навчальний проєкт</p><h1>Від ідеї до зірок</h1><p>Досліджуй космос, перевіряй гіпотези та створюй власні відкриття.</p><button id="launch">Запустити ракету</button><p id="result" aria-live="polite"></p><a href="blog/stars.html">Чому світять зорі →</a></main><script src="app.js"></script></body></html>' },
@@ -225,6 +251,12 @@ export class MockProviderServer {
     if (model.startsWith('cutoff-')) delta('OK');
     else if (model === 'agent') {
       const decision = agentDecision(this.openAiTurns(body.messages), (body.tools ?? []).map((tool: any) => tool.function?.name));
+      if ('stall' in decision) {
+        // Held open until the app's time limit aborts the request.
+        for (let waited = 0; waited < decision.stall && !response.destroyed; waited += 25) await sleep(25);
+        if (!response.destroyed) response.end();
+        return;
+      }
       if ('tool' in decision) {
         const args = JSON.stringify(decision.tool.args);
         send({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call_${this.requests.length}`, type: 'function', function: { name: decision.tool.name, arguments: '' } }] }, finish_reason: null }] });
@@ -271,6 +303,7 @@ export class MockProviderServer {
     send('message_start', { type: 'message_start', message: { id: 'msg_mock', type: 'message', role: 'assistant', content: [], model: body.model, usage: { input_tokens: 90, cache_read_input_tokens: 10, cache_creation_input_tokens: 0, output_tokens: 1 } } });
     if (body.model === 'claude-agent') {
       const decision = agentDecision(this.anthropicTurns(body), (body.tools ?? []).map((tool: any) => tool.name));
+      if ('stall' in decision) { response.end(); return; }
       if ('tool' in decision) {
         send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
         send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Зараз зроблю це. ' } });

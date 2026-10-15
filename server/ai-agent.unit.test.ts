@@ -174,7 +174,7 @@ describe('AI agent — documents in, documents out', () => {
     const run = await student.send('Зроби конспект про фотосинтез у документ', { mode: 'agent' });
     const firstCall = mock.chatRequests().at(-3)!.body;
     expect(firstCall.messages[0].content).toContain('Навички: коли завдання відповідає умовам навички');
-    expect(firstCall.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['read_file', 'create_file', 'use_skill', 'create_project', 'read_project', 'publish_project', 'calculate']);
+    expect(firstCall.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['read_file', 'create_file', 'use_skill', 'create_project', 'write_project_files', 'read_project', 'publish_project', 'calculate']);
     expect(run.done.message.skill).toEqual({ id: 'skill-summary', name: 'Конспект' });
     expect(run.done.message.steps[0]).toMatchObject({ kind: 'skill', label: 'Навичка «Конспект»', status: 'done' });
   }, 30_000);

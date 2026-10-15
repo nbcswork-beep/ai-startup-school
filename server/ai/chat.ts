@@ -74,7 +74,13 @@ export interface ChatInput {
   mode?: 'chat' | 'agent' | undefined;
   /** A skill the student picked; without one, agent mode may choose an enabled skill itself. */
   skillId?: string | null | undefined;
+  /** The app continues this job, which stopped at the time limit after saving work. */
+  continueJobId?: string | undefined;
 }
+
+/** Automatic continuations after the time limit, per student request (about 4 minutes each). */
+const MAX_AUTO_RESUMES = 3;
+const RESUME_PROMPT = 'Автоматичне продовження: попередній запуск зупинився через ліміт часу, збережене лишилося в чернетці. Продовжуй те саме завдання з місця зупинки: прочитай збережений проєкт через read_project і допиши файли, яких бракує, через write_project_files. Не починай заново і не переписуй готові файли без потреби. Коли все готово, коротко підсумуй зроблене.';
 
 export interface ChatSession {
   stream: ReadableStream<Uint8Array>;
@@ -105,6 +111,23 @@ export interface AiJobView {
   pending: AiPendingAction | null;
   /** Waiting in line for the provider's request limit until then. */
   queuedUntil: string | null;
+  /** The app should continue this job automatically (it stopped at the time limit after saving work). */
+  resume: { round: number; max: number } | null;
+}
+
+/** What the student reads after the time limit: what was saved, and whether the work goes on by itself. */
+function timeLimitNotice(files: AiFileRef[], resume: AiJob['resume'], round: number): { code: string; message: string } {
+  if (resume) {
+    const saved = files.map(file => `«${file.name.replace(/\.zip$/i, '')}»`).join(', ');
+    return { code: 'AI_TIME_CONTINUE', message: `Час одного запуску вичерпано. Збережено ${saved}; продовжую автоматично (${resume.round} з ${resume.max}).` };
+  }
+  if (files.length) {
+    const runs = round + 1;
+    return { code: 'AI_TIME_LIMIT', message: `Завдання велике: за ${runs} ${runs === 1 ? 'запуск' : runs < 5 ? 'запуски' : 'запусків'} зроблено частину — файли нижче. Напишіть «продовжуй», щоб дописати решту.` };
+  }
+  // The earlier parts are in the chat already; only this continuation saved nothing.
+  if (round > 0) return { code: 'AI_TIME_LIMIT', message: 'Продовження не встигло нічого зберегти за час запуску. Напишіть «продовжуй», щоб спробувати ще раз, або попросіть спростити сайт.' };
+  return { code: 'AI_TIME_LIMIT', message: 'За час одного запуску (близько 4 хвилин) нічого не встигло зберегтися. Натисніть «Спробувати ще раз» або попросіть простіший результат — наприклад, сайт з однієї сторінки.' };
 }
 
 function titleFrom(text: string): string {
@@ -565,6 +588,15 @@ export class AiChatService {
   }
 
   /** A repeated request gets the job that already exists instead of a second answer and a second charge. */
+  /** A job the app may continue: this student's, in this chat, stopped at the time limit with work saved. */
+  private async resumable(studentId: string, conversationId: string, jobId: string): Promise<AiJob> {
+    const job = conversationId === 'new' ? null : await this.ai.store.getJob(jobId);
+    if (!job || job.studentId !== studentId || job.conversationId !== conversationId || !job.resume) {
+      throw new AppError('AI_RESUME_STALE', 409, 'Цю відповідь уже не можна продовжити автоматично. Напишіть «продовжуй».');
+    }
+    return job;
+  }
+
   private attachSession(job: AiJob): ChatSession {
     const body = `event: attach\ndata: ${JSON.stringify({ jobId: job.id, conversationId: job.conversationId, status: job.status })}\n\n`;
     const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode(body)); controller.close(); } });
@@ -573,30 +605,36 @@ export class AiChatService {
 
   async start(studentId: string, conversationId: string | 'new', input: ChatInput, clientSignal: AbortSignal): Promise<ChatSession> {
     const startedAt = Date.now();
-    const content = input.content.replace(/\r\n/g, '\n').trim();
+    // An automatic continuation: the server writes the request and keeps the cut-off run's model and skill.
+    const resumeOf = input.continueJobId ? await this.resumable(studentId, conversationId, input.continueJobId) : null;
+    const content = resumeOf ? RESUME_PROMPT : input.content.replace(/\r\n/g, '\n').trim();
     const groupId = await this.studentGroup(studentId);
     const access = await this.ai.accessFor(studentId, groupId);
     const { settings } = access;
-    const mode: 'chat' | 'agent' = input.mode === 'agent' ? 'agent' : 'chat';
-    let attachmentIds = [...new Set(input.attachmentIds ?? [])];
+    const mode: 'chat' | 'agent' = resumeOf || input.mode === 'agent' ? 'agent' : 'chat';
+    let attachmentIds = resumeOf ? [] : [...new Set(input.attachmentIds ?? [])];
     if (!content && !attachmentIds.length) throw new AppError('AI_MESSAGE_EMPTY', 400, 'Напишіть повідомлення');
     if (attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE) throw new AppError('AI_ATTACHMENT_LIMIT', 400, `Можна прикріпити до ${MAX_ATTACHMENTS_PER_MESSAGE} файлів до одного повідомлення`);
-    if (content.length > settings.maxMessageChars) throw new AppError('AI_MESSAGE_TOO_LONG', 400, `Повідомлення задовге: максимум ${settings.maxMessageChars} символів`);
+    if (!resumeOf && content.length > settings.maxMessageChars) throw new AppError('AI_MESSAGE_TOO_LONG', 400, `Повідомлення задовге: максимум ${settings.maxMessageChars} символів`);
     if (!access.models.length) throw new AppError('AI_NOT_CONFIGURED', 503, 'ШІ-асистент ще не налаштований. Зверніться до викладача.');
     if (mode === 'agent' && !settings.agentEnabled) throw new AppError('AI_AGENT_DISABLED', 403, 'Режим агента вимкнено викладачем.');
 
     // A retried request (network failure, a double tap, a reopened app) joins the answer already in progress.
-    const requestId = this.requestIdFor(studentId, input.clientRequestId);
+    // A continuation's id comes from the job it continues, so two triggers (two tabs, a reopened app) start it once.
+    const requestId = this.requestIdFor(studentId, resumeOf ? `resume:${resumeOf.id}` : input.clientRequestId);
     const repeated = await this.jobForRequest(studentId, requestId);
     if (repeated) return this.attachSession(repeated);
 
     const existing = conversationId === 'new' ? null : await this.requireConversation(studentId, conversationId);
+    if (resumeOf && existing?.lastJobId !== resumeOf.id) throw new AppError('AI_RESUME_STALE', 409, 'Цю відповідь уже продовжено або в чаті є новіші повідомлення.');
     if (existing?.lastJobId) await this.ensureIdle(existing.lastJobId);
     if (!existing && (await this.ai.store.listConversations(studentId)).length >= CONVERSATION_LIMIT) {
       throw new AppError('AI_CONVERSATION_LIMIT', 409, 'Забагато чатів. Видаліть старі, щоб створити новий.');
     }
     let model: AiModelRecord | undefined;
-    if (input.modelId) {
+    const resumeModel = resumeOf ? access.models.find(item => item.id === resumeOf.modelId && item.agent !== false) : undefined;
+    if (resumeModel) model = resumeModel;
+    else if (input.modelId) {
       model = access.models.find(item => item.id === input.modelId);
       if (!model) throw new AppError('AI_MODEL_FORBIDDEN', 403, 'Ця модель вам недоступна');
     } else if (mode === 'agent') {
@@ -611,12 +649,13 @@ export class AiChatService {
     const provider = access.providers.find(item => item.id === model.providerId)!;
     const now = this.ai.now();
     const skills = (await loadSkills(this.ai.store, now.toISOString())).filter(skill => skill.enabled);
-    const skill = input.skillId ? skills.find(item => item.id === input.skillId) ?? null : null;
-    if (input.skillId && !skill) throw new AppError('AI_SKILL_NOT_FOUND', 404, 'Цю навичку не знайдено або її вимкнено.');
+    const skillId = resumeOf ? resumeOf.message?.skill?.id ?? null : input.skillId;
+    const skill = skillId ? skills.find(item => item.id === skillId) ?? null : null;
+    if (!resumeOf && input.skillId && !skill) throw new AppError('AI_SKILL_NOT_FOUND', 404, 'Цю навичку не знайдено або її вимкнено.');
 
     let history = existing ? activeMessages(await this.ai.store.getMessages(existing.id, HISTORY_LOAD)) : [];
     let revision: AiMessage['revision'];
-    if (input.reviseMessageId) {
+    if (!resumeOf && input.reviseMessageId) {
       const original = history.at(-2), answer = history.at(-1);
       if (!existing || original?.role !== 'user' || answer?.role !== 'assistant' || original.id !== input.reviseMessageId) throw new AppError('AI_REVISION_STALE', 409, 'Можна змінити лише останній запит. Оновіть чат.');
       if (attachmentIds.length) throw new AppError('AI_REVISION_FILES', 400, 'Під час редагування зберігаються початкові вкладення. Нові файли надішліть окремим повідомленням.');
@@ -715,7 +754,7 @@ export class AiChatService {
         throw new AppError('AI_LIMIT_TOO_LOW', 402, `Залишку токенів (${reservation.available}) не вистачає на це повідомлення. Скоротіть його або почніть новий чат.`);
     }
 
-    const userMessage: AiMessage = { ...(revision ? { revision } : {}), id: randomUUID(), role: 'user', content: text, createdAt: now.toISOString(), ...(messageAttachments.length ? { attachments: messageAttachments } : {}) };
+    const userMessage: AiMessage = { ...(revision ? { revision } : {}), id: randomUUID(), role: 'user', content: text, createdAt: now.toISOString(), ...(messageAttachments.length ? { attachments: messageAttachments } : {}), ...(resumeOf ? { auto: true } : {}) };
     // viewerAt starts empty: the sending connection is watched directly, later the app's own requests count.
     const job: AiJob = {
       id: randomUUID(), studentId, conversationId: existing?.id ?? randomUUID(), requestId,
@@ -724,7 +763,7 @@ export class AiChatService {
       finalizingAt: null, finishedAt: null, stopRequested: false, inputTokens,
       errorCode: null, errorMessage: null, notify: null, notifyAttempts: 0, userMessage, message: null,
       mode, steps: skill ? [{ id: randomUUID(), kind: 'skill', label: `Навичка «${skill.name}»`, status: 'done', detail: skill.description }] : [],
-      files: [], pending: null, decision: null, queuedUntil: null
+      files: [], pending: null, decision: null, queuedUntil: null, round: resumeOf?.resume?.round ?? 0, resume: null
     };
     const created = await this.ai.store.createJob(job);
     if (!created.created) {
@@ -782,12 +821,15 @@ export class AiChatService {
   }): AgentTools[] {
     const files = new Map(run.readable.map(attachment => [attachment.id, attachment]));
     const allowed = run.explicitSkill?.tools.length ? new Set(run.explicitSkill.tools) : null;
+    // A skill saved before write_project_files existed still builds sites in parts.
+    if (allowed?.has('create_project')) allowed.add('write_project_files');
     const base: Omit<ToolContext, 'settings' | 'secret'> = {
       fileName: id => files.get(id)?.name ?? null,
       readFile: async (id, from) => this.readForAgent(files.get(id) ?? null, id, from, run.model, run.sentScans),
       createFile: async request => this.createForAgent(run.job, request),
       createProject: args => this.projects().create(run.job, args),
       readProject: args => this.projects().read(run.job.studentId, args),
+      writeProject: args => this.projects().write(run.job, args),
       publishProject: id => this.projects().publish(run.job.studentId, id),
       useSkill: async name => {
         const found = run.skills.find(skill => skill.name.toLowerCase() === name.trim().toLowerCase());
@@ -927,7 +969,8 @@ export class AiChatService {
     const ticker = setInterval(() => { void flush(); }, FLUSH_MS);
     const keepalive = setInterval(() => ctx.write(': ping\n\n'), HEARTBEAT_MS);
     // Vercel stops the function at its time limit; finish in time to save the answer and charge it.
-    const deadline = setTimeout(() => end('deadline'), Math.max(5_000, GENERATION_BUDGET_MS - (Date.now() - ctx.startedAt)));
+    const budget = this.ai.deps.generationBudgetMs ?? GENERATION_BUDGET_MS;
+    const deadline = setTimeout(() => end('deadline'), Math.max(Math.min(5_000, budget), budget - (Date.now() - ctx.startedAt)));
 
     // Attempts: every enabled key of the chosen model's provider, then the fallback model once — only
     // while nothing has been streamed yet, and only to a model this student is allowed to use.
@@ -1114,7 +1157,9 @@ export class AiChatService {
       emit: ctx.event, steps: job.steps,
       saveSteps: steps => this.ai.store.updateJob(job.id, { steps }).catch(error => this.ai.log(error, 'AI job steps write failed')),
       addFile: async file => {
-        job.files.push(file);
+        // A project written in parts is one file: each save replaces its card.
+        const index = job.files.findIndex(item => item.id === file.id);
+        if (index >= 0) job.files[index] = file; else job.files.push(file);
         await this.ai.store.updateJob(job.id, { files: job.files });
         ctx.event('files', { files: job.files });
       },
@@ -1171,18 +1216,24 @@ export class AiChatService {
     // Steps still marked as running belong to a run that ended; they did not finish.
     const steps = job.steps.map(step => step.status === 'running' ? { ...step, status: 'error' as const, detail: step.detail ?? 'Перервано' } : step);
     const files = job.files;
+    // An agent run cut off by the time limit (or by its function dying) keeps what it saved; with saved
+    // work the app continues it automatically, a few times, each in a fresh run.
+    const timeUp = job.mode === 'agent' && status !== 'stopped' && !outcome.stopped && (outcome.deadline || outcome.lost || outcome.notice?.code === 'AI_TIME_LIMIT');
+    const round = job.round ?? 0;
+    const resume = timeUp && files.length && round < MAX_AUTO_RESUMES ? { round: round + 1, max: MAX_AUTO_RESUMES } : null;
     let assistantMessage: AiMessage | null = null;
     if (text || files.length) {
       const answerFiles = parseAnswerFiles(text);
       assistantMessage = {
-        id: job.assistantMessageId, role: 'assistant', content: text || 'Готово — файли нижче.', createdAt: now.toISOString(), modelId: usedModel.id, modelLabel: usedModel.label,
+        id: job.assistantMessageId, role: 'assistant', content: text || (timeUp ? 'Частину зроблено — файли нижче.' : 'Готово — файли нижче.'), createdAt: now.toISOString(), modelId: usedModel.id, modelLabel: usedModel.label,
         usage: { input: measured.inputTokens, output: measured.outputTokens, total: actual, approximate },
         status: status === 'complete' ? 'complete' : status === 'stopped' ? 'stopped' : 'interrupted',
         ...(answerFiles.length ? { archive: { fileCount: answerFiles.length, paths: answerFiles.slice(0, 30).map(file => file.path) } } : {}),
         ...(job.mode === 'agent' ? { mode: 'agent' as const } : {}),
         ...(steps.length ? { steps } : {}),
         ...(files.length ? { files } : {}),
-        ...(outcome.skill ? { skill: { id: outcome.skill.id, name: outcome.skill.name } } : {})
+        ...(outcome.skill ? { skill: { id: outcome.skill.id, name: outcome.skill.name } } : {}),
+        ...(resume ? { continued: true } : {})
       };
       // Re-read: the student may have deleted this chat while the answer was being written.
       const conversation = await this.ai.store.getConversation(job.studentId, job.conversationId);
@@ -1219,6 +1270,7 @@ export class AiChatService {
     let jobStatus: AiJobStatus;
     let problem: { code: string; message: string } | null = null;
     if (status === 'stopped' || outcome.stopped) jobStatus = 'stopped';
+    else if (timeUp) { jobStatus = text || files.length ? 'interrupted' : 'error'; problem = timeLimitNotice(files, resume, round); }
     else if (status === 'complete' && hitOutputLimit(outcome.finishReason)) {
       // A chat answer cut off by the output cap. Usage stays «complete»: the provider did generate and is charged exactly.
       jobStatus = text || files.length ? 'interrupted' : 'error';
@@ -1235,7 +1287,7 @@ export class AiChatService {
     const watching = opts.watching();
     await this.ai.store.finishJob(job.id, {
       status: jobStatus, finishedAt: now.getTime(), message: assistantMessage, modelId: usedModel.id, modelLabel: usedModel.label, steps, pending: null,
-      errorCode: problem?.code ?? null, errorMessage: problem?.message ?? null,
+      errorCode: problem?.code ?? null, errorMessage: problem?.message ?? null, resume,
       // An answer watched to the end counts as seen.
       ...(watching ? { viewerAt: now.getTime() } : {})
     });
@@ -1244,7 +1296,7 @@ export class AiChatService {
       const after = (await this.ai.store.getBalances([job.studentId])).get(job.studentId)!;
       const balance = { available: Math.max(0, after.balance - after.reserved), exhausted: after.balance - after.reserved <= 0 };
       const usageOut = { input: measured.inputTokens, output: measured.outputTokens, total: actual, charged, approximate };
-      const base = { jobId: job.id, status: jobStatus, finishReason: outcome.finishReason, conversationId: job.conversationId, usage: usageOut, balance };
+      const base = { jobId: job.id, status: jobStatus, finishReason: outcome.finishReason, conversationId: job.conversationId, usage: usageOut, balance, resume };
       if (assistantMessage) opts.event('done', { ...base, userMessage: job.userMessage, message: assistantMessage, ...(problem && jobStatus === 'interrupted' ? { error: problem } : {}) });
       else if (jobStatus === 'stopped') opts.event('done', { ...base, userMessage: null, message: null });
       else opts.event('error', { ...base, ...(problem ?? studentMessage(new AiProviderError('network', ''))) });
@@ -1328,7 +1380,8 @@ export class AiChatService {
       error: job.errorCode ? { code: job.errorCode, message: job.errorMessage ?? 'Не вдалося отримати відповідь. Спробуйте ще раз.' } : null,
       createdAt: new Date(job.createdAt).toISOString(), finishedAt: job.finishedAt ? new Date(job.finishedAt).toISOString() : null,
       text, offset, mode: job.mode, steps: job.steps, files: job.files, pending: job.pending,
-      queuedUntil: job.queuedUntil && ACTIVE_JOB.has(job.status) ? new Date(job.queuedUntil).toISOString() : null
+      queuedUntil: job.queuedUntil && ACTIVE_JOB.has(job.status) ? new Date(job.queuedUntil).toISOString() : null,
+      resume: !ACTIVE_JOB.has(job.status) ? job.resume ?? null : null
     };
   }
 

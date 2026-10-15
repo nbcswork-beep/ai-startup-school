@@ -288,7 +288,7 @@ function confirmMarkup(action) {
 
 function statusPill(label, tone) { return `<span class="ai-status" data-tone="${tone}">${label}</span>`; }
 
-function lastUser() { return [...state.messages].reverse().find(message => message.role === 'user'); }
+function lastUser() { return [...state.messages].reverse().find(message => message.role === 'user' && !message.auto); }
 function controls(message) {
   if (state.pending || !message.id) return '';
   const id = escapeText(message.id);
@@ -297,6 +297,8 @@ function controls(message) {
 }
 
 function messageMarkup(message, { streaming = false } = {}) {
+  // The app's own request to continue after the time limit: a quiet note, not the student's words.
+  if (message.role === 'user' && message.auto) return `<p class="ai-auto-note" data-message="${escapeText(message.id ?? '')}">${icons.retry}<span>Автоматичне продовження: дописую решту</span></p>`;
   if (message.role === 'user') {
     const files = message.attachments?.length ? `<div class="ai-file-chips">${message.attachments.map(attachmentChip).join('')}</div>` : '';
     return `<article class="ai-msg ai-msg--user" data-message="${escapeText(message.id ?? '')}">
@@ -309,6 +311,7 @@ function messageMarkup(message, { streaming = false } = {}) {
   const agent = message.mode === 'agent';
   let status = '';
   if (message.status === 'stopped') status = statusPill('Зупинено', 'muted');
+  else if (message.status === 'interrupted' && message.continued) status = statusPill('Частина · продовжено автоматично', 'running');
   else if (message.status === 'interrupted') status = statusPill('Помилка · відповідь перервалася', 'danger');
   else if (agent) status = statusPill('Готово', 'ok');
   const meta = [
@@ -709,6 +712,19 @@ function setCurrent(id) {
 function acknowledged(jobId) { return (readStorage(ACK_KEY) ?? '').split(',').includes(jobId); }
 function acknowledge(jobId) { writeStorage(ACK_KEY, [...(readStorage(ACK_KEY) ?? '').split(',').filter(Boolean).slice(-20), jobId].join(',')); }
 
+// A run cut off by the time limit after saving work goes on by itself. The app asks once per job and
+// tab; the server starts a continuation only once whatever asks, so another tab or a reopen is harmless.
+const RESUMED_KEY = 'aiss-ai-resumed';
+function resumed(jobId) { return (readStorage(RESUMED_KEY) ?? '').split(',').includes(jobId); }
+function scheduleResume(conversationId, jobId) {
+  if (!jobId || resumed(jobId)) return;
+  setTimeout(() => {
+    if (resumed(jobId) || state.pending || state.currentId !== conversationId || !root?.isConnected) return;
+    writeStorage(RESUMED_KEY, [...(readStorage(RESUMED_KEY) ?? '').split(',').filter(Boolean).slice(-20), jobId].join(','));
+    void send('', { resumeJobId: jobId });
+  }, 1200);
+}
+
 async function openConversation(id, { silent = false } = {}) {
   setCurrent(id);
   state.error = null;
@@ -729,6 +745,9 @@ async function openConversation(id, { silent = false } = {}) {
       // Reconnect to the answer the server is still writing.
       state.pending = pendingFromJob(job);
       void follow(state.pending);
+    } else if (job && !ACTIVE.has(job.status) && job.resume) {
+      // The app was closed when the time limit hit: continue now that the chat is open again.
+      scheduleResume(id, job.id);
     } else if (job && !ACTIVE.has(job.status) && job.error && !job.message && !acknowledged(job.id)) {
       acknowledge(job.id);
       state.error = { message: job.error.message };
@@ -843,8 +862,9 @@ function showFinished(pending, result) {
     state.attachments = state.attachments.filter(item => !sent.has(item.id));
   }
   const field = $('#aiInput');
-  if (result.error) state.error = { message: result.error.message, ...(result.message ? {} : { retryText: pending.user?.content }) };
-  if (!result.message && field && !field.value && pending.user?.content) field.value = pending.user.content;
+  if (result.resume && result.message) { state.error = null; scheduleResume(result.conversationId, pending.jobId); }
+  else if (result.error) state.error = { message: result.error.message, ...(result.message || pending.user?.auto ? {} : { retryText: pending.user?.content }) };
+  if (!result.message && field && !field.value && pending.user?.content && !pending.user.auto) field.value = pending.user.content;
   if (result.balance && state.me) state.me.balance = { ...state.me.balance, available: result.balance.available, exhausted: result.balance.exhausted };
   void refreshMe();
   void refreshList();
@@ -881,7 +901,7 @@ async function follow(pending) {
         if (!ACTIVE.has(view.status)) {
           showFinished(pending, {
             conversationId: view.conversationId, message: view.message, userMessage: view.userMessage,
-            error: view.status === 'stopped' ? null : view.error
+            error: view.status === 'stopped' ? null : view.error, resume: view.resume ?? null
           });
           return;
         }
@@ -910,22 +930,25 @@ function detach(pending) {
   void follow(pending);
 }
 
-async function send(rawText) {
-  const text = String(rawText ?? '').trim();
-  const ready = state.attachments.filter(item => item.status === 'ready');
-  if (state.attachments.some(item => item.status === 'uploading' || item.status === 'processing')) return;
-  if ((!text && !ready.length) || state.pending || blocker() || !state.me) return;
+/** Sends the student's message, or with resumeJobId asks the server to continue a run cut off by the time limit. */
+async function send(rawText, { resumeJobId = null } = {}) {
+  const text = resumeJobId ? '' : String(rawText ?? '').trim();
+  const ready = resumeJobId ? [] : state.attachments.filter(item => item.status === 'ready');
+  if (!resumeJobId && state.attachments.some(item => item.status === 'uploading' || item.status === 'processing')) return;
+  if ((!text && !ready.length && !resumeJobId) || state.pending || blocker() || !state.me) return;
   const limit = state.me.limits?.maxMessageChars ?? 8000;
   if (text.length > limit) { state.error = { message: `Повідомлення задовге: максимум ${numberFormat.format(limit)} символів` }; renderThread(); return; }
   const conversationId = state.currentId ?? 'new';
   const model = selectedModel();
   if (ready.some(item => PHOTO_KINDS.has(item.kind)) && !model?.vision) { state.error = { message: 'Для фото оберіть модель з позначкою «бачить фото».' }; renderThread(); return; }
-  const agent = agentOn();
-  const skill = selectedSkill();
+  const agent = resumeJobId ? true : agentOn();
+  const skill = resumeJobId ? null : selectedSkill();
   const controller = new AbortController();
   const pending = {
     jobId: null, conversationId,
-    user: { role: 'user', content: text || 'Переглянь прикріплені файли.', createdAt: new Date().toISOString(), ...(ready.length ? { attachments: ready.map(item => ({ id: item.id, name: item.name, size: item.size, fileCount: item.files.length, kind: item.kind, ...(item.pages ? { pages: item.pages } : {}) })) } : {}) },
+    user: resumeJobId
+      ? { role: 'user', content: 'Автоматичне продовження', auto: true, createdAt: new Date().toISOString() }
+      : { role: 'user', content: text || 'Переглянь прикріплені файли.', createdAt: new Date().toISOString(), ...(ready.length ? { attachments: ready.map(item => ({ id: item.id, name: item.name, size: item.size, fileCount: item.files.length, kind: item.kind, ...(item.pages ? { pages: item.pages } : {}) })) } : {}) },
     text: '', offset: 0, modelLabel: model?.label ?? '', mode: agent ? 'agent' : 'chat',
     steps: skill ? [{ id: 'local-skill', kind: 'skill', label: `Навичка «${skill.name}»`, status: 'done' }] : [], files: [], action: null,
     controller, viewing: 'stream', finished: false, stopping: false
@@ -934,12 +957,13 @@ async function send(rawText) {
   state.error = null;
   state.stick = true;
   const input = $('#aiInput');
-  if (input && input.value.trim() === text) { input.value = ''; writeStorage(`${DRAFT_KEY}:${conversationId}`, null); }
+  if (!resumeJobId && input && input.value.trim() === text) { input.value = ''; writeStorage(`${DRAFT_KEY}:${conversationId}`, null); }
   renderAll();
   deps.haptic?.('selection');
 
   try {
-    const response = await deps.api.aiStream(conversationId, {
+    // A continuation keeps the cut-off run's model and skill on the server; only the job is named.
+    const response = await deps.api.aiStream(conversationId, resumeJobId ? { content: '', clientRequestId: crypto.randomUUID(), continueJobId: resumeJobId, mode: 'agent' } : {
       content: text, clientRequestId: crypto.randomUUID(),
       ...(state.reviseMessageId ? { reviseMessageId: state.reviseMessageId } : {}),
       ...(state.context ? { context: { type: state.context.type, id: state.context.id } } : {}),
@@ -973,7 +997,7 @@ async function send(rawText) {
         case 'model': pending.modelLabel = data.label; renderHeader(); return;
         case 'attach': pending.jobId = data.jobId; pending.conversationId = data.conversationId; detach(pending); return;
         case 'done':
-          showFinished(pending, { conversationId: data.conversationId, message: data.message, userMessage: data.userMessage, error: data.error ?? null, balance: data.balance });
+          showFinished(pending, { conversationId: data.conversationId, message: data.message, userMessage: data.userMessage, error: data.error ?? null, balance: data.balance, resume: data.resume ?? null });
           return;
         case 'error':
           showFinished(pending, { conversationId: data.conversationId ?? pending.conversationId, message: null, userMessage: null, error: { message: data.message }, balance: data.balance });
@@ -988,7 +1012,9 @@ async function send(rawText) {
     if (pending.finished || state.pending !== pending || pending.viewing !== 'stream') return;
     if (pending.jobId) { detach(pending); return; }
     finishPending(pending);
-    if (error.status) handleRefusal(error, text);
+    // Already continued elsewhere (another tab, a reopened app): just show what is there now.
+    if (resumeJobId && error.code === 'AI_RESUME_STALE') { if (state.currentId) await openConversation(state.currentId, { silent: true }); }
+    else if (error.status) handleRefusal(error, text);
     else { state.error = { message: 'Зʼєднання перервалося. Перевіряємо, що збереглося…' }; setTimeout(syncAfterInterruption, 1200); }
     renderAll();
   }

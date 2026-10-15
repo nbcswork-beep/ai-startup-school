@@ -9,6 +9,7 @@ export const WEB_SKILLS = [
     "tools": [
       "read_file",
       "create_project",
+      "write_project_files",
       "read_project",
       "publish_project",
       "use_skill"
@@ -23,6 +24,7 @@ export const WEB_SKILLS = [
     "tools": [
       "read_file",
       "create_project",
+      "write_project_files",
       "read_project",
       "publish_project",
       "use_skill"
@@ -37,6 +39,7 @@ export const WEB_SKILLS = [
     "tools": [
       "read_file",
       "create_project",
+      "write_project_files",
       "read_project",
       "publish_project",
       "use_skill"
@@ -51,6 +54,7 @@ export const WEB_SKILLS = [
     "tools": [
       "read_file",
       "create_project",
+      "write_project_files",
       "read_project",
       "publish_project",
       "use_skill"
@@ -65,6 +69,7 @@ export const WEB_SKILLS = [
     "tools": [
       "read_file",
       "create_project",
+      "write_project_files",
       "read_project",
       "publish_project",
       "use_skill"
@@ -79,6 +84,7 @@ export const WEB_SKILLS = [
     "tools": [
       "read_file",
       "create_project",
+      "write_project_files",
       "read_project",
       "publish_project",
       "use_skill"

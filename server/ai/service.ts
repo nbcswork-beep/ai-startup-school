@@ -35,6 +35,8 @@ export interface AiServiceDeps {
   notifier?: AiAnswerNotifier | null;
   /** HTTP for plugins that call outside services; tests pass a stub. */
   fetcher?: typeof fetch;
+  /** Time one run may generate before it stops and saves (the function lives 300 s); tests shorten it. */
+  generationBudgetMs?: number;
 }
 
 export const DEFAULT_SYSTEM_PROMPT = [

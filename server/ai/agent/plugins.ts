@@ -29,6 +29,7 @@ export interface ToolOutcome {
 export interface ToolContext {
   createProject?(args: Record<string, unknown>): Promise<ToolOutcome>;
   readProject?(args: Record<string, unknown>): Promise<ToolOutcome>;
+  writeProject?(args: Record<string, unknown>): Promise<ToolOutcome>;
   publishProject?(id: string): Promise<{ url: string }>;
   readFile(fileId: string, from: number): Promise<ToolOutcome>;
   /** Display name of an attached file, for step labels. */
@@ -188,17 +189,19 @@ async function fetchJson(context: ToolContext, url: string): Promise<any> {
 const projects: BuiltinPlugin = {
   core: true, preinstalled: true,
   manifest: {
-    id: 'projects', name: 'Сайти та код', version: '1.0.0',
+    id: 'projects', name: 'Сайти та код', version: '1.1.0',
     description: 'Створення проєктів ZIP, статичних HTML/CSS/JS сайтів та статей блогу. Публікація після підтвердження учня.',
     permissions: ['files:read', 'files:write', 'network'], settings: [], secrets: [],
     tools: [
-      { name: 'create_project', description: 'Зберегти повний проєкт: website — готовий статичний сайт з index.html; code — вихідний код (ZIP, без запуску). files містить ВСІ файли. Для змін існуючого сайту передай projectId, спочатку read_project. Всі посилання відносні. Зовнішні JS CDN, fetch, серверні API, форми та localStorage у перегляді недоступні. Статті SEO створюй як blog/slug.html з навігацією. Чернетка не публікується автоматично.', parameters: { type: 'object', properties: { title: { type: 'string' }, kind: { type: 'string', enum: ['website', 'code'] }, projectId: { type: 'string', description: 'id існуючого власного проєкту для оновлення' }, files: { type: 'array', maxItems: 60, items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } }, required: ['title', 'kind', 'files'] } },
+      { name: 'create_project', description: 'Створити проєкт: website — статичний сайт з index.html; code — вихідний код (ZIP, без запуску). Сайт будуй частинами, щоб кожен крок зберігся і не обірвався за лімітом часу: спочатку create_project з index.html і styles.css (до ~15 000 символів), потім додавай сторінки, скрипти й статті через write_project_files по 1–3 файли за виклик. З projectId повністю замінює файли існуючого проєкту (спочатку read_project); для часткових змін використовуй write_project_files. Всі посилання відносні. Зовнішні JS CDN, fetch, серверні API, форми та localStorage у перегляді недоступні. Статті SEO створюй як blog/slug.html з навігацією. Чернетка не публікується автоматично.', parameters: { type: 'object', properties: { title: { type: 'string' }, kind: { type: 'string', enum: ['website', 'code'] }, projectId: { type: 'string', description: 'id існуючого власного проєкту для оновлення' }, files: { type: 'array', maxItems: 60, items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } }, required: ['title', 'kind', 'files'] } },
+      { name: 'write_project_files', description: 'Дописати або замінити 1–3 файли в збереженій чернетці проєкту projectId; решта файлів лишається. remove — шляхи файлів, які треба видалити. Так будуй сайт частинами і додавай статті: кожен виклик одразу зберігається. У чернетці можна посилатися на сторінки, які ще допишеш, але до публікації всі файли мають існувати.', parameters: { type: 'object', properties: { projectId: { type: 'string' }, files: { type: 'array', maxItems: 5, items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } }, remove: { type: 'array', maxItems: 20, items: { type: 'string' } } }, required: ['projectId'] } },
       { name: 'read_project', description: 'Прочитати власний збережений проєкт. Без path — список файлів; з path — текст файлу (частинами через from). Завжди читай існуючий сайт перед додаванням SEO-статей, збережи його дизайн та файли.', parameters: { type: 'object', properties: { projectId: { type: 'string' }, path: { type: 'string' }, from: { type: 'integer', minimum: 0 } }, required: ['projectId'] } },
       { name: 'publish_project', description: 'Опублікувати збережений website за стабільним публічним посиланням або оновити його опубліковану версію. Викликай лише коли учень просить публікацію. Учень окремо підтвердить відкритий доступ до ВСІХ сторінок. Не публікуй особисті дані, секрети та чужі матеріали.', parameters: { type: 'object', properties: { projectId: { type: 'string' } }, required: ['projectId'] } }
     ]
   },
   tools: manifest => [
     { ...toolBase(manifest, 'create_project'), permission: 'files:write', step: () => ({ kind: 'create', label: 'Збираю проєкт' }), run: (args, context) => context.createProject!(args) },
+    { ...toolBase(manifest, 'write_project_files'), permission: 'files:write', step: args => ({ kind: 'create', label: `Дописую ${projectPaths(args) || 'проєкт'}` }), run: (args, context) => context.writeProject!(args) },
     { ...toolBase(manifest, 'read_project'), permission: 'files:read', step: () => ({ kind: 'read', label: 'Читаю проєкт' }), run: (args, context) => context.readProject!(args) },
     { ...toolBase(manifest, 'publish_project'), permission: 'network', step: () => ({ kind: 'tool', label: 'Публікую сайт' }),
       disclosure: () => ({ title: 'Опублікувати сайт?', details: 'Усі сторінки та файли обраного проєкту стануть доступні кожному за посиланням. Статті можуть індексуватися пошуковиками. Перевірте чернетку та відсутність особистих даних. Оновлення замінить попередню публічну версію.' }),
@@ -206,6 +209,11 @@ const projects: BuiltinPlugin = {
     }
   ]
 };
+
+function projectPaths(args: Record<string, unknown>): string {
+  const paths = Array.isArray(args.files) ? args.files.map(file => str((file as { path?: unknown } | null)?.path, 80)).filter(Boolean) : [];
+  return paths.length > 3 ? `${paths.slice(0, 3).join(', ')} та ще ${paths.length - 3}` : paths.join(', ');
+}
 
 export const BUILTIN_PLUGINS: Record<string, BuiltinPlugin> = { documents, skills, projects, calculator, wikipedia };
 

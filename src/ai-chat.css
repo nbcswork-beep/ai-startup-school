@@ -601,6 +601,19 @@ html[data-screen='ai'] .bottom-nav { visibility: hidden; }
   line-height: 1.45;
 }
 
+/* The app continued a run cut off by the time limit: a quiet line between the parts, not a bubble. */
+.ai-auto-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 4px 0 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.ai-auto-note svg { flex: none; width: 14px; height: 14px; }
+
 .ai-confirm {
   margin: 4px 0 12px;
   padding: 12px 14px;
