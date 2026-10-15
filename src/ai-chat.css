@@ -699,3 +699,9 @@ html[data-screen='ai'] .bottom-nav { visibility: hidden; }
 .ai-context-note .ai-icon-action { width: auto; height: 32px; padding: 0 10px; color: var(--cyan); font-size: 13px; font-weight: 600; }
 .ai-icon-action[aria-pressed="true"] { color: var(--cyan); background: rgba(var(--lavender-rgb), 0.12); }
 @media (hover: hover) { .ai-msg .ai-msg-actions .ai-icon-action[aria-pressed="true"] { opacity: 1; } }
+.ai-project-dialog { width: min(1120px, 96vw); max-width: 96vw; height: 90dvh; max-height: 90dvh; padding: 16px; border: 1px solid var(--border, #454054); border-radius: 16px; background: var(--bg, #151222); color: var(--text, #fff); }
+.ai-project-dialog[open] { display: flex; flex-direction: column; gap: 12px; }
+.ai-project-dialog::backdrop { background: rgb(0 0 0 / 70%); }
+.ai-project-dialog header, .ai-project-dialog footer { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.ai-project-dialog p, .ai-project-dialog footer { margin: 0; font-size: 13px; }
+.ai-project-dialog iframe { flex: 1; min-height: 0; width: 100%; border: 0; background: white; border-radius: 8px; }

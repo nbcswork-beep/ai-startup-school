@@ -1,0 +1,26 @@
+{
+  "repository": "https://github.com/xcrrr/claude-skills",
+  "retrieved": "2026-10-15",
+  "files": [
+    {
+      "path": "skills/files/pptx/SKILL.md",
+      "gitBlobSha": "74fd8c2e42abd1ac8641a2cb55765218a5371f10"
+    },
+    {
+      "path": "skills/files/docx/SKILL.md",
+      "gitBlobSha": "0e4252d795ae2db6b73783245b6c9fff617c08f6"
+    },
+    {
+      "path": "skills/files/pdf/SKILL.md",
+      "gitBlobSha": "a29332e1c10eb1363614c526d0fc800d995d7db5"
+    },
+    {
+      "path": "skills/files/xlsx/SKILL.md",
+      "gitBlobSha": "b306954e2ada0464b71f576935f33399ef01fdff"
+    }
+  ],
+  "license": {
+    "path": "LICENSE",
+    "gitBlobSha": "7a28f2d0c34c4542a946e6ded67d8d431efbfa3a"
+  }
+}

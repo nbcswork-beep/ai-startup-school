@@ -29,6 +29,19 @@ export function agentDecision(turns: Turn[], tools: string[]): Decision {
   const user = [...turns].reverse().find(turn => turn.role === 'user' && !turn.toolName)?.text ?? '';
   const results = turns.filter(turn => turn.role === 'tool');
   const used = (name: string) => results.filter(turn => turn.toolName === name);
+  if (user.includes('[website-fixture]') && tools.includes('create_project') && !used('create_project').length) {
+    return { tool: { name: 'create_project', args: { title: 'Космічна майстерня', kind: 'website', files: [
+      { path: 'index.html', content: '<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Космічна майстерня</title><link rel="stylesheet" href="style.css"></head><body><main><p>Навчальний проєкт</p><h1>Від ідеї до зірок</h1><p>Досліджуй космос, перевіряй гіпотези та створюй власні відкриття.</p><button id="launch">Запустити ракету</button><p id="result" aria-live="polite"></p><a href="blog/stars.html">Чому світять зорі →</a></main><script src="app.js"></script></body></html>' },
+      { path: 'style.css', content: 'body{margin:0;background:#091a2a;color:#edf4ff;font:18px system-ui}main{max-width:780px;padding:clamp(24px,6vw,90px);margin:auto}h1{font-size:clamp(40px,8vw,76px);line-height:1.05}p{line-height:1.7}button{background:#ffcc70;color:#11263b;border:0;border-radius:12px;padding:16px 24px;font:inherit;cursor:pointer;transition:transform .2s}button:hover{transform:translateY(-3px)}a{color:#ffcc70;display:block;margin-top:32px}:focus-visible{outline:3px solid #fff;outline-offset:5px}@media(prefers-reduced-motion:reduce){*{transition:none!important}}' },
+      { path: 'app.js', content: 'document.querySelector("#launch").addEventListener("click",()=>{document.querySelector("#result").textContent="Ракету запущено! 🚀";});' },
+      { path: 'blog/stars.html', content: '<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Як термоядерні реакції забезпечують світло зір і чому вони мають різний колір."><title>Чому світять зорі — Космічна майстерня</title><link rel="stylesheet" href="../style.css"></head><body><main><a href="../index.html">← На головну</a><h1>Чому світять зорі</h1><p>Зорі випромінюють енергію завдяки термоядерним реакціям у надзвичайно гарячому ядрі. Легкі атомні ядра зливаються, вивільняючи енергію.</p><h2>Про що говорить колір</h2><p>Сині зорі зазвичай гарячіші за червоні. Колір пов’язаний із температурою поверхні, а не з відстанню до Землі.</p></main></body></html>' }
+    ] } } };
+  }
+  if ((user.includes('[read-project-fixture]') || user.includes('[publish-project-fixture]'))) {
+    const id = /projectId=([0-9a-f-]{36})/.exec(turns.map(turn => turn.text).join('\n'))?.[1];
+    const name = user.includes('[publish-project-fixture]') ? 'publish_project' : 'read_project';
+    if (id && tools.includes(name) && !used(name).length) return { tool: { name, args: { projectId: id } } };
+  }
   const skill = /«([^»]+)»/.exec(system.split('Навички:')[1] ?? '')?.[1];
   if (tools.includes('use_skill') && skill && !used('use_skill').length && user.toLowerCase().includes(skill.toLowerCase().slice(0, 6))) return { tool: { name: 'use_skill', args: { name: skill } } };
   const ids = [...user.matchAll(/id: ([0-9a-f-]{36})/g)].map(match => match[1]);
@@ -46,7 +59,7 @@ export function agentDecision(turns: Turn[], tools: string[]): Decision {
       : '## Головне\n\n' + (points.length ? points : ['Короткий виклад теми']).map(point => `- ${point}`).join('\n') + '\n\n## Висновок\n\nМатеріал опрацьовано.';
     return { tool: { name: 'create_file', args: { name: 'Конспект', format, title: 'Конспект', content: body } } };
   }
-  const made = used('create_file')[0]?.text.split('\n')[0] ?? '';
+  const made = (used('create_file')[0] ?? used('create_project')[0] ?? used('read_project')[0] ?? used('publish_project')[0])?.text.split('\n')[0] ?? '';
   return { text: made ? `Готово. ${made}` : `Відповідь агента: ${user.slice(0, 80)}` };
 }
 

@@ -1,5 +1,5 @@
 import {createAssignedRepository} from './assigned-pilot.test-fixture.js';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../app.js';
 import { createJwtService } from '../auth/jwt-service.js';
@@ -38,11 +38,14 @@ describe('education foundation invariants',()=>{
     await expect(repository.listMentorSlots(guardian)).rejects.toMatchObject({statusCode:403});
   });
   it('preserves the rescheduled class state and new timezone-safe timestamps',async()=>{
+    const clock=vi.spyOn(Date,'now').mockReturnValue(Date.parse('2026-10-01T10:00:00Z'));
+    try {
     const repository=createAssignedRepository(); const sessionId='71000000-0000-4000-8000-000000000001';
     const startsAt='2026-10-06T15:00:00.000Z'; const endsAt='2026-10-06T16:30:00.000Z';
     await repository.rescheduleClass(teacher,sessionId,{startsAt,endsAt,reason:'Зміна розкладу'});
     const session=(await repository.getSchedule(DEV_IDS.user)).upcoming.find(item=>item.id===sessionId);
     expect(session).toMatchObject({startsAt,endsAt,status:'rescheduled',durationMinutes:90});
+    } finally { clock.mockRestore(); }
   });
   it('keeps portfolio private and prevents mentor double booking',async()=>{
     const repository=createAssignedRepository(); expect((await repository.getPortfolio(DEV_IDS.user)).visibility).toBe('private');

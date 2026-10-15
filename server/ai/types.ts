@@ -164,12 +164,13 @@ export interface AiPluginRecord {
 }
 
 export type AiFilePreview =
+  | { kind: 'project'; projectKind: 'website' | 'code'; items: string[] }
   | { kind: 'outline'; items: string[] }
   | { kind: 'slides'; items: string[] }
   | { kind: 'table'; sheet: string; header: string[]; rows: string[][] }
   | { kind: 'text'; text: string };
 
-export type AiOutputFormat = 'docx' | 'pdf' | 'pptx' | 'xlsx' | 'csv' | 'md' | 'txt';
+export type AiOutputFormat = 'docx' | 'pdf' | 'pptx' | 'xlsx' | 'csv' | 'md' | 'txt' | 'project';
 
 /** A file the agent made: its source (Markdown or CSV) is kept and the file is rebuilt on download. */
 export interface AiGeneratedFile {
@@ -183,6 +184,9 @@ export interface AiGeneratedFile {
   size: number;
   preview: AiFilePreview;
   createdAt: string;
+  /** Published snapshot stays unchanged while a student edits the project draft. */
+  publishedContent?: string | undefined;
+  publishedAt?: string | undefined;
 }
 
 export interface AiFileRef {

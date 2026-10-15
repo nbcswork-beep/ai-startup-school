@@ -88,6 +88,7 @@ export const api = {
   aiStopJob: jobId => request(`/ai/jobs/${jobId}/stop`, { method: 'POST' }),
   aiConfirmJob: (jobId, input) => request(`/ai/jobs/${jobId}/confirm`, { method: 'POST', body: JSON.stringify(input) }),
   aiFileLink: fileId => request(`/ai/files/${fileId}/link`, { method: 'POST' }),
+  aiUnpublishProject: fileId => request(`/ai/projects/${fileId}/publication`, { method: 'DELETE' }),
   aiReserveAttachment: input => request('/ai/attachments', { method: 'POST', body: JSON.stringify(input) }),
   aiCompleteAttachment: id => request(`/ai/attachments/${id}/complete`, { method: 'POST' }),
   aiDeleteAttachment: id => request(`/ai/attachments/${id}`, { method: 'DELETE' }),

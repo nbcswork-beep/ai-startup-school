@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { AiSkill } from '../types.js';
+import { COMMUNITY_DOCUMENT_SKILLS } from './community-document-skills.js';
+import { SCHOOL_PRESENTATION_SKILL, SCHOOL_RESEARCH_SKILLS } from './school-research-skills.js';
+import { WEB_SKILLS } from './web-skills.js';
 
 /**
  * Skills in the SKILL.md format: metadata in a front matter block, instructions in Markdown below.
@@ -166,21 +169,9 @@ export const BUILTIN_SKILLS: Array<SkillDraft & { id: string }> = [
       '6. У чаті коротко опиши структуру і порадь, що учню варто дописати своїми словами.'
     ].join('\n')
   },
-  {
-    id: 'skill-slides',
-    name: 'Презентація',
-    description: 'Слайди PowerPoint за темою або матеріалом.',
-    when: 'Учень просить презентацію, слайди або виступ із презентацією.',
-    tools: ['read_file', 'create_file'],
-    instructions: [
-      'Зроби презентацію PowerPoint (pptx) через create_file.',
-      '',
-      '1. Якщо є матеріали — прочитай їх і бери факти звідти.',
-      '2. Формат вмісту: перший рядок «# Назва презентації», під ним одне речення-підзаголовок. Далі кожен слайд — «## Заголовок слайда» і 3–5 коротких пунктів (до 12 слів кожен).',
-      '3. 8–12 слайдів: вступ, основні частини, приклад або порівняння (таблицею), «Висновки», «Питання».',
-      '4. Нотатки доповідача пиши рядком «> …» під пунктами слайда.',
-      '5. У чаті перелічи слайди й порадь, як їх представити за 3–5 хвилин.'
-    ].join('\n')
-  },
-{ id: 'skill-homework-hints', name: 'Підказки до домашнього', description: 'Допомагає виконати завдання самостійно.', when: 'Учень просить допомоги з домашнім завданням.', tools: ['read_file', 'calculate'], instructions: 'Спитай, що учень уже спробував. Давай одну підказку за раз, пояснюй на іншому прикладі й перевіряй розуміння. Не підмінюй роботу учня готовим розвʼязанням або файлом для здачі.' }
+  SCHOOL_PRESENTATION_SKILL,
+{ id: 'skill-homework-hints', name: 'Підказки до домашнього', description: 'Допомагає виконати завдання самостійно.', when: 'Учень просить допомоги з домашнім завданням.', tools: ['read_file', 'calculate'], instructions: 'Спитай, що учень уже спробував. Давай одну підказку за раз, пояснюй на іншому прикладі й перевіряй розуміння. Не підмінюй роботу учня готовим розвʼязанням або файлом для здачі.' },
+...COMMUNITY_DOCUMENT_SKILLS,
+...SCHOOL_RESEARCH_SKILLS,
+...WEB_SKILLS
 ];

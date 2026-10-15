@@ -6,7 +6,7 @@ import { readZipEntries, ZipFormatError } from '../zip.js';
  */
 
 export type DocumentKind = 'jpg' | 'png' | 'webp' | 'pdf' | 'docx' | 'xlsx' | 'csv' | 'pptx' | 'txt' | 'md' | 'zip';
-export type OutputFormat = 'docx' | 'pdf' | 'pptx' | 'xlsx' | 'csv' | 'md' | 'txt';
+export type OutputFormat = 'docx' | 'pdf' | 'pptx' | 'xlsx' | 'csv' | 'md' | 'txt' | 'project';
 
 export const DOCUMENT_KINDS: Record<DocumentKind, { label: string; mime: string; maxBytes: number }> = {
   jpg: { label: 'Фото JPEG', mime: 'image/jpeg', maxBytes: 135000 },
@@ -23,6 +23,7 @@ export const DOCUMENT_KINDS: Record<DocumentKind, { label: string; mime: string;
 };
 
 export const OUTPUT_FORMATS: Record<OutputFormat, { label: string; mime: string; extension: string }> = {
+  project: { label: 'Проєкт ZIP', mime: 'application/zip', extension: 'zip' },
   docx: { label: 'Word', mime: DOCUMENT_KINDS.docx.mime, extension: 'docx' },
   pdf: { label: 'PDF', mime: DOCUMENT_KINDS.pdf.mime, extension: 'pdf' },
   pptx: { label: 'PowerPoint', mime: DOCUMENT_KINDS.pptx.mime, extension: 'pptx' },

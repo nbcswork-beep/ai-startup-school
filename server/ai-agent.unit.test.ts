@@ -60,6 +60,20 @@ async function download(student: Awaited<ReturnType<typeof ready>>['student'], f
 }
 
 describe('AI agent — documents in, documents out', () => {
+  it('creates a website through model tool calls and preserves project ids for a later turn', async () => {
+    const { student } = await ready();
+    const run = await student.send('[website-fixture]', { mode: 'agent', skillId: 'skill-websites-github' });
+    expect(run.done.status).toBe('complete');
+    const file = run.done.message.files[0];
+    expect(file).toMatchObject({ format: 'project', preview: { kind: 'project', projectKind: 'website' } });
+    const link = (await student.call('POST', `/api/v1/ai/files/${file.id}/link`)).json();
+    expect((await student.app.inject({ method: 'GET', url: link.previewUrl })).body).toContain('Від ідеї до зірок');
+    const later = await student.send('[read-project-fixture]', { mode: 'agent', conversationId: run.done.conversationId });
+    expect(later.done.message.steps.some((step: { label: string }) => step.label === 'Читаю проєкт')).toBe(true);
+    expect(later.done.message.content).toContain(file.id);
+    expect(later.done.message.content).toContain('blog/stars.html');
+    expect((await student.app.inject({ method: 'GET', url: `/api/v1/sites/${file.id}/index.html` })).statusCode).toBe(404);
+  }, 30000);
   it('reads an uploaded Word file with the «Конспект» skill and returns a real Word file the student downloads and opens', async () => {
     const { student, as } = await ready();
     const source = (await renderFile({ title: 'Фотосинтез', content: LESSON, format: 'docx' })).bytes;
@@ -160,7 +174,7 @@ describe('AI agent — documents in, documents out', () => {
     const run = await student.send('Зроби конспект про фотосинтез у документ', { mode: 'agent' });
     const firstCall = mock.chatRequests().at(-3)!.body;
     expect(firstCall.messages[0].content).toContain('Навички: коли завдання відповідає умовам навички');
-    expect(firstCall.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['read_file', 'create_file', 'use_skill', 'calculate']);
+    expect(firstCall.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['read_file', 'create_file', 'use_skill', 'create_project', 'read_project', 'publish_project', 'calculate']);
     expect(run.done.message.skill).toEqual({ id: 'skill-summary', name: 'Конспект' });
     expect(run.done.message.steps[0]).toMatchObject({ kind: 'skill', label: 'Навичка «Конспект»', status: 'done' });
   }, 30_000);
@@ -275,7 +289,7 @@ describe('AI agent — skills as SKILL.md', () => {
   it('creates, edits, exports and imports skills, and students see only enabled ones', async () => {
     const { admin, student } = await ready();
     const agent = (await admin.call('GET', '/api/v1/admin/ai/agent')).json();
-    expect(agent.skills.map((skill: { name: string }) => skill.name)).toEqual(['Конспект', 'Пояснення теми', 'Підготовка до іспиту', 'Оформлення доповіді', 'Презентація', 'Підказки до домашнього']);
+    expect(agent.skills.map((skill: { name: string }) => skill.name)).toEqual(['Конспект', 'Пояснення теми', 'Підготовка до іспиту', 'Оформлення доповіді', 'Презентація', 'Підказки до домашнього', 'Документи Word', 'PDF: читання та оформлення', 'Таблиці Excel', 'Критичне мислення', 'Навчальні тексти та джерела', 'Сайти та інтерфейси', 'Дизайн та анімації', 'Розробка коду', 'Пошук помилок у коді', 'Перевірка коду', 'SEO-статті для сайту']);
     expect(agent.skills[0].markdown).toMatch(/^---\nname: Конспект\ndescription: .+\nwhen: .+\ntools: read_file, create_file\n---\n\nСклади конспект/);
 
     const created = await admin.call('POST', '/api/v1/admin/ai/skills', { name: 'Есе', description: 'Есе на 300 слів', when: 'Учень просить есе', instructions: 'Пиши есе з вступом, трьома абзацами і висновком.', tools: ['create_file'] });
@@ -283,7 +297,7 @@ describe('AI agent — skills as SKILL.md', () => {
     expect((await admin.call('POST', '/api/v1/admin/ai/skills', { name: 'есе', instructions: 'x' })).json().error.code).toBe('AI_SKILL_DUPLICATE');
     expect((await admin.call('PATCH', '/api/v1/admin/ai/skills/skill-exam', { enabled: false })).statusCode).toBe(200);
     const visible = (await student.call('GET', '/api/v1/ai/me')).json().skills.map((skill: { name: string }) => skill.name);
-    expect(visible).toEqual(['Конспект', 'Пояснення теми', 'Оформлення доповіді', 'Презентація', 'Підказки до домашнього', 'Есе']);
+    expect(visible).toEqual(['Конспект', 'Пояснення теми', 'Оформлення доповіді', 'Презентація', 'Підказки до домашнього', 'Документи Word', 'PDF: читання та оформлення', 'Таблиці Excel', 'Критичне мислення', 'Навчальні тексти та джерела', 'Сайти та інтерфейси', 'Дизайн та анімації', 'Розробка коду', 'Пошук помилок у коді', 'Перевірка коду', 'SEO-статті для сайту', 'Есе']);
     expect((await student.send('Привіт', { skillId: 'skill-exam' })).response.json().error.code).toBe('AI_SKILL_NOT_FOUND');
 
     // Export one as SKILL.md, all as a ZIP of folders.
