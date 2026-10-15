@@ -270,7 +270,7 @@ describe('AI assistant — student chat and honest token accounting', () => {
     await configure(admin);
     await admin.call('PUT', '/api/v1/admin/ai/settings', { maxConcurrentPerStudent: 5, requestsPerMinute: 100 });
     // Enough for one reservation (input estimate + 512 output), not for two.
-    await admin.call('POST', `/api/v1/admin/ai/tokens/students/${STUDENT}`, { op: 'set', amount: 1_200 });
+    await admin.call('POST', `/api/v1/admin/ai/tokens/students/${STUDENT}`, { op: 'set', amount: 2_000 });
     await admin.call('POST', `/api/v1/admin/ai/tokens/students/${OTHER}`, { op: 'set', amount: 10_000 });
     const [first, second] = [await as(STUDENT), await as(OTHER)];
     const results = await Promise.all([
@@ -286,10 +286,10 @@ describe('AI assistant — student chat and honest token accounting', () => {
     expect(theirs.every(result => result.done?.status === 'complete')).toBe(true);
     const rows = (await admin.call('GET', '/api/v1/admin/ai/tokens')).json().students;
     const row = rows.find((item: { studentId: string }) => item.studentId === STUDENT);
-    expect(row.balance).toBe(1_200 - 150 * succeeded.length);
+    expect(row.balance).toBe(2_000 - 150 * succeeded.length);
     expect(row.balance).toBeGreaterThanOrEqual(0);
     expect(row.reserved).toBe(0);
-    expect(row.used + row.balance).toBe(1_200);
+    expect(row.used + row.balance).toBe(2_000);
     expect(rows.find((item: { studentId: string }) => item.studentId === OTHER)).toMatchObject({ used: 450, balance: 9_550 });
   });
 

@@ -1,4 +1,5 @@
 import { toCsv, parseCsv } from './csv.js';
+import { projectFromContent, projectZip } from '../projects.js';
 import { OUTPUT_FORMATS, type OutputFormat } from './formats.js';
 import { blocksToText, parseMarkdown, runsText, type Block, type ListBlock, type Run } from './markdown.js';
 
@@ -9,6 +10,7 @@ import { blocksToText, parseMarkdown, runsText, type Block, type ListBlock, type
 
 export interface FileInput { title: string; content: string; format: OutputFormat }
 export type FilePreview =
+  | { kind: 'project'; projectKind: 'website' | 'code'; items: string[] }
   | { kind: 'outline'; items: string[] }
   | { kind: 'slides'; items: string[] }
   | { kind: 'table'; sheet: string; header: string[]; rows: string[][] }
@@ -28,10 +30,11 @@ const BRAND = { ink: '100B28', violet: '7438F5', pink: 'F725A8', muted: '5B5170'
 export async function renderFile(input: FileInput): Promise<RenderedFile> {
   const content = input.content.replace(/\r\n?/g, '\n').trim();
   if (!content) throw new DocumentWriteError('Немає вмісту для файлу.');
-  if (content.length > MAX_CONTENT_CHARS) throw new DocumentWriteError('Вміст файлу завеликий.');
+  if (content.length > (input.format === 'project' ? 1_000_000 : MAX_CONTENT_CHARS)) throw new DocumentWriteError('Вміст файлу завеликий.');
   const title = input.title.trim() || 'Документ';
   const meta = OUTPUT_FORMATS[input.format];
   switch (input.format) {
+    case 'project': { const source = projectFromContent(content); return { bytes: projectZip(content), mime: meta.mime, extension: meta.extension, preview: { kind: 'project', projectKind: source.kind, items: source.files.map(file => file.path) } }; }
     case 'docx': { const blocks = withTitle(parseMarkdown(content), title); return { bytes: await renderDocx(blocks, title), mime: meta.mime, extension: meta.extension, preview: outline(blocks) }; }
     case 'pdf': { const blocks = withTitle(parseMarkdown(content), title); return { bytes: await renderPdf(blocks, title), mime: meta.mime, extension: meta.extension, preview: outline(blocks) }; }
     case 'pptx': { const slides = toSlides(parseMarkdown(content), title); return { bytes: await renderPptx(slides, title), mime: meta.mime, extension: meta.extension, preview: { kind: 'slides', items: slides.map(slide => slide.title).slice(0, 12) } }; }

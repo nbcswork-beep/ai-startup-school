@@ -249,10 +249,10 @@ function stepsMarkup(steps, { live = false } = {}) {
 
 function previewMarkup(preview) {
   if (!preview) return '';
-  if (preview.kind === 'outline' || preview.kind === 'slides') {
+  if (preview.kind === 'outline' || preview.kind === 'slides' || preview.kind === 'project') {
     if (!preview.items?.length) return '';
     const items = preview.items.slice(0, 6);
-    return `<ol class="ai-file-outline" aria-label="${preview.kind === 'slides' ? 'Слайди' : 'Розділи'}">${items.map(item => `<li>${escapeText(item)}</li>`).join('')}${preview.items.length > items.length ? `<li class="is-more">ще ${preview.items.length - items.length}</li>` : ''}</ol>`;
+    return `<ol class="ai-file-outline" aria-label="${preview.kind === 'slides' ? 'Слайди' : preview.kind === 'project' ? 'Файли проєкту' : 'Розділи'}">${items.map(item => `<li>${escapeText(item)}</li>`).join('')}${preview.items.length > items.length ? `<li class="is-more">ще ${preview.items.length - items.length}</li>` : ''}</ol>`;
   }
   if (preview.kind === 'table') {
     const header = preview.header ?? [];
@@ -265,10 +265,11 @@ function previewMarkup(preview) {
 function fileCards(files, { live = false } = {}) {
   if (!files?.length) return '';
   return `<div class="ai-files">${files.map(file => `<div class="ai-file-card" data-format="${escapeText(file.format)}">
-    <span class="ai-file-badge" aria-hidden="true">${escapeText(file.format.toUpperCase())}</span>
-    <span class="ai-file-info"><strong>${escapeText(file.name)}</strong><small>${escapeText(KIND_LABEL[file.format] ?? file.format)} · ${formatFileSize(file.size)}</small></span>
+    <span class="ai-file-badge" aria-hidden="true">${escapeText(file.format === 'project' ? 'ZIP' : file.format.toUpperCase())}</span>
+    <span class="ai-file-info"><strong>${escapeText(file.name)}</strong><small>${escapeText(file.format === 'project' ? 'Проєкт' : KIND_LABEL[file.format] ?? file.format)} · ${formatFileSize(file.size)}</small></span>
     ${live ? '' : `<button type="button" class="btn btn--secondary btn--sm ai-file-download" data-ai="file" data-id="${escapeText(file.id)}" aria-label="Завантажити ${escapeText(file.name)}">${icons.download}<span>Завантажити</span></button>`}
     ${previewMarkup(file.preview)}
+    ${!live && file.preview?.kind === 'project' && file.preview.projectKind === 'website' ? `<button type="button" class="btn btn--secondary btn--sm" data-ai="project-preview" data-id="${escapeText(file.id)}">Переглянути сайт</button>` : ''}
   </div>`).join('')}</div>`;
 }
 
@@ -607,7 +608,7 @@ function renderDrawerList() {
     }
     if (state.confirmDelete === item.id) {
       return `<div class="ai-chat-item is-confirm" role="alertdialog" aria-labelledby="aiDeleteText">
-        <p id="aiDeleteText">Видалити чат «${escapeText(item.title)}»? Повідомлення і створені в ньому файли зникнуть назавжди.</p>
+        <p id="aiDeleteText">Видалити чат «${escapeText(item.title)}»? Повідомлення, файли та сайти з цього чату зникнуть назавжди. Опубліковані сайти також перестануть відкриватися.</p>
         <div class="ai-chat-item-actions"><button type="button" class="btn btn--ghost btn--sm" data-ai="delete-cancel">Скасувати</button><button type="button" class="btn btn--danger btn--sm" data-ai="delete-confirm" data-id="${escapeText(item.id)}">Видалити</button></div>
       </div>`;
     }
@@ -1179,6 +1180,30 @@ function downloadFile(fileId, button) {
   });
 }
 
+function previewProject(fileId, button) {
+  void withBusyButton(button, 'Відкрито', async () => {
+    const link = await deps.api.aiFileLink(fileId);
+    if (!link.previewUrl) throw new Error('Перегляд для цього проєкту недоступний.');
+    document.querySelector('.ai-project-dialog')?.remove();
+    const dialog = document.createElement('dialog');
+    dialog.className = 'ai-project-dialog';
+    dialog.setAttribute('aria-label', 'Перегляд сайту');
+    dialog.innerHTML = `<header><strong>Чернетка сайту</strong><button type="button" class="btn btn--secondary btn--sm" data-project-close>Закрити</button></header><p>Перевірте всі сторінки перед публікацією. Посилання на перегляд діє 10 хвилин.</p><iframe title="Чернетка сайту" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe><footer>${link.publishedUrl ? `<a class="btn btn--secondary btn--sm" href="${escapeText(link.publishedUrl)}" target="_blank" rel="noopener noreferrer">Відкрити опублікований сайт</a><button type="button" class="btn btn--secondary btn--sm" data-project-unpublish>Зняти з публікації</button>` : '<span>Щоб опублікувати, попросіть агента «Опублікуй мій сайт».</span>'}</footer>`;
+    dialog.querySelector('iframe').src = link.previewUrl;
+    dialog.querySelector('[data-project-close]').addEventListener('click', () => dialog.close());
+    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+    dialog.querySelector('[data-project-unpublish]')?.addEventListener('click', async event => {
+      const control = event.currentTarget;
+      await withBusyButton(control, 'Знято з публікації', async () => {
+        await deps.api.aiUnpublishProject(fileId);
+        dialog.querySelector('footer').textContent = 'Сайт знято з публікації. Чернетку збережено.';
+      });
+    });
+    document.body.append(dialog);
+    dialog.showModal();
+  });
+}
+
 // ---------------------------------------------------------------------------------------------
 // Events
 
@@ -1264,6 +1289,7 @@ function onClick(event) {
     }
     case 'zip': downloadArchive(id, target); break;
     case 'file': downloadFile(id, target); break;
+    case 'project-preview': previewProject(id, target); break;
     case 'approve': void answerConfirmation(true, target); break;
     case 'decline': void answerConfirmation(false, target); break;
     case 'retry': { const text = state.error?.retryText; state.error = null; if (text) void send(text); break; }
@@ -1352,6 +1378,8 @@ function closeLayers() {
 
 /** Telegram's back button: closes an open layer first. */
 export function aiHandleBack() {
+  const preview = document.querySelector('.ai-project-dialog');
+  if (preview) { preview.close(); return true; }
   if (!root?.isConnected) return false;
   return closeLayers();
 }

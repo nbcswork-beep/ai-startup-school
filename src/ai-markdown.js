@@ -5,6 +5,9 @@
 const escapeHtml = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 
 function safeHref(raw) {
+  // Links returned by the student-site publishing tool stay within the public site route.
+  const site = /^\/api\/v1\/sites\/[0-9a-f-]{36}\/([a-zA-Z0-9_./-]+)$/.exec(raw.trim());
+  if (site && site[1].split('/').every(part => part && part !== '.' && part !== '..')) return raw.trim();
   try {
     const url = new URL(raw.trim());
     return ['https:', 'http:', 'mailto:'].includes(url.protocol) ? url.href : null;

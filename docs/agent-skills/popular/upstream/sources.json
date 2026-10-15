@@ -1,0 +1,51 @@
+{
+  "retrieved": "2026-10-15",
+  "files": [
+    {
+      "repository": "K-Dense-AI/scientific-agent-skills",
+      "path": "skills/scientific-slides/SKILL.md",
+      "gitBlobSha": "54587177e2de11324f23f5985ff9d152fb998e03"
+    },
+    {
+      "repository": "K-Dense-AI/scientific-agent-skills",
+      "path": "skills/scientific-critical-thinking/SKILL.md",
+      "gitBlobSha": "2a2fc151b5b13e4e11ece7410f21a14d5b25e30d"
+    },
+    {
+      "repository": "K-Dense-AI/scientific-agent-skills",
+      "path": "skills/scientific-slides/references/slide_design_principles.md",
+      "gitBlobSha": "6ec50a23b32cab128b63240edee9e442f3c0c93a"
+    },
+    {
+      "repository": "K-Dense-AI/scientific-agent-skills",
+      "path": "skills/scientific-slides/references/presentation_workflow.md",
+      "gitBlobSha": "4b83dd8e6a56ed5def294d648f8f1d24fae33949"
+    },
+    {
+      "repository": "K-Dense-AI/scientific-agent-skills",
+      "path": "skills/scientific-critical-thinking/references/logical_fallacies.md",
+      "gitBlobSha": "336a0407f4397f8ad9b218fc4156ef3473d19f70"
+    },
+    {
+      "repository": "K-Dense-AI/scientific-agent-skills",
+      "path": "LICENSE.md",
+      "gitBlobSha": "eb246475fd5a66b9bb56176f3a718984632dd98d"
+    },
+    {
+      "repository": "ComposioHQ/awesome-claude-skills",
+      "path": "content-research-writer/SKILL.md",
+      "gitBlobSha": "d9e6f12fe51f61225fde6844dba8c3edf530703f"
+    },
+    {
+      "repository": "ComposioHQ/awesome-claude-skills",
+      "path": "README.md",
+      "gitBlobSha": "d28b9c3515147fba1242461eb2c11155ffca5bbf"
+    }
+  ],
+  "apacheLicense": {
+    "repository": "apache/.github",
+    "path": "LICENSE",
+    "gitBlobSha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
+  },
+  "notes": "Instruction-only adaptations for Student OS. Upstream Bash/Python/network workflows are not installed."
+}

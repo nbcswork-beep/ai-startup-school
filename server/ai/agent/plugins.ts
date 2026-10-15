@@ -27,6 +27,9 @@ export interface ToolOutcome {
 }
 
 export interface ToolContext {
+  createProject?(args: Record<string, unknown>): Promise<ToolOutcome>;
+  readProject?(args: Record<string, unknown>): Promise<ToolOutcome>;
+  publishProject?(id: string): Promise<{ url: string }>;
   readFile(fileId: string, from: number): Promise<ToolOutcome>;
   /** Display name of an attached file, for step labels. */
   fileName(fileId: string): string | null;
@@ -182,7 +185,29 @@ async function fetchJson(context: ToolContext, url: string): Promise<any> {
   return response.json();
 }
 
-export const BUILTIN_PLUGINS: Record<string, BuiltinPlugin> = { documents, skills, calculator, wikipedia };
+const projects: BuiltinPlugin = {
+  core: true, preinstalled: true,
+  manifest: {
+    id: 'projects', name: 'Сайти та код', version: '1.0.0',
+    description: 'Створення проєктів ZIP, статичних HTML/CSS/JS сайтів та статей блогу. Публікація після підтвердження учня.',
+    permissions: ['files:read', 'files:write', 'network'], settings: [], secrets: [],
+    tools: [
+      { name: 'create_project', description: 'Зберегти повний проєкт: website — готовий статичний сайт з index.html; code — вихідний код (ZIP, без запуску). files містить ВСІ файли. Для змін існуючого сайту передай projectId, спочатку read_project. Всі посилання відносні. Зовнішні JS CDN, fetch, серверні API, форми та localStorage у перегляді недоступні. Статті SEO створюй як blog/slug.html з навігацією. Чернетка не публікується автоматично.', parameters: { type: 'object', properties: { title: { type: 'string' }, kind: { type: 'string', enum: ['website', 'code'] }, projectId: { type: 'string', description: 'id існуючого власного проєкту для оновлення' }, files: { type: 'array', maxItems: 60, items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } }, required: ['title', 'kind', 'files'] } },
+      { name: 'read_project', description: 'Прочитати власний збережений проєкт. Без path — список файлів; з path — текст файлу (частинами через from). Завжди читай існуючий сайт перед додаванням SEO-статей, збережи його дизайн та файли.', parameters: { type: 'object', properties: { projectId: { type: 'string' }, path: { type: 'string' }, from: { type: 'integer', minimum: 0 } }, required: ['projectId'] } },
+      { name: 'publish_project', description: 'Опублікувати збережений website за стабільним публічним посиланням або оновити його опубліковану версію. Викликай лише коли учень просить публікацію. Учень окремо підтвердить відкритий доступ до ВСІХ сторінок. Не публікуй особисті дані, секрети та чужі матеріали.', parameters: { type: 'object', properties: { projectId: { type: 'string' } }, required: ['projectId'] } }
+    ]
+  },
+  tools: manifest => [
+    { ...toolBase(manifest, 'create_project'), permission: 'files:write', step: () => ({ kind: 'create', label: 'Збираю проєкт' }), run: (args, context) => context.createProject!(args) },
+    { ...toolBase(manifest, 'read_project'), permission: 'files:read', step: () => ({ kind: 'read', label: 'Читаю проєкт' }), run: (args, context) => context.readProject!(args) },
+    { ...toolBase(manifest, 'publish_project'), permission: 'network', step: () => ({ kind: 'tool', label: 'Публікую сайт' }),
+      disclosure: () => ({ title: 'Опублікувати сайт?', details: 'Усі сторінки та файли обраного проєкту стануть доступні кожному за посиланням. Статті можуть індексуватися пошуковиками. Перевірте чернетку та відсутність особистих даних. Оновлення замінить попередню публічну версію.' }),
+      run: async (args, context) => { const result = await context.publishProject!(str(args.projectId, 64)); return { content: `Сайт опубліковано: ${result.url}. Це реальне посилання, поверни його учню.`, detail: 'Сайт доступний за посиланням' }; }
+    }
+  ]
+};
+
+export const BUILTIN_PLUGINS: Record<string, BuiltinPlugin> = { documents, skills, projects, calculator, wikipedia };
 
 function toolBase(manifest: AiPluginManifest, name: string): Pick<AgentTool, 'name' | 'description' | 'parameters' | 'pluginId' | 'pluginName'> {
   const tool = manifest.tools.find(item => item.name === name)!;
@@ -232,7 +257,7 @@ export function validateManifest(input: unknown): AiPluginManifest {
   const tools: AiToolManifest[] = (Array.isArray(raw.tools) ? raw.tools : []).slice(0, 10).map((tool: any) => {
     const toolName = String(tool?.name ?? '');
     if (!TOOL_NAME.test(toolName)) fail(`Назва інструмента «${toolName}»: малі латинські літери, цифри й _.`);
-    if (['read_file', 'create_file', 'use_skill'].includes(toolName)) fail(`Назва «${toolName}» зарезервована.`);
+    if (['read_file', 'create_file', 'use_skill', 'create_project', 'read_project', 'publish_project'].includes(toolName)) fail(`Назва «${toolName}» зарезервована.`);
     const method = String(tool?.http?.method ?? 'GET').toUpperCase();
     if (!['GET', 'POST'].includes(method)) fail('http.method: GET або POST.');
     const path = String(tool?.http?.path ?? '/');

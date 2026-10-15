@@ -1,0 +1,50 @@
+[
+  {
+    "key": "addy-front",
+    "url": "https://github.com/addyosmani/agent-skills/blob/main/skills/frontend-ui-engineering/SKILL.md",
+    "sha": "3c77256874f2990612d0c980fa9b73cc3116152c",
+    "license": "MIT"
+  },
+  {
+    "key": "addy-debug",
+    "url": "https://github.com/addyosmani/agent-skills/blob/main/skills/debugging-and-error-recovery/SKILL.md",
+    "sha": "356da20365a7cd6825b4ffad14be39280c92cdfc",
+    "license": "MIT"
+  },
+  {
+    "key": "addy-plan",
+    "url": "https://github.com/addyosmani/agent-skills/blob/main/skills/planning-and-task-breakdown/SKILL.md",
+    "sha": "296249b64334bcfd1aeaefd27b9e3e5494e38ec0",
+    "license": "MIT"
+  },
+  {
+    "key": "addy-review",
+    "url": "https://github.com/addyosmani/agent-skills/blob/main/skills/code-review-and-quality/SKILL.md",
+    "sha": "08209ff2208d2883d48d945f7754c428b77f8d87",
+    "license": "MIT"
+  },
+  {
+    "key": "meng-landing",
+    "url": "https://github.com/MengTo/Skills/blob/main/agent-skills/web-design/landing-page/SKILL.md",
+    "sha": "ba43c9b98417818daf21bbeab7a460a49e416750",
+    "license": "MIT"
+  },
+  {
+    "key": "meng-motion",
+    "url": "https://github.com/MengTo/Skills/blob/main/agent-skills/web-design/animation-systems/SKILL.md",
+    "sha": "bfba54e968cc09d063e8d60765b24022d998cf31",
+    "license": "MIT"
+  },
+  {
+    "key": "addy-license",
+    "url": "https://github.com/addyosmani/agent-skills/blob/main/LICENSE",
+    "sha": "d67778ada6b9cda6227e9130da182c13e73c8b2e",
+    "license": "MIT"
+  },
+  {
+    "key": "meng-license",
+    "url": "https://github.com/MengTo/Skills/blob/main/LICENSE",
+    "sha": "b3a5f823a69b4b010f92930ac09e8a776daf65c6",
+    "license": "MIT"
+  }
+]

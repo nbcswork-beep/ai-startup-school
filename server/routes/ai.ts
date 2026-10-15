@@ -299,6 +299,22 @@ export function registerAiRoutes(app: FastifyInstance, deps: { repository: AppRe
   });
   // Files the agent made: a signed link (for Telegram's downloader), then the file itself.
   app.post('/api/v1/ai/files/:id/link', student(60), async request => chat.fileLink(request.auth.userId, z.object({ id: uuid }).parse(request.params).id));
+  app.delete('/api/v1/ai/projects/:id/publication', student(20), async request => chat.projects().unpublish(request.auth.userId, z.object({ id: uuid }).parse(request.params).id));
+  const siteHeaders = (reply: import('fastify').FastifyReply, mime: string) => reply
+    .header('content-type', mime).header('content-security-policy', SITE_CSP)
+    .header('x-frame-options', 'SAMEORIGIN').header('x-content-type-options', 'nosniff')
+    .header('access-control-allow-origin', '*').header('cross-origin-resource-policy', 'cross-origin')
+    .header('referrer-policy', 'no-referrer').header('cache-control', 'no-store');
+  app.get('/api/v1/sites/:id/*', { config: { rateLimit: { max: 240, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const params = z.object({ id: uuid, '*': z.string().max(180) }).parse(request.params);
+    const file = await chat.projects().asset(params.id, params['*'] || 'index.html');
+    return siteHeaders(reply, file.mime).send(file.content);
+  });
+  app.get('/api/v1/ai/project-preview/:token/*', { config: { rateLimit: { max: 240, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const params = z.object({ token: z.string().min(20).max(1000), '*': z.string().max(180) }).parse(request.params);
+    const file = await chat.projectPreview(params.token, params['*'] || 'index.html');
+    return siteHeaders(reply, file.mime).header('x-robots-tag', 'noindex, nofollow, noarchive').send(file.content);
+  });
   app.get('/api/v1/ai/files', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { token } = z.object({ token: z.string().min(20).max(1000) }).parse(request.query);
     const file = await chat.fileDownload(token);
@@ -382,3 +398,4 @@ export function createAiStreamHandler(deps: { jwt: JwtService; repository: AppRe
     }
   };
 }
+import { SITE_CSP } from '../ai/projects.js';
