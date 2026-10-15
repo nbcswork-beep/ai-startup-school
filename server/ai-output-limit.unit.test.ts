@@ -41,16 +41,16 @@ describe('answers cut off by the output-token cap', () => {
     expect(run.done.error.message).toContain('Відповідь обрізано');
   }, 30000);
 
-  it('agent: a website cut off inside create_project is not retried or saved, and the student hears why', async () => {
+  it('agent: a website cut off inside create_project is checkpointed and offered for continuation', async () => {
     const { student, ids } = await ready();
     const before = capped();
     const run = await student.send('Зроби сайт-візитку з анімаціями', { mode: 'agent', modelId: ids['cutoff-tool'] });
-    expect(run.error).toMatchObject({ code: 'AI_OUTPUT_LIMIT', status: 'error' });
-    expect(run.error.message).toContain('Файл або сайт не вмістився');
-    expect(run.error.message).toContain('1024 токенів');
+    expect(run.done.status).toBe('interrupted');
+    expect(run.done.resume).toEqual({ round: 1, max: 3 });
+    expect(run.done.message.files[0].preview.incomplete).toBe(true);
     expect(capped() - before).toBe(1); // one call: the truncated tool call is not sent back for a retry
-    const files = await student.call('GET', `/api/v1/ai/conversations/${run.error.conversationId}`);
-    expect(JSON.stringify(files.json())).not.toContain('"format":"project"');
+    const files = await student.call('GET', `/api/v1/ai/conversations/${run.done.conversationId}`);
+    expect(JSON.stringify(files.json())).toContain('"format":"project"');
   }, 30000);
 });
 

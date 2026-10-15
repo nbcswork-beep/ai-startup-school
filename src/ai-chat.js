@@ -266,7 +266,7 @@ function fileCards(files, { live = false } = {}) {
   if (!files?.length) return '';
   return `<div class="ai-files">${files.map(file => `<div class="ai-file-card" data-format="${escapeText(file.format)}">
     <span class="ai-file-badge" aria-hidden="true">${escapeText(file.format === 'project' ? 'ZIP' : file.format.toUpperCase())}</span>
-    <span class="ai-file-info"><strong>${escapeText(file.name)}</strong><small>${escapeText(file.format === 'project' ? 'Проєкт' : KIND_LABEL[file.format] ?? file.format)} · ${formatFileSize(file.size)}</small></span>
+    <span class="ai-file-info"><strong>${escapeText(file.name)}</strong><small>${escapeText(file.preview?.incomplete ? 'Чернетка · код ще дописується' : file.format === 'project' ? 'Проєкт' : KIND_LABEL[file.format] ?? file.format)} · ${formatFileSize(file.size)}</small></span>
     ${live ? '' : `<button type="button" class="btn btn--secondary btn--sm ai-file-download" data-ai="file" data-id="${escapeText(file.id)}" aria-label="Завантажити ${escapeText(file.name)}">${icons.download}<span>Завантажити</span></button>`}
     ${previewMarkup(file.preview)}
     ${!live && file.preview?.kind === 'project' && file.preview.projectKind === 'website' ? `<button type="button" class="btn btn--secondary btn--sm" data-ai="project-preview" data-id="${escapeText(file.id)}">Переглянути сайт</button>` : ''}
