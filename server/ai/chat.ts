@@ -74,12 +74,13 @@ export interface ChatInput {
   mode?: 'chat' | 'agent' | undefined;
   /** A skill the student picked; without one, agent mode may choose an enabled skill itself. */
   skillId?: string | null | undefined;
-  /** The app continues this job, which stopped at the time limit after saving work. */
+  /** The app continues this job, which stopped at the time limit. */
   continueJobId?: string | undefined;
 }
 
 /** Automatic continuations after the time limit, per student request (about 4 minutes each). */
 const MAX_AUTO_RESUMES = 3;
+const EMPTY_RESUME_PROMPT = 'Автоматичне продовження: попередній запуск завершився за лімітом часу без збереження нових файлів. Виконай початкове завдання учня з історії та врахуй його вкладення. Не стверджуй, що чернетку вже створено. Якщо в історії є projectId, спершу прочитай той проєкт і продовжуй його. Інакше для сайту спершу створи невеликий робочий index.html через create_project, потім додавай оформлення, сторінки та інтерактивність окремими короткими викликами до 4000 символів. Не зменшуй обсяг початкового завдання: розділи виконання на частини. Не повторюй уже підтверджені зовнішні дії; за потреби нового дозволу знову запитай його.';
 const RESUME_PROMPT = 'Автоматичне продовження: попередній запуск обірвався, отриманий код збережений у чернетці. Продовжуй те саме завдання з місця зупинки. Спочатку read_project без path: chars — точна довжина, incomplete=true — файл ще недописаний. Для такого файлу прочитай кінець через read_project(path,from=max(0,chars-2000)), потім append_project_file(projectId,path,offset=chars,content=лише НОВИЙ текст,complete=true лише в останній частині). Пиши короткими частинами до 4000 символів. Готові файли не переписуй; нові додавай через write_project_files. Не починай заново. Коли всі файли завершені та перевірені, коротко підсумуй зроблене.';
 
 export interface ChatSession {
@@ -111,7 +112,7 @@ export interface AiJobView {
   pending: AiPendingAction | null;
   /** Waiting in line for the provider's request limit until then. */
   queuedUntil: string | null;
-  /** The app should continue this job automatically (it stopped at the time limit after saving work). */
+  /** The app should continue this job automatically (it stopped at the time limit). */
   resume: { round: number; max: number } | null;
 }
 
@@ -119,6 +120,7 @@ export interface AiJobView {
 function timeLimitNotice(files: AiFileRef[], resume: AiJob['resume'], round: number, streamInterrupted = false): { code: string; message: string } {
   if (resume) {
     const saved = files.map(file => `«${file.name.replace(/\.zip$/i, '')}»`).join(', ');
+    if (!files.length) return { code: 'AI_TIME_CONTINUE', message: `Модель не встигла зберегти файли за цей запуск. Запит збережено; повторюю автоматично (${resume.round} з ${resume.max}).` };
     return { code: 'AI_TIME_CONTINUE', message: `${streamInterrupted ? 'Відповідь обірвалася.' : 'Час одного запуску вичерпано.'} Збережено ${saved}; продовжую автоматично (${resume.round} з ${resume.max}).` };
   }
   if (files.length) {
@@ -126,8 +128,8 @@ function timeLimitNotice(files: AiFileRef[], resume: AiJob['resume'], round: num
     return { code: 'AI_TIME_LIMIT', message: `Завдання велике: за ${runs} ${runs === 1 ? 'запуск' : runs < 5 ? 'запуски' : 'запусків'} зроблено частину — файли нижче. Напишіть «продовжуй», щоб дописати решту.` };
   }
   // The earlier parts are in the chat already; only this continuation saved nothing.
-  if (round > 0) return { code: 'AI_TIME_LIMIT', message: 'Продовження не встигло нічого зберегти за час запуску. Напишіть «продовжуй», щоб спробувати ще раз, або попросіть спростити сайт.' };
-  return { code: 'AI_TIME_LIMIT', message: 'За час одного запуску (близько 4 хвилин) нічого не встигло зберегтися. Натисніть «Спробувати ще раз» або попросіть простіший результат — наприклад, сайт з однієї сторінки.' };
+  if (round > 0) return { code: 'AI_TIME_LIMIT', message: 'Автоматичні спроби завершено. За останній запуск модель не зберегла нових файлів. Запит і попередні результати залишилися в чаті. Спробуйте іншу модель або напишіть «продовжуй».' };
+  return { code: 'AI_TIME_LIMIT', message: 'Модель не встигла зберегти файли за цей запуск. Запит залишився в чаті; повторіть спробу або оберіть іншу модель.' };
 }
 
 function titleFrom(text: string): string {
@@ -592,7 +594,7 @@ export class AiChatService {
   }
 
   /** A repeated request gets the job that already exists instead of a second answer and a second charge. */
-  /** A job the app may continue: this student's, in this chat, stopped at the time limit with work saved. */
+  /** A job the app may continue: this student's, in this chat, stopped at the time limit. */
   private async resumable(studentId: string, conversationId: string, jobId: string): Promise<AiJob> {
     const job = conversationId === 'new' ? null : await this.ai.store.getJob(jobId);
     if (!job || job.studentId !== studentId || job.conversationId !== conversationId || !job.resume) {
@@ -611,7 +613,7 @@ export class AiChatService {
     const startedAt = Date.now();
     // An automatic continuation: the server writes the request and keeps the cut-off run's model and skill.
     const resumeOf = input.continueJobId ? await this.resumable(studentId, conversationId, input.continueJobId) : null;
-    const content = resumeOf ? RESUME_PROMPT : input.content.replace(/\r\n/g, '\n').trim();
+    const content = resumeOf ? (resumeOf.files.length ? RESUME_PROMPT : EMPTY_RESUME_PROMPT) : input.content.replace(/\r\n/g, '\n').trim();
     const groupId = await this.studentGroup(studentId);
     const access = await this.ai.accessFor(studentId, groupId);
     const { settings } = access;
@@ -1241,16 +1243,16 @@ export class AiChatService {
     // Steps still marked as running belong to a run that ended; they did not finish.
     const steps = job.steps.map(step => step.status === 'running' ? { ...step, status: 'error' as const, detail: step.detail ?? 'Перервано' } : step);
     const files = job.files;
-    // An agent run cut off by the time limit (or by its function dying) keeps what it saved; with saved
-    // work the app continues it automatically, a few times, each in a fresh run.
+    // A deadline may arrive before the first file. Preserve the request as well as any output,
+    // so bounded continuations can recover without losing the student's prompt or attachments.
     const timeUp = job.mode === 'agent' && status !== 'stopped' && !outcome.stopped && (outcome.deadline || outcome.lost || outcome.notice?.code === 'AI_TIME_LIMIT' || outcome.notice?.code === 'AI_PROJECT_CONTINUE');
     const round = job.round ?? 0;
-    const resume = timeUp && files.length && round < MAX_AUTO_RESUMES ? { round: round + 1, max: MAX_AUTO_RESUMES } : null;
+    const resume = timeUp && round < MAX_AUTO_RESUMES ? { round: round + 1, max: MAX_AUTO_RESUMES } : null;
     let assistantMessage: AiMessage | null = null;
-    if (text || files.length) {
+    if (text || files.length || timeUp) {
       const answerFiles = parseAnswerFiles(text);
       assistantMessage = {
-        id: job.assistantMessageId, role: 'assistant', content: text || (timeUp ? 'Частину зроблено — файли нижче.' : 'Готово — файли нижче.'), createdAt: now.toISOString(), modelId: usedModel.id, modelLabel: usedModel.label,
+        id: job.assistantMessageId, role: 'assistant', content: text || (timeUp ? (files.length ? 'Частину зроблено — файли нижче.' : timeLimitNotice(files, resume, round).message) : 'Готово — файли нижче.'), createdAt: now.toISOString(), modelId: usedModel.id, modelLabel: usedModel.label,
         usage: { input: measured.inputTokens, output: measured.outputTokens, total: actual, approximate },
         status: status === 'complete' ? 'complete' : status === 'stopped' ? 'stopped' : 'interrupted',
         ...(answerFiles.length ? { archive: { fileCount: answerFiles.length, paths: answerFiles.slice(0, 30).map(file => file.path) } } : {}),
@@ -1295,7 +1297,7 @@ export class AiChatService {
     let jobStatus: AiJobStatus;
     let problem: { code: string; message: string } | null = null;
     if (status === 'stopped' || outcome.stopped) jobStatus = 'stopped';
-    else if (timeUp) { jobStatus = text || files.length ? 'interrupted' : 'error'; problem = timeLimitNotice(files, resume, round, outcome.notice?.code === 'AI_PROJECT_CONTINUE'); }
+    else if (timeUp) { jobStatus = 'interrupted'; problem = timeLimitNotice(files, resume, round, outcome.notice?.code === 'AI_PROJECT_CONTINUE'); }
     else if (status === 'complete' && hitOutputLimit(outcome.finishReason)) {
       // A chat answer cut off by the output cap. Usage stays «complete»: the provider did generate and is charged exactly.
       jobStatus = text || files.length ? 'interrupted' : 'error';

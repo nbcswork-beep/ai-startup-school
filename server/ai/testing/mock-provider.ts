@@ -62,7 +62,12 @@ export function agentDecision(turns: Turn[], tools: string[]): Decision {
   }
   if (history.includes('[parts-fixture]') && tools.includes('create_project')) return partsDecision(turns, user, tools, used);
   // [stall-fixture]: nothing saved before the time limit. [endless-fixture]: saves a little every run, never finishes.
-  if (user.includes('[stall-fixture]')) return { stall: 60_000 };
+  if (history.includes('[stall-fixture]')) return { stall: 60_000 };
+  if (history.includes('[retry-empty-fixture]') && tools.includes('create_project')) {
+    if (!user.includes('Автоматичне продовження')) return { stall: 60_000 };
+    if (!used('create_project').length) return { tool: { name: 'create_project', args: { title: 'Після повторної спроби', kind: 'website', files: [{ path: 'index.html', content: STREAMED_PAGE }] } } };
+    return { text: 'Сайт створено після повторної спроби.' };
+  }
   if (history.includes('[endless-fixture]') && tools.includes('create_project')) {
     const id = /projectId=([0-9a-f-]{36})/.exec(turns.map(turn => turn.text).join('\n'))?.[1];
     if (!id) return { tool: { name: 'create_project', args: { title: 'Безкінечний', kind: 'code', files: [{ path: 'notes-0.txt', content: 'start' }] } } };

@@ -389,7 +389,7 @@ export interface AiJob {
   queuedUntil: number | null;
   /** 0 for a student's request; 1, 2, … for automatic continuations of it. */
   round?: number;
-  /** The run hit the time limit after saving work: the app continues it automatically as `round`. */
+  /** The run hit the time limit: the app continues it automatically as `round`. */
   resume?: { round: number; max: number } | null;
 }
 
