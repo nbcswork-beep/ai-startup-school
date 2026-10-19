@@ -31,6 +31,47 @@ describe('partial JSON project arguments', () => {
 });
 
 describe('draft checkpoints and exact append offsets', () => {
+  it('saves CSS before index.html or kind arrive, then resumes the same website', async () => {
+    const { store, projects } = setup(), state: ProjectStreamState = {}, task = job();
+    const prefix = '{"files":[{"path":"styles.css","content":"body{color:';
+    const file = await projects.checkpoint(task, 'create_project', prefix, state);
+    expect(file).not.toBeNull();
+    task.files.push(file!);
+    const record = await store.getGeneratedFile(file!.id);
+    expect(projectFromContent(record!.content).files).toEqual([{ path: 'styles.css', content: 'body{color:' }]);
+    expect(record).toMatchObject({ projectKindPending: true });
+    expect(JSON.parse((await projects.read(STUDENT, { projectId: file!.id })).content)).toMatchObject({ kind: null });
+    await expect(projects.publish(STUDENT, file!.id)).rejects.toThrow();
+    expect((await projects.write(task, { projectId: file!.id, files: [{ path: 'styles.css', content: 'body{color:red}' }] })).status).toBe('error');
+    const result = await projects.write(task, { projectId: file!.id, kind: 'website', files: [{ path: 'styles.css', content: 'body{color:red}' }] });
+    expect(result.status).not.toBe('error');
+    expect(result.file!.id).toBe(file!.id);
+    expect((await store.getGeneratedFile(file!.id))!.incompleteFiles).toContain('index.html');
+    await expect(projects.publish(STUDENT, file!.id)).rejects.toThrow();
+    const complete = await projects.write(task, { projectId: file!.id, files: [{ path: 'index.html', content: STREAMED_PAGE }] });
+    expect(complete.status).not.toBe('error');
+    expect((await store.getGeneratedFile(file!.id))!.projectKindPending).toBeUndefined();
+    expect((await store.getGeneratedFile(file!.id))!.incompleteFiles).toBeUndefined();
+    expect(projectFromContent((await store.getGeneratedFile(file!.id))!.content).kind).toBe('website');
+    await projects.publish(STUDENT, file!.id);
+    await projects.checkpoint(task, 'write_project_files', JSON.stringify({ projectId: file!.id, kind: 'code', files: [{ path: 'styles.css', content: 'body{color:blue}' }] }), {});
+    expect(projectFromContent((await store.getGeneratedFile(file!.id))!.content).kind).toBe('website');
+  });
+
+  it('saves a website whose first streamed file is CSS, and accepts late metadata on the same draft', async () => {
+    const { store, projects } = setup(), state: ProjectStreamState = {}, task = job();
+    const file = await projects.checkpoint(task, 'create_project', '{"kind":"website","files":[{"path":"styles.css","content":"body{', state);
+    expect(file).not.toBeNull();
+    expect((await store.getGeneratedFile(file!.id))!.incompleteFiles).toContain('index.html');
+    const lateState: ProjectStreamState = {};
+    const raw = '{"files":[{"path":"index.html","content":' + JSON.stringify(STREAMED_PAGE) + '}],"kind":"website","title":"Late"}';
+    const early = await projects.checkpoint(task, 'create_project', raw.slice(0, raw.indexOf(',"kind"')), lateState);
+    const late = await projects.checkpoint(task, 'create_project', raw, lateState);
+    expect(late!.id).toBe(early!.id);
+    expect(projectFromContent((await store.getGeneratedFile(late!.id))!.content).kind).toBe('website');
+    expect((await store.getGeneratedFile(late!.id))!.projectKindPending).toBeUndefined();
+  });
+
   it('updates one project, blocks incomplete publication, then appends once and validates it', async () => {
     const { store, projects } = setup(), state: ProjectStreamState = {}, task = job();
     const first = await projects.checkpoint(task, 'create_project', raw(STREAMED_PREFIX).slice(0, -4), state);
@@ -90,6 +131,32 @@ afterAll(async () => { await mock.stop(); });
 afterEach(async () => { await Promise.all(schools.splice(0).map(school => school.close())); });
 
 describe('a provider stream cut off inside a file', () => {
+  it.each(['agent', 'claude-agent'])('%s resumes CSS received before metadata through the full API', async model => {
+    const school = aiSchool({ generationBudgetMs: 1500 }); schools.push(school);
+    const admin = await school.as(ADMIN_ID);
+    await configureMock(admin, mock, KEY, [model], model === 'claude-agent' ? 'anthropic' : 'openai');
+    await admin.call('POST', `/api/v1/admin/ai/tokens/students/${STUDENT}`, { op: 'add', amount: 600_000 });
+    const student = await school.as(STUDENT);
+    const first = await student.send('[late-metadata-fixture] Зроби сайт', { mode: 'agent' });
+    expect(first.done.status).toBe('interrupted');
+    expect(first.done.resume).toEqual({ round: 1, max: 3 });
+    const file = first.done.message.files[0];
+    expect(file.preview.incomplete).toBe(true);
+    expect(projectFromContent((await school.aiStore.getGeneratedFile(file.id))!.content).files).toEqual([{ path: 'styles.css', content: 'body{color:' }]);
+    const next = await student.send('', { conversationId: first.done.conversationId, continueJobId: first.done.jobId });
+    expect(next.done.status).toBe('complete');
+    expect(next.done.message.files).toHaveLength(1);
+    expect(next.done.message.files[0].id).toBe(file.id);
+    const record = await school.aiStore.getGeneratedFile(file.id);
+    expect(record!.projectKindPending).toBeUndefined();
+    expect(record!.incompleteFiles).toBeUndefined();
+    const projects = new StudentProjects(school.aiStore, () => new Date());
+    const published = await projects.publish(STUDENT, file.id);
+    const site = await student.app.inject({ method: 'GET', url: published.url });
+    expect(site.statusCode).toBe(200);
+    expect(site.body).toBe(STREAMED_PAGE);
+  }, 30000);
+
   it.each(['openai', 'anthropic'] as const)('%s exposes code before the tool call ends, even when the stream is aborted', async protocol => {
     const controller = new AbortController();
     let latest = '', completed = false;

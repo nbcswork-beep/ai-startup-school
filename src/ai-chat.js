@@ -298,7 +298,7 @@ function controls(message) {
 
 function messageMarkup(message, { streaming = false } = {}) {
   // The app's own request to continue after the time limit: a quiet note, not the student's words.
-  if (message.role === 'user' && message.auto) return `<p class="ai-auto-note" data-message="${escapeText(message.id ?? '')}">${icons.retry}<span>Автоматичне продовження: дописую решту</span></p>`;
+  if (message.role === 'user' && message.auto) return `<p class="ai-auto-note" data-message="${escapeText(message.id ?? '')}">${icons.retry}<span>Автоматичне продовження</span></p>`;
   if (message.role === 'user') {
     const files = message.attachments?.length ? `<div class="ai-file-chips">${message.attachments.map(attachmentChip).join('')}</div>` : '';
     return `<article class="ai-msg ai-msg--user" data-message="${escapeText(message.id ?? '')}">
@@ -311,7 +311,7 @@ function messageMarkup(message, { streaming = false } = {}) {
   const agent = message.mode === 'agent';
   let status = '';
   if (message.status === 'stopped') status = statusPill('Зупинено', 'muted');
-  else if (message.status === 'interrupted' && message.continued) status = statusPill('Частина · продовжено автоматично', 'running');
+  else if (message.status === 'interrupted' && message.continued) status = statusPill('Продовжено автоматично', 'running');
   else if (message.status === 'interrupted') status = statusPill('Помилка · відповідь перервалася', 'danger');
   else if (agent) status = statusPill('Готово', 'ok');
   const meta = [
@@ -712,7 +712,7 @@ function setCurrent(id) {
 function acknowledged(jobId) { return (readStorage(ACK_KEY) ?? '').split(',').includes(jobId); }
 function acknowledge(jobId) { writeStorage(ACK_KEY, [...(readStorage(ACK_KEY) ?? '').split(',').filter(Boolean).slice(-20), jobId].join(',')); }
 
-// A run cut off by the time limit after saving work goes on by itself. The app asks once per job and
+// A run cut off by the time limit goes on by itself, even before its first file. The app asks once per job and
 // tab; the server starts a continuation only once whatever asks, so another tab or a reopen is harmless.
 const RESUMED_KEY = 'aiss-ai-resumed';
 function resumed(jobId) { return (readStorage(RESUMED_KEY) ?? '').split(',').includes(jobId); }

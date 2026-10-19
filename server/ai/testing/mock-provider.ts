@@ -52,6 +52,13 @@ export function agentDecision(turns: Turn[], tools: string[]): Decision {
   const results = turns.filter(turn => turn.role === 'tool');
   const used = (name: string) => results.filter(turn => turn.toolName === name);
   const history = turns.filter(turn => turn.role === 'user' && !turn.toolName).map(turn => turn.text).join('\n');
+  if (history.includes('[late-metadata-fixture]') && tools.includes('create_project')) {
+    if (!user.includes('Автоматичне продовження')) return { partial: { name: 'create_project', raw: '{"files":[{"path":"styles.css","content":"body{color:' } };
+    const id = /projectId=([0-9a-f-]{36})/.exec(turns.map(turn => turn.text).join('\n'))?.[1];
+    if (id && !used('read_project').length) return { tool: { name: 'read_project', args: { projectId: id } } };
+    if (id && !used('write_project_files').length) return { tool: { name: 'write_project_files', args: { projectId: id, kind: 'website', files: [{ path: 'styles.css', content: 'body{color:red}' }, { path: 'index.html', content: STREAMED_PAGE }] } } };
+    return { text: 'Сайт дописано з чернетки стилів.' };
+  }
   if (history.includes('[streamed-site-fixture]') && tools.includes('create_project')) {
     if (!user.includes('Автоматичне продовження')) return { partial: { name: 'create_project', raw: JSON.stringify({ title: 'Збережений сайт', kind: 'website', files: [{ path: 'index.html', content: STREAMED_PREFIX }] }).slice(0, -4) } };
     const id = /projectId=([0-9a-f-]{36})/.exec(turns.map(turn => turn.text).join('\n'))?.[1];
@@ -62,7 +69,12 @@ export function agentDecision(turns: Turn[], tools: string[]): Decision {
   }
   if (history.includes('[parts-fixture]') && tools.includes('create_project')) return partsDecision(turns, user, tools, used);
   // [stall-fixture]: nothing saved before the time limit. [endless-fixture]: saves a little every run, never finishes.
-  if (user.includes('[stall-fixture]')) return { stall: 60_000 };
+  if (history.includes('[stall-fixture]')) return { stall: 60_000 };
+  if (history.includes('[retry-empty-fixture]') && tools.includes('create_project')) {
+    if (!user.includes('Автоматичне продовження')) return { stall: 60_000 };
+    if (!used('create_project').length) return { tool: { name: 'create_project', args: { title: 'Після повторної спроби', kind: 'website', files: [{ path: 'index.html', content: STREAMED_PAGE }] } } };
+    return { text: 'Сайт створено після повторної спроби.' };
+  }
   if (history.includes('[endless-fixture]') && tools.includes('create_project')) {
     const id = /projectId=([0-9a-f-]{36})/.exec(turns.map(turn => turn.text).join('\n'))?.[1];
     if (!id) return { tool: { name: 'create_project', args: { title: 'Безкінечний', kind: 'code', files: [{ path: 'notes-0.txt', content: 'start' }] } } };

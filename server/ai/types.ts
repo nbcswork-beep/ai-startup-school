@@ -189,6 +189,8 @@ export interface AiGeneratedFile {
   publishedAt?: string | undefined;
   /** Streamed source is a draft until an explicit complete file write validates it. */
   incompleteFiles?: string[] | undefined;
+  /** Code arrived before create_project.kind; require the model to choose it on resume. */
+  projectKindPending?: boolean | undefined;
 }
 
 export interface AiFileRef {
@@ -389,7 +391,7 @@ export interface AiJob {
   queuedUntil: number | null;
   /** 0 for a student's request; 1, 2, … for automatic continuations of it. */
   round?: number;
-  /** The run hit the time limit after saving work: the app continues it automatically as `round`. */
+  /** The run hit the time limit: the app continues it automatically as `round`. */
   resume?: { round: number; max: number } | null;
 }
 
