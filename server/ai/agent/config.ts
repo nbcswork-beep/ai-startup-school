@@ -169,6 +169,7 @@ export class AgentAdmin {
       enabled: existing ? existing.enabled : false,
       settings: Object.fromEntries(manifest.settings.map(setting => [setting.key, existing?.settings[setting.key] ?? setting.default ?? ''])),
       secrets: Object.fromEntries(Object.entries(existing?.secrets ?? {}).filter(([key]) => manifest.secrets.some(secret => secret.key === key))),
+      secretsNext: Object.fromEntries(Object.entries(existing?.secretsNext ?? {}).filter(([key]) => manifest.secrets.some(secret => secret.key === key))),
       installedAt: existing?.installedAt ?? this.iso(), updatedAt: this.iso()
     };
     await this.store.putPlugin(record);
@@ -194,15 +195,20 @@ export class AgentAdmin {
       settings[key] = value as string | number | boolean;
     }
     const secrets = { ...record.secrets };
+    const secretsNext = { ...record.secretsNext };
     for (const [key, value] of Object.entries(patch.secrets ?? {})) {
       if (!manifest.secrets.some(secret => secret.key === key)) throw new AppError('AI_PLUGIN_SETTING', 400, `Невідомий секрет «${key}».`);
-      if (value === null || value === '') delete secrets[key];
+      if (value === null || value === '') { delete secrets[key]; delete secretsNext[key]; }
       else if (value.length > 4000) throw new AppError('AI_PLUGIN_SETTING', 400, 'Секрет задовгий.');
-      else secrets[key] = this.secrets.seal(value);
+      else {
+        secrets[key] = this.secrets.seal(value);
+        const second = this.secrets.sealNext(secrets[key]!, value);
+        if (second) secretsNext[key] = second; else delete secretsNext[key];
+      }
     }
     const enabled = patch.enabled ?? record.enabled;
     if (enabled && manifest.secrets.length && manifest.secrets.some(secret => !secrets[secret.key])) throw new AppError('AI_PLUGIN_SECRET_MISSING', 409, 'Спершу задайте всі секрети плагіна.');
-    const next: AiPluginRecord = { ...record, enabled, settings, secrets, updatedAt: this.iso() };
+    const next: AiPluginRecord = { ...record, enabled, settings, secrets, secretsNext, updatedAt: this.iso() };
     await this.store.putPlugin(next);
     return next;
   }

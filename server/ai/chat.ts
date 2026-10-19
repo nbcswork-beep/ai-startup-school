@@ -59,6 +59,7 @@ const VERCEL_LEASE_MS = 330_000;
 /** A worker starts a stage only with this much time left, and keeps this much to save and charge. */
 const MIN_WORKER_STAGE_MS = 120_000;
 const WORKER_FINALIZE_MARGIN_MS = 60_000;
+const WORKER_FILE_LINK_TTL_MS = 5 * 60_000;
 const WORKER_UNAVAILABLE = { code: 'AI_WORKER_UNAVAILABLE', message: 'Сервер генерації не запустився. Спробуйте ще раз трохи пізніше.' };
 
 // Interface rules appended to the admin's system prompt: how files arrive and how files go back.
@@ -754,7 +755,7 @@ export class AiChatService {
 
     const userMessage: AiMessage = { ...(revision ? { revision } : {}), id: randomUUID(), role: 'user', content: spec.text, createdAt: now.toISOString(), ...(built.messageAttachments.length ? { attachments: built.messageAttachments } : {}), ...(resumeOf ? { auto: true } : {}) };
     // Only agent work is long enough to need a worker; plain chat keeps streaming from Vercel.
-    const runner: AiRunner = known?.runner ?? (mode === 'agent' ? this.runnerFor(studentId, settings) : 'vercel');
+    const runner: AiRunner = known?.runner ?? (mode === 'agent' ? await this.runnerFor(studentId, settings) : 'vercel');
     // viewerAt starts empty: the sending connection is watched directly, later the app's own requests count.
     const job: AiJob = {
       id: randomUUID(), studentId, conversationId: existing?.id ?? randomUUID(), requestId,
@@ -923,8 +924,10 @@ export class AiChatService {
   }
 
   /** Agent work goes to Cloud Run only where the school turned it on and a worker is configured. */
-  private runnerFor(studentId: string, settings: AiSettings): AiRunner {
-    if (!this.ai.deps.dispatcher) return 'vercel';
+  private async runnerFor(studentId: string, settings: AiSettings): Promise<AiRunner> {
+    if (!this.ai.deps.dispatcher || settings.runnerMode === 'vercel' || !settings.runnerMode) return 'vercel';
+    // A worker holds only the new key: until every secret has its copy under it, Vercel answers.
+    if (!await this.ai.secretsReadyForWorkers()) return 'vercel';
     if (settings.runnerMode === 'cloud-run-all') return 'cloud-run';
     if (settings.runnerMode === 'cloud-run-selected' && (settings.runnerStudentIds ?? []).includes(studentId)) return 'cloud-run';
     return 'vercel';
@@ -991,7 +994,7 @@ export class AiChatService {
         context: {
           ...base,
           settings: record.settings,
-          secret: (key: string) => { const sealed = record.secrets[key]; return sealed ? this.ai.deps.secrets.open(sealed) : null; }
+          secret: (key: string) => { const sealed = record.secrets[key]; return sealed ? this.ai.deps.secrets.openStored(sealed, record.secretsNext?.[key]) : null; }
         }
       }));
   }
@@ -1656,6 +1659,7 @@ export class AiChatService {
         return { jobId, status: 'stopped', round };
       }
       let run: RunPlan;
+      this.ai.deps.workerJobScope?.(jobId);
       try {
         run = await this.rebuild(job);
       } catch (error) {
@@ -1782,6 +1786,24 @@ export class AiChatService {
       model, finishReason: null, stopped: status === 'stopped', deadline: false, lost: false, latencyMs: Math.max(0, this.ai.now().getTime() - job.createdAt),
       unsent: true, notice
     };
+  }
+
+  /**
+   * A link to one attached file for the worker running this job. Only while a worker holds the
+   * job's lease, only for this student's files that belong to this request or this chat, and only
+   * for a few minutes: the worker never holds a storage credential.
+   */
+  async workerFileLink(jobId: string, pathname: string): Promise<{ url: string }> {
+    const job = await this.ai.store.getJob(jobId);
+    const now = this.ai.now().getTime();
+    if (!job || job.runner !== 'cloud-run' || job.status !== 'running' || !job.leaseOwner || (job.leaseUntil ?? 0) <= now) {
+      throw new AppError('AI_WORKER_FILE_FORBIDDEN', 404, 'Not found');
+    }
+    const wanted = new Set(job.spec?.attachmentIds ?? []);
+    const attachment = (await this.ai.store.listAttachments(job.studentId))
+      .find(item => item.pathname === pathname && item.status === 'ready' && (wanted.has(item.id) || item.usedIn === job.conversationId));
+    if (!attachment) throw new AppError('AI_WORKER_FILE_FORBIDDEN', 404, 'Not found');
+    return { url: await this.storage().createDownloadUrl(attachment.pathname, now + WORKER_FILE_LINK_TTL_MS) };
   }
 
   /** Vercel delivers the «answer ready» notice for a worker, which has neither the bot token nor the roster. */

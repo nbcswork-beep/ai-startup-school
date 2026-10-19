@@ -22,7 +22,8 @@ import { loadWorkerConfig, WorkerConfigError, type WorkerConfig } from './worker
 const STUDENT = DEV_IDS.user;
 const KEY = 'test-key-1234567890';
 const CALLBACK_SECRET = 'worker-callback-secret-for-tests-0123456789';
-const PEPPER = 'ai-agent-test-pepper';
+/** The new key: AI_SECRETS_KEY_NEXT on Vercel, AI_SECRETS_KEY in the worker. */
+const NEXT_KEY = Buffer.alloc(32, 41).toString('base64');
 const STAGE_MS = 1_500;
 
 let mock: MockProviderServer;
@@ -59,9 +60,9 @@ class FlakyRedis {
   }
 }
 
-async function ready(options: { balance?: number; runner?: 'cloud-run-selected' | 'cloud-run-all' | 'vercel' } = {}) {
+async function ready(options: { balance?: number; runner?: 'cloud-run-selected' | 'cloud-run-all' | 'vercel'; budgetMs?: number } = {}) {
   const dispatcher = new FakeDispatcher();
-  const school = aiSchool({ worker: { dispatcher, callbackSecret: CALLBACK_SECRET } }); schools.push(school);
+  const school = aiSchool({ worker: { dispatcher, callbackSecret: CALLBACK_SECRET }, secretsNext: NEXT_KEY, ...(options.budgetMs ? { generationBudgetMs: options.budgetMs } : {}) }); schools.push(school);
   const admin = await school.as(ADMIN_ID);
   const { ids } = await configureMock(admin, mock, KEY, ['agent']);
   expect((await admin.call('PUT', '/api/v1/admin/ai/settings', { runnerMode: options.runner ?? 'cloud-run-selected', runnerStudentIds: [STUDENT] })).statusCode).toBe(200);
@@ -72,20 +73,21 @@ async function ready(options: { balance?: number; runner?: 'cloud-run-selected' 
   const fetcher: typeof fetch = async (input, init) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url.startsWith('https://app.test/')) {
-      const reply = await student.app.inject({ method: (init?.method ?? 'GET') as 'POST', url: url.slice('https://app.test'.length), headers: Object.fromEntries(new Headers(init?.headers).entries()) });
+      const reply = await student.app.inject({ method: (init?.method ?? 'GET') as 'POST', url: url.slice('https://app.test'.length), headers: Object.fromEntries(new Headers(init?.headers).entries()), ...(init?.body ? { payload: String(init.body) } : {}) });
       relayed.push(`${reply.statusCode} ${url}`);
-      return new Response(reply.statusCode === 204 ? null : reply.body, { status: reply.statusCode });
+      return new Response(reply.statusCode === 204 ? null : reply.rawPayload, { status: reply.statusCode, headers: { 'content-type': String(reply.headers['content-type'] ?? 'application/octet-stream') } });
     }
     return fetch(input, init);
   };
   const config = (overrides: Partial<WorkerConfig> = {}): WorkerConfig => ({
     jobId: randomUUID(), workerId: `test:${randomUUID().slice(0, 8)}`, environment: 'preview', redis: { url: 'https://redis.test', token: 'unused' },
-    aiRedisPrefix: 'aiss:test:ai:v1', secrets: { SESSION_TOKEN_PEPPER: PEPPER }, blobReadable: false,
+    aiRedisPrefix: 'aiss:test:ai:v1', secrets: { AI_SECRETS_KEY: NEXT_KEY }, selfCheck: false,
     callback: { url: 'https://app.test', secret: CALLBACK_SECRET }, stageBudgetMs: STAGE_MS, maxRuntimeMs: 10 * 60_000, leaseMs: 1_500,
     maxAttempts: 2, requestTimeoutMs: 60_000, idleTimeoutMs: 30_000, handoff: null, ...overrides
   });
+  // The worker reads attached files only through short links from the app, like in production.
   const worker = (overrides: Partial<WorkerConfig> = {}, deps: WorkerDeps = {}) => createWorkerChat(config(overrides), {
-    store: school.aiStore, fileStorage: school.fileStorage, fetcher, dispatcher, allowLocalProviderUrls: true, log: () => undefined, ...deps
+    store: school.aiStore, fetcher, dispatcher, allowLocalProviderUrls: true, log: () => undefined, ...deps
   });
   const events: Array<{ event: string; fields?: Record<string, unknown> }> = [];
   const run = (chat: AiChatService, jobId: string, extra: Partial<WorkerOptions> = {}) => chat.runWorkerJob(jobId, {
@@ -433,6 +435,119 @@ describe('Cloud Run worker: failures and recovery', () => {
   }, 30_000);
 });
 
+describe('Cloud Run worker: an unclear answer from Google', () => {
+  it('Google started the job but the answer was lost: Vercel answers, the late worker leaves; one charge, one set of provider calls', async () => {
+    const t = await ready({ budgetMs: 1_500 });
+    // The run request reached Google (an execution will start), then the connection broke.
+    t.dispatcher.dispatch = async (jobId: string) => { t.dispatcher.jobs.push(jobId); throw new Error('socket hang up'); };
+    const before = mock.chatRequests().length;
+    const sent = await t.student.send('[parts-fixture] Зроби сайт-візитку', { mode: 'agent' });
+    expect(sent.done).toBeTruthy();
+    const jobId = sent.events.find(item => item.event === 'start')!.data.jobId as string;
+    const vercelCalls = mock.chatRequests().length - before;
+    // The execution Google did start finds the job answered and leaves without a model call.
+    const late = await t.run(t.worker(), jobId);
+    expect(late.stages[0]).toMatchObject({ status: 'skipped', reason: 'finished' });
+    expect(mock.chatRequests().length - before).toBe(vercelCalls);
+    const job = await t.school.aiStore.getJob(jobId);
+    expect(job!.runner).toBe('vercel');
+    expect((await t.ledger()).filter(entry => entry.type === 'charge' && (entry as any).requestId === job!.requestId)).toHaveLength(1);
+    expect(job!.files.filter(file => file.preview.kind === 'project')).toHaveLength(1);
+  }, 30_000);
+
+  it('the worker took the job before Vercel gave up on Google: Vercel hands over and generates nothing', async () => {
+    const t = await ready({ budgetMs: 1_500 });
+    let work: Promise<unknown> | null = null;
+    t.dispatcher.dispatch = async (jobId: string) => {
+      t.dispatcher.jobs.push(jobId);
+      work = t.run(t.worker(), jobId);
+      await waitFor(async () => (await t.school.aiStore.getJob(jobId))?.attempts);
+      throw new Error('deadline exceeded');
+    };
+    const sent = await t.student.send('[parts-fixture] Зроби сайт-візитку', { mode: 'agent' });
+    expect(sent.events.some(item => item.event === 'attach')).toBe(true);
+    expect(sent.done).toBeUndefined();
+    await work;
+    const jobId = sent.events.find(item => item.event === 'start')!.data.jobId as string;
+    const first = await t.school.aiStore.getJob(jobId);
+    expect(first!.runner).toBe('cloud-run');
+    const charges = (await t.ledger()).filter(entry => entry.type === 'charge' && (entry as any).requestId === first!.requestId);
+    expect(charges).toHaveLength(1);
+  }, 30_000);
+
+  it('a second execution started by recovery while the first is still alive does not run the job twice', async () => {
+    const t = await ready();
+    const sent = await t.ask('[parts-fixture] Зроби сайт-візитку');
+    const before = mock.chatRequests().length;
+    const [a, b] = await Promise.all([t.run(t.worker(), sent.jobId), t.run(t.worker(), sent.jobId)]);
+    const statuses = [a.stages[0]!.status, b.stages[0]!.status].sort();
+    expect(statuses).toEqual(['finished', 'skipped']);
+    const concurrent = mock.chatRequests().length - before;
+    // Provider calls of exactly one chain of stages (the other execution made none).
+    const single = await (async () => {
+      const again = await ready();
+      const one = await again.ask('[parts-fixture] Зроби сайт-візитку');
+      const start = mock.chatRequests().length;
+      await again.run(again.worker(), one.jobId);
+      return mock.chatRequests().length - start;
+    })();
+    expect(concurrent).toBe(single);
+  }, 60_000);
+});
+
+describe('Cloud Run worker: files and self-check', () => {
+  it('reads an attached photo through a short link from Vercel, without any storage token', async () => {
+    const t = await ready();
+    await t.admin.call('PATCH', `/api/v1/admin/ai/models/${t.ids.agent}`, { vision: true });
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    const uploaded = await t.student.attach('дошка.png', png);
+    const sent = await t.ask('Що на фото?', { attachmentIds: [uploaded.completed!.json().id] });
+    const before = mock.chatRequests().length;
+    await t.run(t.worker(), sent.jobId);
+    const job = await t.school.aiStore.getJob(sent.jobId);
+    expect(job!.status).toBe('complete');
+    expect(t.relayed.some(line => line.startsWith('200 ') && line.includes('/file-link'))).toBe(true);
+    const request = mock.chatRequests().slice(before)[0]!;
+    const image = request.body.messages.flatMap((message: any) => Array.isArray(message.content) ? message.content : []).find((part: any) => part.type === 'image_url');
+    expect(image.image_url.url).toBe(`data:image/png;base64,${png.toString('base64')}`);
+  }, 30_000);
+
+  it('gives file links only to the worker running that job, only for that job\'s files', async () => {
+    const t = await ready();
+    await t.admin.call('PATCH', `/api/v1/admin/ai/models/${t.ids.agent}`, { vision: true });
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    const mine = await t.student.attach('моє.png', png);
+    const other = await t.student.attach('інше.png', png);
+    const sent = await t.ask('Що на фото?', { attachmentIds: [mine.completed!.json().id] });
+    const pathname = (await t.school.aiStore.getAttachment(STUDENT, mine.completed!.json().id))!.pathname;
+    const otherPath = (await t.school.aiStore.getAttachment(STUDENT, other.completed!.json().id))!.pathname;
+    const ask = (jobId: string, path: string, secret = CALLBACK_SECRET) => t.student.app.inject({ method: 'POST', url: `/api/v1/internal/ai/jobs/${jobId}/file-link`, headers: { authorization: `Bearer ${secret}` }, payload: { pathname: path } });
+    // No worker holds the job yet.
+    expect((await ask(sent.jobId, pathname)).statusCode).toBe(404);
+    await t.school.aiStore.claimJobLease(sent.jobId, 'w-test', Date.now(), Date.now() + 60_000, 2);
+    expect((await ask(sent.jobId, pathname)).statusCode).toBe(200);
+    expect((await ask(sent.jobId, otherPath)).statusCode).toBe(404);
+    expect((await ask(sent.jobId, pathname, 'x'.repeat(CALLBACK_SECRET.length))).statusCode).toBe(401);
+    expect((await ask(randomUUID(), pathname)).statusCode).toBe(404);
+  }, 30_000);
+
+  it('self-check proves storage, keys and the way back to Vercel, printing no values', async () => {
+    const t = await ready();
+    const lines: string[] = [];
+    const env = { AI_WORKER_SELF_CHECK: '1', AI_WORKER_ENVIRONMENT: 'preview', UPSTASH_REDIS_REST_URL: 'https://r.test', UPSTASH_REDIS_REST_TOKEN: 'redis-token-not-for-logs', SESSION_REDIS_PREFIX: 'aiss:test', AI_SECRETS_KEY: NEXT_KEY, AI_WORKER_CALLBACK_URL: 'https://app.test', AI_WORKER_CALLBACK_SECRET: CALLBACK_SECRET };
+    const log = (_severity: string, event: string, fields?: Record<string, unknown>) => { lines.push(JSON.stringify({ event, ...fields })); };
+    const passed = await runWorker(env, { store: t.school.aiStore, fetcher: t.fetcher, log });
+    expect(passed.exitCode).toBe(0);
+    const done = JSON.parse(lines.find(line => line.includes('selfcheck.done'))!);
+    expect(done.steps.map((step: any) => [step.step, step.ok])).toEqual([['redis', true], ['provider-secrets', true], ['vercel-callback', true]]);
+    // A worker given a different key fails the key step and says what to do.
+    const wrong = await runWorker({ ...env, AI_SECRETS_KEY: Buffer.alloc(32, 9).toString('base64') }, { store: t.school.aiStore, fetcher: t.fetcher, log });
+    expect(wrong.exitCode).toBe(1);
+    const all = lines.join('\n');
+    for (const secret of ['redis-token-not-for-logs', CALLBACK_SECRET, NEXT_KEY, KEY]) expect(all).not.toContain(secret);
+  }, 30_000);
+});
+
 describe('Cloud Run worker: boundaries', () => {
   it('the notice relay needs the shared secret and takes only a job id', async () => {
     const t = await ready();
@@ -448,12 +563,16 @@ describe('Cloud Run worker: boundaries', () => {
 
   it('the worker refuses incomplete or unsafe configuration and names fields, never values', async () => {
     const secret = 'super-secret-token-value-should-not-appear';
-    const base = { AI_JOB_ID: randomUUID(), AI_WORKER_ENVIRONMENT: 'production', UPSTASH_REDIS_REST_URL: 'https://r.test', UPSTASH_REDIS_REST_TOKEN: secret, SESSION_TOKEN_PEPPER: secret };
+    const base = { AI_JOB_ID: randomUUID(), AI_WORKER_ENVIRONMENT: 'production', UPSTASH_REDIS_REST_URL: 'https://r.test', UPSTASH_REDIS_REST_TOKEN: secret, AI_SECRETS_KEY: NEXT_KEY };
     expect(() => loadWorkerConfig({ ...base, SESSION_REDIS_PREFIX: 'aiss:production:sessions:v1' })).not.toThrow();
     for (const env of [
       { ...base },
       { ...base, SESSION_REDIS_PREFIX: 'aiss:production:sessions:v1', AI_JOB_ID: 'x; rm -rf /' },
-      { ...base, SESSION_REDIS_PREFIX: 'aiss:production:sessions:v1', AI_WORKER_CALLBACK_URL: 'http://evil.test', AI_WORKER_CALLBACK_SECRET: 'short' }
+      { ...base, SESSION_REDIS_PREFIX: 'aiss:production:sessions:v1', AI_WORKER_CALLBACK_URL: 'http://evil.test', AI_WORKER_CALLBACK_SECRET: 'short' },
+      // The session pepper and the store-wide Blob token never go to Google.
+      { ...base, SESSION_REDIS_PREFIX: 'aiss:production:sessions:v1', SESSION_TOKEN_PEPPER: secret },
+      { ...base, SESSION_REDIS_PREFIX: 'aiss:production:sessions:v1', BLOB_READ_WRITE_TOKEN: `vercel_blob_rw_${secret}` },
+      { ...base, SESSION_REDIS_PREFIX: 'aiss:production:sessions:v1', AI_SECRETS_KEY: '' }
     ]) {
       let error: unknown;
       try { loadWorkerConfig(env); } catch (caught) { error = caught; }

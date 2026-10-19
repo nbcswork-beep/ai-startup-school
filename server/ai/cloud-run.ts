@@ -51,6 +51,35 @@ export class CloudRunJobDispatcher implements AiWorkerDispatcher {
 
   get maxConcurrent(): number { return this.config.maxConcurrent; }
 
+  /**
+   * Proves the real path to Google without starting anything: a token from Vercel OIDC through
+   * STS and IAM, then a read of the job. Each step says pass or fail with Google's error text
+   * (tokens removed). Claims of the OIDC token are shown (they name the team, project and
+   * environment; they are not secret), the token itself never.
+   */
+  async diagnose(): Promise<Array<{ step: string; ok: boolean; detail: string }>> {
+    const steps: Array<{ step: string; ok: boolean; detail: string }> = [];
+    const tokens = this.config.tokens;
+    if (tokens instanceof WorkloadIdentityTokenSource) {
+      const claims = await tokens.subjectClaims();
+      steps.push(claims ? { step: 'vercel-oidc', ok: true, detail: JSON.stringify(claims) } : { step: 'vercel-oidc', ok: false, detail: 'No OIDC token in this function: turn on OIDC Federation for the project (Team issuer) and redeploy' });
+      if (!claims) return steps;
+    }
+    let token: string;
+    try { token = await tokens.token(); steps.push({ step: 'google-token', ok: true, detail: 'STS exchange and service-account impersonation succeeded' }); }
+    catch (error) { steps.push({ step: 'google-token', ok: false, detail: error instanceof Error ? error.message : 'failed' }); return steps; }
+    const { project, region, job } = this.config;
+    const response = await this.fetcher(`https://run.googleapis.com/v2/projects/${encodeURIComponent(project)}/locations/${encodeURIComponent(region)}/jobs/${encodeURIComponent(job)}`, {
+      headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000), redirect: 'error'
+    }).catch(error => error as Error);
+    if (response instanceof Error) steps.push({ step: 'cloud-run-job', ok: false, detail: response.message });
+    else if (response.ok) {
+      const body = await response.json().catch(() => ({})) as { name?: unknown; template?: { template?: { containers?: Array<{ image?: unknown }> } } };
+      steps.push({ step: 'cloud-run-job', ok: true, detail: `${String(body.name ?? job)} · image ${String(body.template?.template?.containers?.[0]?.image ?? '?')}` });
+    } else steps.push({ step: 'cloud-run-job', ok: false, detail: await googleError(response) });
+    return steps;
+  }
+
   async dispatch(jobId: string): Promise<void> {
     // The id is the only thing a worker is told; anything else is refused before Google sees it.
     if (!UUID.test(jobId)) throw new CloudRunDispatchError(null, 'Invalid job id');
@@ -85,6 +114,16 @@ export class WorkloadIdentityTokenSource implements GoogleTokenSource {
     fetch?: typeof fetch;
   }) {
     this.fetcher = config.fetch ?? fetch;
+  }
+
+  /** The claims of Vercel's OIDC token (iss, aud, sub, exp), for diagnostics. Null when there is none. */
+  async subjectClaims(): Promise<Record<string, unknown> | null> {
+    const subject = await this.config.subjectToken();
+    if (!subject) return null;
+    try {
+      const payload = JSON.parse(Buffer.from(subject.split('.')[1] ?? '', 'base64url').toString('utf8')) as Record<string, unknown>;
+      return { iss: payload.iss, aud: payload.aud, sub: payload.sub, exp: typeof payload.exp === 'number' ? new Date(payload.exp * 1000).toISOString() : null };
+    } catch { return { error: 'not a JWT' }; }
   }
 
   async token(): Promise<string> {

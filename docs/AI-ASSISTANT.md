@@ -224,6 +224,7 @@ Context sizes matter for archives: the default model context is 16 000 tokens. F
 |---|---|---|
 | `UPSTASH_REDIS_REST_URL` / `_TOKEN` | already set | storage |
 | `AI_SECRETS_KEY` | recommended | 32 random bytes, base64 — encrypts provider keys. Without it the key is derived from `SESSION_TOKEN_PEPPER`; rotating either one means re-entering provider keys. Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` |
+| `AI_SECRETS_KEY_NEXT` | for Cloud Run workers | the key secrets get a second copy under (Admin OS → «Підготувати ключі для Cloud Run»); older deployments ignore it. See CLOUD-RUN-WORKER.md |
 | `AI_REDIS_PREFIX` | optional | separate namespace; must keep the Production/Preview markers |
 
 No provider keys go into environment variables: they are entered in Admin OS and stored encrypted.

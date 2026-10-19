@@ -5,8 +5,8 @@ import { RedisAiStore, UpstashRestClient, type AiStore } from '../ai/store.js';
 import { AiProviderError, safeProviderMessage, type ProviderAdapter, type ProviderConnection } from '../ai/adapters.js';
 import { CloudRunJobDispatcher, MetadataTokenSource } from '../ai/cloud-run.js';
 import { AppError } from '../errors/app-error.js';
-import { VercelBlobFileStorage, type FileStorage } from '../storage/file-storage.js';
-import { ReadOnlyFileStorage } from '../storage/read-only-storage.js';
+import type { FileStorage } from '../storage/file-storage.js';
+import { RelayFileStorage } from './relay-storage.js';
 import { loadWorkerConfig, WorkerConfigError, type WorkerConfig } from './config.js';
 
 /**
@@ -47,7 +47,9 @@ export function createWorkerChat(config: WorkerConfig, deps: WorkerDeps = {}): A
   const log = deps.log ?? jsonLog;
   const fetcher = deps.fetcher ?? fetch;
   const store = deps.store ?? new RedisAiStore(new UpstashRestClient(config.redis.url, config.redis.token), config.aiRedisPrefix);
-  const fileStorage = deps.fileStorage !== undefined ? deps.fileStorage : config.blobReadable ? new ReadOnlyFileStorage(new VercelBlobFileStorage()) : null;
+  // Files come through short links from Vercel; the worker holds no storage credential.
+  const relay = config.callback ? new RelayFileStorage({ url: config.callback.url, secret: config.callback.secret, fetch: fetcher }) : null;
+  const fileStorage = deps.fileStorage !== undefined ? deps.fileStorage : relay;
   const dispatcher = deps.dispatcher !== undefined ? deps.dispatcher : config.handoff
     ? new CloudRunJobDispatcher({ ...config.handoff, tokens: new MetadataTokenSource(fetcher), fetch: fetcher })
     : null;
@@ -59,6 +61,7 @@ export function createWorkerChat(config: WorkerConfig, deps: WorkerDeps = {}): A
     roster: async () => { throw new Error('The AI worker has no access to the school roster'); },
     fileStorage,
     notifier: null,
+    workerJobScope: jobId => relay?.scope(jobId),
     noticeRelay: callback ? async jobId => {
       const response = await fetcher(`${callback.url}/api/v1/internal/ai/jobs/${jobId}/notice`, {
         method: 'POST', headers: { authorization: `Bearer ${callback.secret}` }, signal: AbortSignal.timeout(10_000), redirect: 'error'
@@ -85,6 +88,7 @@ export async function runWorker(env: NodeJS.ProcessEnv = process.env, deps: Work
     log('ERROR', 'worker.config_invalid', describeError(error));
     return { exitCode: 2, report: null };
   }
+  if (config.selfCheck) return selfCheck(config, deps, log);
   const startedAt = Date.now();
   // Cloud Run sends SIGTERM before it stops an execution: save and hand on instead of being cut off.
   const shutdown = new AbortController();
@@ -111,4 +115,47 @@ export async function runWorker(env: NodeJS.ProcessEnv = process.env, deps: Work
   } finally {
     process.removeListener('SIGTERM', onTerm);
   }
+}
+
+/**
+ * AI_WORKER_SELF_CHECK=1: run once by hand in Cloud Run (Execute with this variable) to prove the
+ * setup before any student job: Redis is reachable in the right namespace, every provider secret
+ * opens with this worker's key, Google gives this job a token, and Vercel answers the worker secret.
+ * Prints only pass/fail per step and counts — no values. Exit 0 when everything passed.
+ */
+async function selfCheck(config: WorkerConfig, deps: WorkerDeps, log: WorkerLog): Promise<{ exitCode: number; report: null }> {
+  const fetcher = deps.fetcher ?? fetch;
+  const store = deps.store ?? new RedisAiStore(new UpstashRestClient(config.redis.url, config.redis.token), config.aiRedisPrefix);
+  const box = SecretBox.fromEnv({ ...config.secrets, NODE_ENV: 'production' });
+  const steps: Array<{ step: string; ok: boolean; detail?: string }> = [];
+  const step = async (name: string, run: () => Promise<string | undefined>) => {
+    try { steps.push({ step: name, ok: true, ...(await run().then(detail => detail ? { detail } : {})) }); }
+    catch (error) { steps.push({ step: name, ok: false, detail: String(describeError(error).error ?? 'failed') }); }
+  };
+  log('INFO', 'selfcheck.start', { worker: config.workerId, environment: config.environment, keyId: box.keyIds.main });
+  await step('redis', async () => `${(await store.listProviders()).length} providers`);
+  await step('provider-secrets', async () => {
+    const [providers, plugins] = await Promise.all([store.listProviders(), store.listPlugins()]);
+    let opened = 0, failed = 0;
+    const tryOpen = (main: Parameters<SecretBox['openStored']>[0], second: Parameters<SecretBox['openStored']>[1]) => { try { box.openStored(main, second); opened += 1; } catch { failed += 1; } };
+    for (const provider of providers) {
+      for (const key of provider.keys) tryOpen(key.secret, key.secretNext);
+      for (const header of provider.headers) tryOpen(header.secret, header.secretNext);
+    }
+    for (const plugin of plugins) for (const [name, sealed] of Object.entries(plugin.secrets)) tryOpen(sealed, plugin.secretsNext?.[name]);
+    if (failed) throw new Error(`${failed} of ${opened + failed} secrets do not open with this key — run «Підготувати ключі» in Admin OS`);
+    return `${opened} secrets open`;
+  });
+  if (config.handoff) await step('google-token', async () => { await new MetadataTokenSource(fetcher).token(); return 'metadata server token issued'; });
+  if (config.callback) {
+    const callback = config.callback;
+    await step('vercel-callback', async () => {
+      const response = await fetcher(`${callback.url}/api/v1/internal/ai/ping`, { method: 'POST', headers: { authorization: `Bearer ${callback.secret}` }, signal: AbortSignal.timeout(10_000), redirect: 'error' });
+      if (response.status !== 204) throw new Error(`HTTP ${response.status}`);
+      return 'worker secret accepted';
+    });
+  }
+  const ok = steps.every(item => item.ok);
+  log(ok ? 'INFO' : 'ERROR', 'selfcheck.done', { ok, steps });
+  return { exitCode: ok ? 0 : 1, report: null };
 }

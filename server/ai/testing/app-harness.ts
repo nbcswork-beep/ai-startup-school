@@ -29,15 +29,16 @@ export function parseSse(body: string): SseEvent[] {
   });
 }
 
-export function aiSchool(options: { fetcher?: typeof fetch; generationBudgetMs?: number; worker?: { dispatcher: AiWorkerDispatcher | null; callbackSecret?: string } } = {}) {
+export function aiSchool(options: { fetcher?: typeof fetch; generationBudgetMs?: number; worker?: { dispatcher: AiWorkerDispatcher | null; callbackSecret?: string }; secretsNext?: string } = {}) {
   const runtime = new MemoryPilotRuntimeStore(createAssignedPilotState());
   const redis = new RedisEmulator();
   const aiStore = new RedisAiStore(redis, 'aiss:test:ai:v1');
   // One file store for every app instance (and for a worker in tests), like one Blob store in production.
   const fileStorage = new LocalDevFileStorage();
   const apps: FastifyInstance[] = [];
-  const as = async (userId: string) => {
-    const env = loadEnv({ NODE_ENV: 'test', DATA_BACKEND: 'memory', DEV_AUTH_ENABLED: 'true', DEV_EPHEMERAL_JWT: 'true', SESSION_TOKEN_PEPPER: 'ai-agent-test-pepper', DEV_USER_ID: userId });
+  /** One signed-in app instance. `extraEnv` stands for another deployment of the same school (other keys). */
+  const as = async (userId: string, extraEnv: Record<string, string> = {}) => {
+    const env = loadEnv({ NODE_ENV: 'test', DATA_BACKEND: 'memory', DEV_AUTH_ENABLED: 'true', DEV_EPHEMERAL_JWT: 'true', SESSION_TOKEN_PEPPER: 'ai-agent-test-pepper', DEV_USER_ID: userId, ...(options.secretsNext ? { AI_SECRETS_KEY_NEXT: options.secretsNext } : {}), ...extraEnv });
     const app = await buildApp({ env, repository: new MemoryRepository(undefined, { runtimeStore: runtime }), jwt: await createJwtService(env), aiStore, aiNotifier: null, fileStorage, ...(options.worker ? { aiWorker: { dispatcher: options.worker.dispatcher, problem: null, callbackSecret: options.worker.callbackSecret ?? null } } : {}), ...(options.fetcher ? { aiFetcher: options.fetcher } : {}), ...(options.generationBudgetMs ? { aiGenerationBudgetMs: options.generationBudgetMs } : {}) });
     apps.push(app);
     const login = await app.inject({ method: 'POST', url: '/api/v1/auth/development' });

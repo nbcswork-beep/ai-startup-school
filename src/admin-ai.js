@@ -168,9 +168,15 @@ export function createAiAdmin(ctx) {
     const status = worker.configured
       ? '<p class="muted-copy">Сервер генерації підключено. Звичайний чат завжди лишається на Vercel; на Cloud Run йде лише режим агента. Якщо Google недоступний, відповідь генерується на Vercel.</p>'
       : `<p class="muted-copy">Сервер генерації Google Cloud ще не підключено${worker.problem ? ` (${esc(worker.problem)})` : ''}. Усі відповіді генеруються на Vercel.</p>`;
+    const secrets = worker.secrets;
+    const keys = secrets ? (secrets.nextConfigured
+      ? `<p class="muted-copy">Ключі для Cloud Run (AI_SECRETS_KEY_NEXT, відбиток ${esc(secrets.keys.next ?? '—')}): готово ${num(secrets.ready)} з ${num(secrets.total)}${secrets.unreadable ? `, не розшифровується ${num(secrets.unreadable)}` : ''}. ${secrets.readyForWorkers ? 'Сервер генерації може отримувати завдання.' : 'Поки не все готово, усі відповіді генеруються на Vercel.'}</p>${secrets.pending.length ? `<p class="muted-copy">Ще без копії: ${secrets.pending.map(esc).join('; ')}</p>` : ''}
+         <div class="ai-form-actions"><button class="secondary" data-ai-action="secrets-prepare">Підготувати ключі для Cloud Run</button><button class="secondary" data-ai-action="worker-check" ${worker.configured ? '' : 'disabled'}>Перевірити підключення до Google</button></div>`
+      : '<p class="muted-copy">Новий ключ AI_SECRETS_KEY_NEXT у Vercel не задано: ключі провайдерів поки тільки під старим ключем.</p><div class="ai-form-actions"><button class="secondary" data-ai-action="secrets-new-key">Створити новий ключ</button></div>') : '';
     return `<section class="panel ai-section">
       <div class="panel-head"><div><span class="kicker">Генерація</span><h2>Де працює режим агента</h2></div></div>
       ${status}
+      ${keys}
       <form id="ai-runner" class="ai-settings">
         <label class="field ai-wide"><span>Режим</span><select name="runnerMode" ${worker.configured ? '' : 'disabled'}>${options.map(([value, label]) => `<option value="${value}" ${value === mode ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>
         ${worker.configured && worker.students.length ? `<fieldset class="field ai-wide"><legend>Учні для перевірки на Cloud Run</legend>${worker.students.map(student => `<label class="check"><input type="checkbox" name="runnerStudentIds" value="${esc(student.id)}" ${chosen.has(student.id) ? 'checked' : ''}><span>${esc(student.name)}${student.groupName ? ` · ${esc(student.groupName)}` : ''}</span></label>`).join('')}</fieldset>` : ''}
@@ -801,6 +807,25 @@ export function createAiAdmin(ctx) {
           await api.aiDeleteModel(data.id);
           return { message: 'Модель видалено' };
         }, true, 'Видалити');
+      case 'secrets-new-key': {
+        // Made here, in the browser: the server never sees it. Shown once; copy it into Vercel and Google.
+        const bytes = crypto.getRandomValues(new Uint8Array(32));
+        const key = btoa(String.fromCharCode(...bytes));
+        showInfo('Новий ключ шифрування', `<p>Скопіюйте цей ключ у два місця і більше ніде його не зберігайте:</p><ol><li>Vercel → Settings → Environment Variables → <b>AI_SECRETS_KEY_NEXT</b> (Sensitive).</li><li>Google Cloud → Secret Manager → секрет <b>ai-secrets-key</b>.</li></ol><p><code style="user-select:all;word-break:break-all">${esc(key)}</code></p><p class="muted-copy">Ключ створено у вашому браузері; сервер його не отримував. Після закриття вікна він не показується знову.</p>`);
+        return;
+      }
+      case 'secrets-prepare': {
+        const result = await run(button, () => api.aiPrepareSecrets());
+        if (result) {
+          showInfo('Ключі для Cloud Run', `<p>Оновлено записів: ${num(result.updated)}${result.skipped ? `, пропущено через одночасні зміни: ${num(result.skipped)} (натисніть ще раз)` : ''}.</p><p>Готово ${num(result.ready)} з ${num(result.total)}${result.unreadable ? `; не розшифровується: ${num(result.unreadable)}` : ''}.</p><p class="muted-copy">Старі копії ключів не змінювалися: попередні деплої працюють як раніше.</p>`);
+        }
+        return;
+      }
+      case 'worker-check': {
+        const result = await run(button, () => api.aiWorkerCheck());
+        if (result) showInfo('Підключення до Google Cloud', `<ul>${result.steps.map(step => `<li>${step.ok ? '✓' : '✗'} <b>${esc(step.step)}</b> — ${esc(step.detail)}</li>`).join('')}</ul><p class="muted-copy">Перевірка нічого не запускає в Google Cloud.</p>`);
+        return;
+      }
       case 'model-probe': {
         const result = await run(button, () => api.aiProbeModel(data.id));
         if (result) showInfo('Можливості моделі', `<p>${esc(result.note)}</p><p class="muted-copy">Виконано два пробні запити. Баланси учнів не змінюються.</p>`);

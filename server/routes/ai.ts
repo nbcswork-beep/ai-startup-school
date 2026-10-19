@@ -130,7 +130,7 @@ export function registerAiRoutes(app: FastifyInstance, deps: { repository: AppRe
     // Where agent answers run: shown with the students it can be turned on for, one by one.
     const worker = deps.worker ?? { configured: false, problem: null };
     const students = worker.configured ? (await ai.roster()).students.map(student => ({ id: student.id, name: student.name, groupName: student.groupName })) : [];
-    return { providers, models, settings, secretsAvailable: ai.deps.secrets.available, worker: { ...worker, students } };
+    return { providers, models, settings, secretsAvailable: ai.deps.secrets.available, worker: { ...worker, students, secrets: await ai.secretsStatus() } };
   });
   app.post(`${A}/providers`, admin(30), async (request, reply) => reply.status(201).send(await ai.createProvider(providerCreate.parse(request.body))));
   app.patch(`${A}/providers/:id`, admin(30), async request => ai.updateProvider(z.object({ id: uuid }).parse(request.params).id, providerPatch.parse(request.body)));
@@ -154,6 +154,15 @@ export function registerAiRoutes(app: FastifyInstance, deps: { repository: AppRe
   });
   app.delete(`${A}/models/:id`, admin(30), async (request, reply) => { await ai.deleteModel(z.object({ id: uuid }).parse(request.params).id); return reply.status(204).send(); });
   app.post(`${A}/models/:id/test`, admin(15), async request => ai.testModel(z.object({ id: uuid }).parse(request.params).id, z.object({ prompt: z.string().trim().max(2000).optional() }).parse(request.body ?? {}).prompt));
+  // Copies of every stored secret under AI_SECRETS_KEY_NEXT (for Cloud Run workers). Safe to repeat.
+  app.get(`${A}/secrets/status`, admin(), async () => ai.secretsStatus());
+  app.post(`${A}/secrets/prepare-next`, admin(5), async () => ai.prepareSecretsForNextKey());
+  // A real check of Vercel OIDC → Google STS → IAM → the Cloud Run job. It starts nothing.
+  app.post(`${A}/worker/check`, admin(5), async () => {
+    const dispatcher = ai.deps.dispatcher;
+    if (!dispatcher?.diagnose) throw new AppError('AI_WORKER_NOT_CONFIGURED', 409, 'Сервер генерації не налаштовано: задайте змінні AI_WORKER_* у Vercel.');
+    return { steps: await dispatcher.diagnose(), secrets: await ai.secretsStatus() };
+  });
   app.post(`${A}/models/:id/probe`, admin(10), async request => ai.probeModel(z.object({ id: uuid }).parse(request.params).id));
   // ---- Admin: the agent — profile, skills (SKILL.md), plugins
   const agentAdmin = new AgentAdmin(ai.store, ai.deps.secrets, () => ai.now());

@@ -76,6 +76,8 @@ Object.assign(adminApi,{
   aiDeleteModel:id=>request(`/admin/ai/models/${id}`,{method:'DELETE'}),
   aiFeedback: ()=>request('/admin/ai/feedback'),
   aiProbeModel: id=>request(`/admin/ai/models/${id}/probe`,json('POST',{})),
+  aiPrepareSecrets: ()=>request('/admin/ai/secrets/prepare-next',json('POST',{})),
+  aiWorkerCheck: ()=>request('/admin/ai/worker/check',json('POST',{})),
   aiTestModel:(id,prompt)=>request(`/admin/ai/models/${id}/test`,json('POST',prompt?{prompt}:{})),
   aiSettings:input=>request('/admin/ai/settings',json('PUT',input)),
   aiSetAccess:(scope,id,input)=>request(`/admin/ai/access/${scope}/${id}`,json('PUT',input)),

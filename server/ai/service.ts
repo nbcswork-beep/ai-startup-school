@@ -10,7 +10,7 @@ import { daysSince, dayKey, hourKey, monthKey, recentDays, recentHours } from '.
 import { countChatTokens, countTokens } from './tokenizer.js';
 import type {
   AiAccessRule, AiBalance, AiBalanceSource, AiErrorRecord, AiLedgerType, AiModelFamily, AiModelPricing, AiModelRecord,
-  AiProtocol, AiProviderRecord, AiResourcePackage, AiResourceUnit, AiSettings, AiUsageRecord
+  AiProtocol, AiProviderRecord, SealedSecret, BoundSecret, AiPluginRecord, AiResourcePackage, AiResourceUnit, AiSettings, AiUsageRecord
 } from './types.js';
 
 /** telegramId is used only to deliver the "answer ready" notice; it is never sent to providers or shown in AI screens. */
@@ -39,6 +39,8 @@ export interface AiServiceDeps {
   generationBudgetMs?: number;
   /** Hands agent jobs to Cloud Run workers. Without it everything runs on Vercel, as before. */
   dispatcher?: AiWorkerDispatcher | null;
+  /** In a worker: which job's files the worker may ask Vercel for. */
+  workerJobScope?: ((jobId: string | null) => void) | null;
   /** In a worker: asks Vercel to send the «answer ready» notice (the worker has no bot token). */
   noticeRelay?: ((jobId: string) => Promise<void>) | null;
   /** Longest single model request, and longest silence inside one; a worker allows long requests. */
@@ -46,11 +48,24 @@ export interface AiServiceDeps {
   idleTimeoutMs?: number;
 }
 
+export interface SecretsStatus {
+  keys: { main: string | null; next: string | null };
+  nextConfigured: boolean;
+  total: number;
+  ready: number;
+  unreadable: number;
+  /** Where a second copy is missing or stale (names of providers, keys and plugins only). */
+  pending: string[];
+  readyForWorkers: boolean;
+}
+
 /** Starts a worker for a stored job. Only the job id is passed; the worker reads the rest from storage. */
 export interface AiWorkerDispatcher {
   /** How many jobs may be with workers at once (Cloud Run executions cost money). */
   readonly maxConcurrent: number;
   dispatch(jobId: string): Promise<void>;
+  /** A real check of the way to Google that starts nothing (Admin OS button). */
+  diagnose?(): Promise<Array<{ step: string; ok: boolean; detail: string }>>;
 }
 
 export const DEFAULT_SYSTEM_PROMPT = [
@@ -117,8 +132,8 @@ export function providerDto(provider: AiProviderRecord) {
     id: provider.id, name: provider.name, protocol: provider.protocol, baseUrl: provider.baseUrl, enabled: provider.enabled,
     balanceSource: provider.balanceSource, lastCheck: provider.lastCheck, syncedBalance: provider.syncedBalance, rateLimitPerMinute: providerRateLimit(provider),
     createdAt: provider.createdAt, updatedAt: provider.updatedAt,
-    keys: provider.keys.map(({ secret: _secret, ...key }) => key),
-    headers: provider.headers.map(({ secret: _secret, ...header }) => header)
+    keys: provider.keys.map(({ secret: _secret, secretNext: _next, ...key }) => key),
+    headers: provider.headers.map(({ secret: _secret, secretNext: _next, ...header }) => header)
   };
 }
 
@@ -176,12 +191,20 @@ export class AiService {
       await this.waitForSlot(provider, request.signal, onQueue);
       let produced = false;
       try {
+        let connection: ProviderConnection;
+        try { connection = this.connection(provider, keyId); }
+        catch (error) {
+          if (!(error instanceof AppError)) throw error;
+          const refused = new AiProviderError('auth', error.message);
+          refused.unsent = true;
+          throw refused;
+        }
         const timed: ChatStreamRequest = {
           ...request,
           ...(request.timeoutMs === undefined && this.deps.requestTimeoutMs ? { timeoutMs: this.deps.requestTimeoutMs } : {}),
           ...(request.idleTimeoutMs === undefined && this.deps.idleTimeoutMs ? { idleTimeoutMs: this.deps.idleTimeoutMs } : {})
         };
-        for await (const event of this.adapter(this.connection(provider, keyId)).stream(timed)) { produced = true; yield event; }
+        for await (const event of this.adapter(connection).stream(timed)) { produced = true; yield event; }
         return;
       } catch (error) {
         if (!(error instanceof AiProviderError) || error.code !== 'rate_limit' || produced || retry >= RATE_LIMIT_RETRIES) throw error;
@@ -214,14 +237,94 @@ export class AiService {
     }
   }
 
+  /** A secret as stored: the main copy, and a second copy under the next key when one is set. */
+  sealPair(plain: string): { secret: SealedSecret; secretNext?: BoundSecret } {
+    const secret = this.deps.secrets.seal(plain);
+    const next = this.deps.secrets.sealNext(secret, plain);
+    return next ? { secret, secretNext: next } : { secret };
+  }
+
+  /**
+   * Every stored secret (provider keys, auth headers, plugin secrets) and whether a reader with
+   * only the next key could open it. Counts and names only, never values.
+   */
+  async secretsStatus(): Promise<SecretsStatus> {
+    const box = this.deps.secrets;
+    const [providers, plugins] = await Promise.all([this.store.listProviders(), this.store.listPlugins()]);
+    let total = 0, ready = 0, unreadable = 0;
+    const pending: string[] = [];
+    const visit = (where: string, main: SealedSecret, second: BoundSecret | null | undefined) => {
+      total += 1;
+      try { box.openStored(main, second); } catch { unreadable += 1; pending.push(`${where} (не розшифровується)`); return; }
+      if (box.readyForNext(main, second)) ready += 1; else pending.push(where);
+    };
+    for (const provider of providers) {
+      for (const key of provider.keys) visit(`${provider.name}: ключ «${key.label}»`, key.secret, key.secretNext);
+      for (const header of provider.headers) visit(`${provider.name}: заголовок ${header.name}`, header.secret, header.secretNext);
+    }
+    for (const plugin of plugins) for (const [name, sealed] of Object.entries(plugin.secrets)) visit(`Плагін ${plugin.id}: ${name}`, sealed, plugin.secretsNext?.[name]);
+    return {
+      keys: box.keyIds, nextConfigured: box.hasNext, total, ready, unreadable, pending: pending.slice(0, 50),
+      readyForWorkers: box.hasNext && unreadable === 0 && ready === total
+    };
+  }
+
+  /**
+   * Gives every stored secret its second copy under AI_SECRETS_KEY_NEXT. Main copies are never
+   * touched, so older deployments keep working. Each record is replaced atomically and only if it
+   * did not change since it was read; running it again finishes whatever an interrupted run left.
+   */
+  async prepareSecretsForNextKey(): Promise<SecretsStatus & { updated: number; skipped: number }> {
+    const box = this.deps.secrets;
+    if (!box.hasNext) throw new AppError('AI_SECRETS_NEXT_MISSING', 409, 'Спершу задайте AI_SECRETS_KEY_NEXT у Vercel і зробіть новий деплой.');
+    const copy = (main: SealedSecret, second: BoundSecret | null | undefined): BoundSecret | null | undefined => {
+      if (box.readyForNext(main, second)) return second;
+      try { return box.sealNext(main, box.openStored(main, second)); } catch { return second; }
+    };
+    let updated = 0, skipped = 0;
+    for (const provider of await this.store.listProviders()) {
+      const next: AiProviderRecord = {
+        ...provider,
+        keys: provider.keys.map(key => ({ ...key, secretNext: copy(key.secret, key.secretNext) ?? null })),
+        headers: provider.headers.map(header => ({ ...header, secretNext: copy(header.secret, header.secretNext) ?? null }))
+      };
+      if (JSON.stringify(next) === JSON.stringify(provider)) continue;
+      if (await this.store.replaceRecordIf('providers', provider.id, provider, next)) updated += 1; else skipped += 1;
+    }
+    for (const plugin of await this.store.listPlugins()) {
+      const names = Object.keys(plugin.secrets);
+      if (!names.length) continue;
+      const secretsNext = Object.fromEntries(names.flatMap(name => {
+        const made = copy(plugin.secrets[name]!, plugin.secretsNext?.[name]);
+        return made ? [[name, made]] : [];
+      })) as Record<string, BoundSecret>;
+      const next: AiPluginRecord = { ...plugin, secretsNext };
+      if (JSON.stringify(next) === JSON.stringify(plugin)) continue;
+      if (await this.store.replaceRecordIf('plugins', plugin.id, plugin, next)) updated += 1; else skipped += 1;
+    }
+    this.workersReady = null;
+    return { ...await this.secretsStatus(), updated, skipped };
+  }
+
+  /** Workers may get jobs only when every secret has a usable second copy (checked at most every 30 s). */
+  async secretsReadyForWorkers(): Promise<boolean> {
+    const now = Date.now();
+    if (this.workersReady && this.workersReady.at > now - 30_000) return this.workersReady.value;
+    const value = await this.secretsStatus().then(status => status.readyForWorkers, () => false);
+    this.workersReady = { value, at: now };
+    return value;
+  }
+
+  private workersReady: { value: boolean; at: number } | null = null;
+
   connection(provider: AiProviderRecord, keyId: string): ProviderConnection {
     const key = provider.keys.find(item => item.id === keyId);
     if (!key) throw new AppError('AI_KEY_NOT_FOUND', 404, 'Ключ не знайдено');
     return {
       protocol: provider.protocol,
       baseUrl: provider.baseUrl,
-      apiKey: this.deps.secrets.open(key.secret),
-      headers: Object.fromEntries(provider.headers.map(header => [header.name, this.deps.secrets.open(header.secret)]))
+      apiKey: this.deps.secrets.openStored(key.secret, key.secretNext),
+      headers: Object.fromEntries(provider.headers.map(header => [header.name, this.deps.secrets.openStored(header.secret, header.secretNext)]))
     };
   }
 
@@ -323,8 +426,8 @@ export class AiService {
     const headers = validateHeaders(input.headers);
     const provider: AiProviderRecord = {
       id: randomUUID(), name: input.name.trim(), protocol: input.protocol, baseUrl, enabled: input.enabled, balanceSource: input.balanceSource,
-      keys: [{ id: randomUUID(), label: input.keyLabel?.trim() || 'Основний ключ', secret: this.deps.secrets.seal(input.apiKey.trim()), hint: secretHint(input.apiKey.trim()), enabled: true, createdAt: now, lastUsedAt: null, lastError: null }],
-      headers: headers.map(header => ({ name: header.name, secret: this.deps.secrets.seal(header.value), hint: secretHint(header.value) })),
+      keys: [{ id: randomUUID(), label: input.keyLabel?.trim() || 'Основний ключ', ...this.sealPair(input.apiKey.trim()), hint: secretHint(input.apiKey.trim()), enabled: true, createdAt: now, lastUsedAt: null, lastError: null }],
+      headers: headers.map(header => ({ name: header.name, ...this.sealPair(header.value), hint: secretHint(header.value) })),
       lastCheck: null, syncedBalance: null, createdAt: now, updatedAt: now,
       rateLimitPerMinute: input.rateLimitPerMinute ?? (/integrate\.api\.nvidia\.com/i.test(baseUrl) ? 35 : null)
     };
@@ -350,7 +453,7 @@ export class AiService {
         const kept = existing.get(header.name.trim().toLowerCase());
         if (!header.value && kept) return { ...kept, name: header.name.trim() };
         if (!header.value) throw new AppError('AI_HEADER_INVALID', 400, `Вкажіть значення заголовка «${header.name.trim()}»`);
-        return { name: header.name.trim(), secret: this.deps.secrets.seal(header.value), hint: secretHint(header.value) };
+        return { name: header.name.trim(), ...this.sealPair(header.value), hint: secretHint(header.value) };
       });
     }
     const connectionChanged = patch.protocol !== undefined && patch.protocol !== provider.protocol || next.baseUrl !== provider.baseUrl;
@@ -375,7 +478,7 @@ export class AiService {
     const provider = await this.requireProvider(providerId);
     if (provider.keys.length >= 10) throw new AppError('AI_KEY_LIMIT', 409, 'У провайдера вже 10 ключів');
     const now = this.now().toISOString();
-    provider.keys.push({ id: randomUUID(), label: input.label?.trim() || `Ключ ${provider.keys.length + 1}`, secret: this.deps.secrets.seal(input.apiKey.trim()), hint: secretHint(input.apiKey.trim()), enabled: true, createdAt: now, lastUsedAt: null, lastError: null });
+    provider.keys.push({ id: randomUUID(), label: input.label?.trim() || `Ключ ${provider.keys.length + 1}`, ...this.sealPair(input.apiKey.trim()), hint: secretHint(input.apiKey.trim()), enabled: true, createdAt: now, lastUsedAt: null, lastError: null });
     provider.updatedAt = now;
     await this.store.putProvider(provider);
     return providerDto(provider);

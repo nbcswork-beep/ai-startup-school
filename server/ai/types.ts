@@ -16,10 +16,17 @@ export interface SealedSecret {
   data: string;
 }
 
+/** A second copy of a secret under the next key, bound to the main copy it was made from. */
+export interface BoundSecret extends SealedSecret {
+  of: string;
+}
+
 export interface AiProviderKey {
   id: string;
   label: string;
   secret: SealedSecret;
+  /** The same key under AI_SECRETS_KEY_NEXT (for Cloud Run workers); older deployments ignore it. */
+  secretNext?: BoundSecret | null;
   /** Last four characters, for recognising a key in the admin UI. */
   hint: string;
   enabled: boolean;
@@ -31,6 +38,7 @@ export interface AiProviderKey {
 export interface AiProviderHeader {
   name: string;
   secret: SealedSecret;
+  secretNext?: BoundSecret | null;
   hint: string;
 }
 
@@ -165,6 +173,8 @@ export interface AiPluginRecord {
   enabled: boolean;
   settings: Record<string, string | number | boolean>;
   secrets: Record<string, SealedSecret>;
+  /** Second copies under AI_SECRETS_KEY_NEXT, by the same names. */
+  secretsNext?: Record<string, BoundSecret>;
   installedAt: string;
   updatedAt: string;
 }

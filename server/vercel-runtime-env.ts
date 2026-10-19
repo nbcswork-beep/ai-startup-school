@@ -26,6 +26,7 @@ export function vercelRuntimeEnvironment(): NodeJS.ProcessEnv {
     HOMEWORK_UPLOAD_MAX_TOTAL_MB: process.env.HOMEWORK_UPLOAD_MAX_TOTAL_MB,
     FILE_STORAGE_PREFIX: process.env.FILE_STORAGE_PREFIX,
     AI_SECRETS_KEY: process.env.AI_SECRETS_KEY,
+    AI_SECRETS_KEY_NEXT: process.env.AI_SECRETS_KEY_NEXT,
     AI_REDIS_PREFIX: process.env.AI_REDIS_PREFIX,
     VERCEL_ENV: process.env.VERCEL_ENV,
     VERCEL_TARGET_ENV: process.env.VERCEL_TARGET_ENV,

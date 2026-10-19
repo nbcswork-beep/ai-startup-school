@@ -77,6 +77,11 @@ export interface AiStore {
   // configuration
   listProviders(): Promise<AiProviderRecord[]>;
   putProvider(provider: AiProviderRecord): Promise<void>;
+  /**
+   * Replaces a provider or plugin record only if it is still exactly `expected` (what the caller
+   * read). An edit made in between wins; the caller reads again and retries later.
+   */
+  replaceRecordIf(kind: 'providers' | 'plugins', id: string, expected: unknown, next: unknown): Promise<boolean>;
   deleteProvider(id: string): Promise<void>;
   listModels(): Promise<AiModelRecord[]>;
   putModel(model: AiModelRecord): Promise<void>;
@@ -284,6 +289,12 @@ export class MemoryAiStore implements AiStore {
 
   async listProviders() { return [...this.providers.values()].map(item => structuredClone(item)); }
   async putProvider(provider: AiProviderRecord) { this.providers.set(provider.id, structuredClone(provider)); }
+  async replaceRecordIf(kind: 'providers' | 'plugins', id: string, expected: unknown, next: unknown) {
+    const map = (kind === 'providers' ? this.providers : this.plugins) as Map<string, unknown>;
+    if (JSON.stringify(map.get(id)) !== JSON.stringify(expected)) return false;
+    map.set(id, structuredClone(next));
+    return true;
+  }
   async deleteProvider(id: string) { this.providers.delete(id); }
   async listModels() { return [...this.models.values()].map(item => structuredClone(item)); }
   async putModel(model: AiModelRecord) { this.models.set(model.id, structuredClone(model)); }
@@ -934,6 +945,11 @@ if not exp then return 0 end
 if tonumber(ARGV[4]) > tonumber(exp) then redis.call('HSET', res, ARGV[3], amt .. ':' .. est .. ':' .. ARGV[4]) end
 return 1`;
 
+const REPLACE_IF_SCRIPT = `
+if redis.call('HGET', ARGV[1], ARGV[2]) ~= ARGV[3] then return 0 end
+redis.call('HSET', ARGV[1], ARGV[2], ARGV[4])
+return 1`;
+
 const RATE_SLOT_SCRIPT = `
 local p, id, limit, now = ARGV[1], ARGV[2], tonumber(ARGV[3]), tonumber(ARGV[4])
 local minute = math.floor(now / 60000)
@@ -1000,6 +1016,9 @@ export class RedisAiStore implements AiStore {
   }
 
   listProviders() { return this.hashValues<AiProviderRecord>(this.key('providers')); }
+  async replaceRecordIf(kind: 'providers' | 'plugins', id: string, expected: unknown, next: unknown) {
+    return Number(await this.client.command<number>(['EVAL', REPLACE_IF_SCRIPT, 0, this.key(kind), id, JSON.stringify(expected), JSON.stringify(next)])) === 1;
+  }
   async putProvider(provider: AiProviderRecord) { await this.client.command(['HSET', this.key('providers'), provider.id, JSON.stringify(provider)]); }
   async deleteProvider(id: string) { await this.client.command(['HDEL', this.key('providers'), id]); }
   listModels() { return this.hashValues<AiModelRecord>(this.key('models')); }

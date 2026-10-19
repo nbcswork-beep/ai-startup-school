@@ -139,6 +139,8 @@ const envSchema = z.object({
   DEV_USER_ID: z.string().uuid().default('10000000-0000-4000-8000-000000000001'),
   /** 32 random bytes, base64. Encrypts AI provider keys at rest; derived from SESSION_TOKEN_PEPPER when unset. */
   AI_SECRETS_KEY: z.preprocess(value => typeof value === 'string' ? value.trim() || undefined : value, z.string().regex(/^[A-Za-z0-9+/]{43}=$/, 'must be 32 bytes encoded as base64').optional()),
+  /** The key secrets move to (second copies for Cloud Run workers); older deployments ignore it. */
+  AI_SECRETS_KEY_NEXT: z.preprocess(value => typeof value === 'string' ? value.trim() || undefined : value, z.string().regex(/^[A-Za-z0-9+/]{43}=$/, 'must be 32 bytes encoded as base64').optional()),
   /** Redis namespace for AI balances, chats and settings. Defaults to SESSION_REDIS_PREFIX + ':ai:v1'. */
   AI_REDIS_PREFIX: z.preprocess(value => typeof value === 'string' ? value.trim() || undefined : value, z.string().regex(/^[a-zA-Z0-9:_-]{3,120}$/).optional()),
   WORKSPACE_URL: optionalString,
