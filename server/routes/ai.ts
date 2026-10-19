@@ -78,6 +78,8 @@ const settingsPatch = z.object({
   agentEnabled: z.boolean().optional(),
   agentMaxSteps: z.number().int().min(1).max(20).optional(),
   memoryEnabled: z.boolean().optional(),
+  runnerMode: z.enum(['vercel', 'cloud-run-selected', 'cloud-run-all']).optional(),
+  runnerStudentIds: z.array(uuid).max(500).optional(),
   agentModelId: uuid.nullable().optional()
 });
 const skillBody = z.object({
@@ -106,7 +108,7 @@ const packageBody = z.object({
 
 type Secured = { preHandler: preHandlerHookHandler[] };
 
-export function registerAiRoutes(app: FastifyInstance, deps: { repository: AppRepository; authenticate: preHandlerHookHandler; ai: AiService; chat: AiChatService }): void {
+export function registerAiRoutes(app: FastifyInstance, deps: { repository: AppRepository; authenticate: preHandlerHookHandler; ai: AiService; chat: AiChatService; worker?: { configured: boolean; problem: string | null } }): void {
   const { ai, chat, repository, authenticate } = deps;
 
   const requireAdmin = async (request: FastifyRequest) => {
@@ -125,7 +127,10 @@ export function registerAiRoutes(app: FastifyInstance, deps: { repository: AppRe
   // ---- Admin: providers, keys, models
   app.get(`${A}/providers`, admin(), async () => {
     const [providers, models, settings] = await Promise.all([ai.listProviders(), ai.listModels(), ai.settings()]);
-    return { providers, models, settings, secretsAvailable: ai.deps.secrets.available };
+    // Where agent answers run: shown with the students it can be turned on for, one by one.
+    const worker = deps.worker ?? { configured: false, problem: null };
+    const students = worker.configured ? (await ai.roster()).students.map(student => ({ id: student.id, name: student.name, groupName: student.groupName })) : [];
+    return { providers, models, settings, secretsAvailable: ai.deps.secrets.available, worker: { ...worker, students } };
   });
   app.post(`${A}/providers`, admin(30), async (request, reply) => reply.status(201).send(await ai.createProvider(providerCreate.parse(request.body))));
   app.patch(`${A}/providers/:id`, admin(30), async request => ai.updateProvider(z.object({ id: uuid }).parse(request.params).id, providerPatch.parse(request.body)));

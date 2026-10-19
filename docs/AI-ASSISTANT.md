@@ -34,6 +34,7 @@ Everything lives in Upstash Redis under `AI_REDIS_PREFIX` (default `SESSION_REDI
 | `usage`, `errors` | last 2000 requests and 200 provider errors |
 | `stats:d:{day}`, `stats:h:{hour}` | counters for analytics (Kyiv time), kept 400 days / 3 days |
 | `conv:{student}`, `msgs:{conversation}` | chats and messages, per student; a chat also keeps its lesson/homework link, its memory summary and the student's 👍/👎 votes |
+| `runner:slots` | jobs handed to Cloud Run workers and until when (the worker cap) |
 | `rl:{provider}:{minute}` | requests sent to a provider in that minute, for its shared request limit (kept 130 s) |
 | `job:{id}`, `job:{id}:text`, `jobreq:{request}`, `jobs:active` | answer jobs: status, steps, files, confirmation; the text written so far; request → job; jobs still needing attention (kept 7 days) |
 | `atts:{student}`, `att:{id}` | attached files: metadata and the text read from them |
@@ -175,6 +176,18 @@ Long chats do not lose their beginning. After an answer, once 8 or more older me
 - The server loads the material itself (lesson summary and content, homework instructions) with the student's own access rules, and adds it to the system prompt as data. A locked lesson or someone else's homework answers 404.
 - A chat stays linked to its lesson or homework; another lesson needs a new chat.
 - **Homework hint mode** is always on for homework chats: the assistant asks what the student tried, gives one hint at a time, explains on a different example, and does not hand over a finished solution or file. The built-in skill «Підказки до домашнього» is preselected.
+
+## Cloud Run workers for agent answers (prepared, off by default)
+
+Long agent work can run in Google Cloud Run Jobs instead of the 300-second Vercel function. It is **off** until every `AI_WORKER_*` variable is set on Vercel and an admin picks Cloud Run in Admin OS → ШІ · Провайдери → «Де працює режим агента» (for chosen students or everyone). Plain chat always stays on Vercel.
+
+- Vercel stores the job with a **spec** (text, attachment ids, skill, revision, lesson material; never secrets), reserves tokens, and starts one Cloud Run execution with only `AI_JOB_ID`. It authenticates with Vercel OIDC → Google STS → a short-lived token of a service account that may only run that job.
+- The worker (`server/worker/`) takes the job's **lease** (one owner; a crashed worker's job is taken over once), renews it with the token reservation, rebuilds the same prompt with the same code, and runs the same engine. Writes and finishing are fenced by the lease. Continuations after a stage's time budget start on the server, bounded by the same three rounds.
+- A job no worker took is handed over again after 10 minutes, then ended without a charge. «Стоп» on a job not yet taken ends it at once, free.
+- The worker has no bot token and no roster: it asks Vercel to send the «ready» notice (`POST /api/v1/internal/ai/jobs/:id/notice`, shared secret).
+- If Google cannot take a job, or the worker cap (`AI_WORKER_MAX_CONCURRENT`) is full, Vercel answers it as before.
+
+Setup, switch-over and rollback: [CLOUD-RUN-WORKER.md](CLOUD-RUN-WORKER.md).
 
 ## Dependencies added
 

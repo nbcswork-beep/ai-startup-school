@@ -1,0 +1,25 @@
+# Student OS · AI worker for Google Cloud Run Jobs.
+# Builds the TypeScript server and runs only the worker entry point. One execution generates one
+# AI job (AI_JOB_ID is set per execution by Vercel); secrets come from Secret Manager at run time.
+
+FROM node:24.11.1-bookworm-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+# Exactly the locked versions; no install scripts run.
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY tsconfig.server.json ./
+COPY server ./server
+COPY api ./api
+COPY bot ./bot
+RUN node node_modules/typescript/bin/tsc -p tsconfig.server.json \
+  && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
+
+FROM node:24.11.1-bookworm-slim
+ENV NODE_ENV=production
+WORKDIR /app
+# Code and dependencies belong to root and are read-only for the unprivileged user that runs them.
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/server-dist ./server-dist
+USER node
+CMD ["node", "server-dist/server/worker/main.js"]

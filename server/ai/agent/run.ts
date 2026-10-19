@@ -38,6 +38,8 @@ export interface AgentRunInput {
   /** Receives streamed arguments while a files:write tool is still being generated. */
   checkpointTool?(call: ToolCall): Promise<AiFileRef | null>;
   finishCheckpoint?(call: ToolCall, args: Record<string, unknown>): Promise<ToolOutcome | null>;
+  /** A draft save failed; the run goes on. */
+  checkpointFailed?(call: ToolCall, error: unknown): void;
   /** Waits for the student's yes or no to an action that sends data out. */
   confirm(stepId: string, disclosure: { title: string; details: string; tool: string; plugin: string }): Promise<boolean>;
   /** Why the run was cut short when the signal fired: «Стоп» or the time budget. */
@@ -121,13 +123,52 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
     let text = '';
     const calls: ToolCall[] = [];
     const fragments = new Map<string, ToolCall>();
+    // Drafts are saved at most every 750 ms per call, one save at a time. A piece that arrives inside
+    // that window is saved when it ends, even if the model then goes quiet: a crash during the pause
+    // must not lose code that already arrived.
+    const saving = new Map<string, Promise<void>>();
+    const trailing = new Map<string, ReturnType<typeof setTimeout>>();
+    let streaming = true;
+    const writeFragment = async (call: ToolCall, retries: number) => {
+      checkpointAt.set(call.id, Date.now());
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          const file = await input.checkpointTool!(call);
+          if (file) { checkpointed.set(call.id, file); await input.addFile(file); }
+          return;
+        } catch (error) {
+          // A draft that cannot be saved right now (storage hiccup) must not end the run: the next
+          // piece saves it, and the last save before the run ends is tried a few times.
+          if (attempt >= retries) { input.checkpointFailed?.(call, error); return; }
+          await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+        }
+      }
+    };
     const saveFragment = async (call: ToolCall, force = false) => {
       const entry = byName.get(call.name);
       if (!toolsAllowed || entry?.tool.pluginId !== 'projects' || entry.tool.permission !== 'files:write' || !input.checkpointTool) return;
-      if (!force && Date.now() - (checkpointAt.get(call.id) ?? 0) < 750) return;
-      const file = await input.checkpointTool(call);
-      checkpointAt.set(call.id, Date.now());
-      if (file) { checkpointed.set(call.id, file); await input.addFile(file); }
+      const wait = 750 - (Date.now() - (checkpointAt.get(call.id) ?? 0));
+      if (!force && wait > 0) {
+        if (!trailing.has(call.id)) {
+          trailing.set(call.id, setTimeout(() => {
+            trailing.delete(call.id);
+            const latest = fragments.get(call.id);
+            if (latest && streaming) void saveFragment(latest);
+          }, wait));
+        }
+        return;
+      }
+      const timer = trailing.get(call.id);
+      if (timer) { clearTimeout(timer); trailing.delete(call.id); }
+      const run = (saving.get(call.id) ?? Promise.resolve()).then(() => writeFragment(fragments.get(call.id) ?? call, force ? 2 : 0));
+      saving.set(call.id, run);
+      await run;
+    };
+    const settleSaves = async () => {
+      streaming = false;
+      for (const timer of trailing.values()) clearTimeout(timer);
+      trailing.clear();
+      await Promise.all(saving.values());
     };
     let reported: ProviderUsage | null = null;
     let finish: string | null = null;
@@ -144,6 +185,7 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
       }
     } catch (error) {
       if (stopped() !== 'stopped') for (const call of fragments.values()) await saveFragment(call, true);
+      await settleSaves();
       failure = error instanceof AiProviderError ? error : new AiProviderError('network', error instanceof Error ? error.message : 'Невідома помилка');
       // A call that never left the queue cost nothing.
       if (reported === null && !failure.unsent) {
@@ -160,6 +202,7 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
       }
       return { text, status: text || toolCalls ? 'interrupted' : 'error', failure, usage, approximate, notice: null };
     }
+    await settleSaves();
     if (reported) {
       usage.inputTokens += (reported as ProviderUsage).inputTokens;
       usage.outputTokens += (reported as ProviderUsage).outputTokens;

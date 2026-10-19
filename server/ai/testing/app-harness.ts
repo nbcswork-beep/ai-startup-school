@@ -10,6 +10,8 @@ import { MemoryPilotRuntimeStore } from '../../data/pilot-runtime-store.js';
 import { RedisAiStore } from '../store.js';
 import type { MockProviderServer } from './mock-provider.js';
 import { RedisEmulator } from './redis-emulator.js';
+import { LocalDevFileStorage } from '../../storage/file-storage.js';
+import type { AiWorkerDispatcher } from '../service.js';
 
 /**
  * The whole app for AI tests: a pilot school, the real Lua scripts in a Redis emulator, local file
@@ -27,14 +29,16 @@ export function parseSse(body: string): SseEvent[] {
   });
 }
 
-export function aiSchool(options: { fetcher?: typeof fetch; generationBudgetMs?: number } = {}) {
+export function aiSchool(options: { fetcher?: typeof fetch; generationBudgetMs?: number; worker?: { dispatcher: AiWorkerDispatcher | null; callbackSecret?: string } } = {}) {
   const runtime = new MemoryPilotRuntimeStore(createAssignedPilotState());
   const redis = new RedisEmulator();
   const aiStore = new RedisAiStore(redis, 'aiss:test:ai:v1');
+  // One file store for every app instance (and for a worker in tests), like one Blob store in production.
+  const fileStorage = new LocalDevFileStorage();
   const apps: FastifyInstance[] = [];
   const as = async (userId: string) => {
     const env = loadEnv({ NODE_ENV: 'test', DATA_BACKEND: 'memory', DEV_AUTH_ENABLED: 'true', DEV_EPHEMERAL_JWT: 'true', SESSION_TOKEN_PEPPER: 'ai-agent-test-pepper', DEV_USER_ID: userId });
-    const app = await buildApp({ env, repository: new MemoryRepository(undefined, { runtimeStore: runtime }), jwt: await createJwtService(env), aiStore, aiNotifier: null, ...(options.fetcher ? { aiFetcher: options.fetcher } : {}), ...(options.generationBudgetMs ? { aiGenerationBudgetMs: options.generationBudgetMs } : {}) });
+    const app = await buildApp({ env, repository: new MemoryRepository(undefined, { runtimeStore: runtime }), jwt: await createJwtService(env), aiStore, aiNotifier: null, fileStorage, ...(options.worker ? { aiWorker: { dispatcher: options.worker.dispatcher, problem: null, callbackSecret: options.worker.callbackSecret ?? null } } : {}), ...(options.fetcher ? { aiFetcher: options.fetcher } : {}), ...(options.generationBudgetMs ? { aiGenerationBudgetMs: options.generationBudgetMs } : {}) });
     apps.push(app);
     const login = await app.inject({ method: 'POST', url: '/api/v1/auth/development' });
     expect(login.statusCode).toBe(200);
@@ -63,7 +67,7 @@ export function aiSchool(options: { fetcher?: typeof fetch; generationBudgetMs?:
     };
     return { app, token, headers, call, send, attach };
   };
-  return { redis, aiStore, as, close: () => Promise.all(apps.splice(0).map(app => app.close())) };
+  return { redis, aiStore, fileStorage, as, close: () => Promise.all(apps.splice(0).map(app => app.close())) };
 }
 
 export async function configureMock(admin: Awaited<ReturnType<ReturnType<typeof aiSchool>['as']>>, mock: MockProviderServer, key: string, models: string[], protocol: 'openai' | 'anthropic' = 'openai') {

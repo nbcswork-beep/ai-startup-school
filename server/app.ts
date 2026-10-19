@@ -20,6 +20,8 @@ import { TelegramAnswerNotifier, type AiAnswerNotifier } from './ai/notifier.js'
 import { MemoryAiStore, RedisAiStore, UpstashRestClient, type AiStore } from './ai/store.js';
 import type { ProviderAdapter, ProviderConnection } from './ai/adapters.js';
 import { createAiStreamHandler, registerAiRoutes } from './routes/ai.js';
+import { registerAiWorkerRoutes } from './routes/ai-worker.js';
+import type { AiWorkerDispatcher } from './ai/service.js';
 import { AuthService } from './services/auth-service.js';
 import { WebCredentialDirectory } from './auth/password-credentials.js';
 import { MemoryLoginAttemptLimiter, type LoginAttemptLimiter } from './auth/session-store.js';
@@ -29,7 +31,7 @@ import { NotificationWorker, TelegramNotificationSender, type NotificationSender
 import { createFileStorage, type FileStorage } from './storage/file-storage.js';
 import { fileLinkSigner, registerHomeworkFileRoutes, uploadPolicy } from './routes/homework-files.js';
 
-export async function buildApp(deps: { env: AppEnv; repository: AppRepository; jwt: JwtService; aiStore?: AiStore; aiAdapterFactory?: (connection: ProviderConnection) => ProviderAdapter; aiNow?: () => Date; loginLimiter?: LoginAttemptLimiter; telegramWebhookHandler?: TelegramWebhookHandler; notificationSender?:NotificationSender; fileStorage?: FileStorage | null; aiNotifier?: AiAnswerNotifier | null; aiFetcher?: typeof fetch; aiGenerationBudgetMs?: number }) {
+export async function buildApp(deps: { env: AppEnv; repository: AppRepository; jwt: JwtService; aiStore?: AiStore; aiAdapterFactory?: (connection: ProviderConnection) => ProviderAdapter; aiNow?: () => Date; loginLimiter?: LoginAttemptLimiter; telegramWebhookHandler?: TelegramWebhookHandler; notificationSender?:NotificationSender; fileStorage?: FileStorage | null; aiNotifier?: AiAnswerNotifier | null; aiFetcher?: typeof fetch; aiGenerationBudgetMs?: number; aiWorker?: { dispatcher: AiWorkerDispatcher | null; problem: string | null; callbackSecret: string | null } }) {
   const app = Fastify({ routerOptions: { maxParamLength: 1000 }, logger: deps.env.NODE_ENV === 'test' ? false : { level: deps.env.LOG_LEVEL,redact:{paths:['req.headers.authorization','req.headers.cookie','req.headers.x-telegram-bot-api-secret-token','res.headers.set-cookie','body.initData','body.refreshToken','body.password','body.token'],censor:'[REDACTED]'} }, trustProxy: deps.env.TRUST_PROXY, bodyLimit: 32_768 });
   await app.register(cookie);
   await app.register(cors, {
@@ -83,11 +85,14 @@ export async function buildApp(deps: { env: AppEnv; repository: AppRepository; j
     ...(deps.aiNow ? { now: deps.aiNow } : {}),
     ...(deps.aiFetcher ? { fetcher: deps.aiFetcher } : {}),
     ...(deps.aiGenerationBudgetMs ? { generationBudgetMs: deps.aiGenerationBudgetMs } : {}),
-    ...(deps.aiAdapterFactory ? { adapterFactory: deps.aiAdapterFactory } : {})
+    ...(deps.aiAdapterFactory ? { adapterFactory: deps.aiAdapterFactory } : {}),
+    // Cloud Run workers for agent answers; without a dispatcher every answer runs here, as before.
+    dispatcher: deps.aiWorker?.dispatcher ?? null
   });
   const aiChat = new AiChatService(ai);
   registerNotificationWorkerRoute(app,deps.env,notificationSender?new NotificationWorker(deps.repository,notificationSender,deps.env.PARENT_WEEKLY_REPORT_DAY,deps.env.PARENT_WEEKLY_REPORT_HOUR_KYIV):undefined,()=>aiChat.sweepJobs());
-  registerAiRoutes(app, { repository: deps.repository, authenticate, ai, chat: aiChat });
+  registerAiRoutes(app, { repository: deps.repository, authenticate, ai, chat: aiChat, worker: { configured: Boolean(deps.aiWorker?.dispatcher), problem: deps.aiWorker?.problem ?? null } });
+  registerAiWorkerRoutes(app, { chat: aiChat, callbackSecret: deps.aiWorker?.callbackSecret ?? null });
   app.decorate('aiStreamHandler', createAiStreamHandler({ jwt: deps.jwt, repository: deps.repository, chat: aiChat, origins: deps.env.origins }));
   registerHomeworkFileRoutes(app, deps.repository, authenticate, fileConfig);
   registerTeacherRoutes(app,deps.repository,authenticate);

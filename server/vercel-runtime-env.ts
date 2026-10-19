@@ -31,8 +31,25 @@ export function vercelRuntimeEnvironment(): NodeJS.ProcessEnv {
     VERCEL_TARGET_ENV: process.env.VERCEL_TARGET_ENV,
     VERCEL_URL: process.env.VERCEL_URL,
     VERCEL_BRANCH_URL: process.env.VERCEL_BRANCH_URL,
-    VERCEL_PROJECT_PRODUCTION_URL: process.env.VERCEL_PROJECT_PRODUCTION_URL
+    VERCEL_PROJECT_PRODUCTION_URL: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+    AI_WORKER_GCP_PROJECT: process.env.AI_WORKER_GCP_PROJECT,
+    AI_WORKER_GCP_REGION: process.env.AI_WORKER_GCP_REGION,
+    AI_WORKER_JOB_NAME: process.env.AI_WORKER_JOB_NAME,
+    AI_WORKER_WIF_AUDIENCE: process.env.AI_WORKER_WIF_AUDIENCE,
+    AI_WORKER_DISPATCH_SERVICE_ACCOUNT: process.env.AI_WORKER_DISPATCH_SERVICE_ACCOUNT,
+    AI_WORKER_MAX_CONCURRENT: process.env.AI_WORKER_MAX_CONCURRENT,
+    AI_WORKER_CALLBACK_SECRET: process.env.AI_WORKER_CALLBACK_SECRET
   };
+}
+
+/**
+ * Vercel's OIDC token for the current request (the same place @vercel/oidc reads it): proof of
+ * "this is the assl project" that Google trades for a short-lived token. Null outside Vercel.
+ */
+export async function vercelOidcToken(): Promise<string | null> {
+  const context = (globalThis as Record<symbol, { get?: () => { headers?: Record<string, string | undefined> } | undefined } | undefined>)[Symbol.for('@vercel/request-context')];
+  const header = context?.get?.()?.headers?.['x-vercel-oidc-token'];
+  return (typeof header === 'string' && header.trim()) || process.env.VERCEL_OIDC_TOKEN?.trim() || null;
 }
 
 /**

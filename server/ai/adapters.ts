@@ -53,6 +53,10 @@ export interface ChatStreamRequest {
   signal: AbortSignal;
   /** Tools the model may call; the caller runs them and continues the conversation. */
   tools?: ToolSpec[];
+  /** Longest the whole request may take (default 280 s, under Vercel's 300 s). */
+  timeoutMs?: number;
+  /** Longest silence while streaming; off by default (some models think quietly). */
+  idleTimeoutMs?: number;
 }
 
 export interface DiscoveredModel {
@@ -140,6 +144,11 @@ async function errorFromResponse(response: Response): Promise<AiProviderError> {
   return error;
 }
 
+/** How long to wait for the response to start: the usual limit, or the stream's idle limit when that is shorter. */
+function firstByteTimeout(request: ChatStreamRequest): number {
+  return Math.min(CONNECT_TIMEOUT_MS, request.idleTimeoutMs ?? CONNECT_TIMEOUT_MS);
+}
+
 function linkSignals(signal: AbortSignal, timeoutMs: number): AbortSignal {
   return AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
 }
@@ -175,14 +184,21 @@ function toProviderError(error: unknown, signal: AbortSignal): AiProviderError {
 interface SseEvent { event: string; data: string }
 
 /** Server-sent events from a fetch body. Handles CRLF, multi-line data and frames split across chunks. */
-export async function* readSse(body: ReadableStream<Uint8Array>, signal: AbortSignal): AsyncGenerator<SseEvent> {
+export async function* readSse(body: ReadableStream<Uint8Array>, signal: AbortSignal, idleTimeoutMs?: number): AsyncGenerator<SseEvent> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  // A stream that stops sending without closing would hold a worker until the request timeout.
+  const read = () => {
+    if (!idleTimeoutMs) return reader.read();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const idle = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new DOMException('idle stream', 'TimeoutError')), idleTimeoutMs); });
+    return Promise.race([reader.read(), idle]).finally(() => clearTimeout(timer));
+  };
   try {
     while (true) {
       if (signal.aborted) throw signal.reason;
-      const { done, value } = await reader.read();
+      const { done, value } = await read();
       buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
       const frames = buffer.split(/\r?\n\r?\n/);
       buffer = done ? '' : frames.pop() ?? '';
@@ -258,8 +274,8 @@ class OpenAiCompatibleAdapter implements ProviderAdapter {
       body[shape.maxCompletionTokens ? 'max_completion_tokens' : 'max_tokens'] = request.maxOutputTokens;
       if (shape.streamOptions) body.stream_options = { include_usage: true };
       response = await send(`${this.base}/chat/completions`, {
-        method: 'POST', headers: this.headers(), body: JSON.stringify(body), signal: linkSignals(request.signal, REQUEST_TIMEOUT_MS)
-      });
+        method: 'POST', headers: this.headers(), body: JSON.stringify(body), signal: linkSignals(request.signal, request.timeoutMs ?? REQUEST_TIMEOUT_MS)
+      }, firstByteTimeout(request));
       if (response.ok) break;
       const error = await errorFromResponse(response);
       // Some models only accept max_completion_tokens; some older gateways reject stream_options.
@@ -278,7 +294,7 @@ class OpenAiCompatibleAdapter implements ProviderAdapter {
     let finish: string | null = null;
     const calls = new Map<number, ToolCall>();
     try {
-      for await (const frame of readSse(response.body, request.signal)) {
+      for await (const frame of readSse(response.body, request.signal, request.idleTimeoutMs)) {
         if (frame.data === '[DONE]') break;
         let chunk: Record<string, any>;
         try { chunk = JSON.parse(frame.data); } catch { continue; }
@@ -387,8 +403,8 @@ class AnthropicAdapter implements ProviderAdapter {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify({ model: request.model, max_tokens: request.maxOutputTokens, ...(system ? { system } : {}), messages: turns, ...tools, stream: true }),
-      signal: linkSignals(request.signal, REQUEST_TIMEOUT_MS)
-    });
+      signal: linkSignals(request.signal, request.timeoutMs ?? REQUEST_TIMEOUT_MS)
+    }, firstByteTimeout(request));
     if (!response.ok) throw await errorFromResponse(response);
     if (!response.body) throw new AiProviderError('invalid_response', 'Провайдер не повернув потік відповіді');
 
@@ -397,7 +413,7 @@ class AnthropicAdapter implements ProviderAdapter {
     const calls = new Map<number, ToolCall>();
     const finished: ToolCall[] = [];
     try {
-      for await (const frame of readSse(response.body, request.signal)) {
+      for await (const frame of readSse(response.body, request.signal, request.idleTimeoutMs)) {
         let payload: Record<string, any>;
         try { payload = JSON.parse(frame.data); } catch { continue; }
         const type = payload.type ?? frame.event;

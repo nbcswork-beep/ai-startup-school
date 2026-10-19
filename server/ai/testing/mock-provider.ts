@@ -68,6 +68,11 @@ export function agentDecision(turns: Turn[], tools: string[]): Decision {
     return { text: 'Сайт завершено без втрати коду.' };
   }
   if (history.includes('[parts-fixture]') && tools.includes('create_project')) return partsDecision(turns, user, tools, used);
+  // [missing-page-fixture]: says it is done although its page links to a file it never writes.
+  if (history.includes('[missing-page-fixture]') && tools.includes('create_project')) {
+    if (!user.includes('Автоматичне продовження') && !used('create_project').length) return { tool: { name: 'create_project', args: { title: 'Неповний', kind: 'website', files: [{ path: 'index.html', content: PARTS_PAGE('Неповний', '<main><h1>Привіт</h1><a href="contacts.html">Контакти</a></main>').replace('<link rel="stylesheet" href="styles.css">', '') }] } } };
+    return { text: 'Готово!' };
+  }
   // [stall-fixture]: nothing saved before the time limit. [endless-fixture]: saves a little every run, never finishes.
   if (history.includes('[stall-fixture]')) return { stall: 60_000 };
   if (history.includes('[retry-empty-fixture]') && tools.includes('create_project')) {

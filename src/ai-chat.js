@@ -714,15 +714,23 @@ function acknowledge(jobId) { writeStorage(ACK_KEY, [...(readStorage(ACK_KEY) ??
 
 // A run cut off by the time limit goes on by itself, even before its first file. The app asks once per job and
 // tab; the server starts a continuation only once whatever asks, so another tab or a reopen is harmless.
+// The job counts as continued only after the server answered (started it, or it was continued elsewhere):
+// a request lost to the network or a busy server is tried again, a few times, with growing pauses.
 const RESUMED_KEY = 'aiss-ai-resumed';
+const RESUME_TRIES = 3;
+const resumeTries = new Map();
 function resumed(jobId) { return (readStorage(RESUMED_KEY) ?? '').split(',').includes(jobId); }
-function scheduleResume(conversationId, jobId) {
-  if (!jobId || resumed(jobId)) return;
+function markResumed(jobId) {
+  resumeTries.delete(jobId);
+  if (!resumed(jobId)) writeStorage(RESUMED_KEY, [...(readStorage(RESUMED_KEY) ?? '').split(',').filter(Boolean).slice(-20), jobId].join(','));
+}
+function scheduleResume(conversationId, jobId, delay = 1200) {
+  if (!jobId || resumed(jobId) || (resumeTries.get(jobId) ?? 0) >= RESUME_TRIES) return;
   setTimeout(() => {
     if (resumed(jobId) || state.pending || state.currentId !== conversationId || !root?.isConnected) return;
-    writeStorage(RESUMED_KEY, [...(readStorage(RESUMED_KEY) ?? '').split(',').filter(Boolean).slice(-20), jobId].join(','));
+    resumeTries.set(jobId, (resumeTries.get(jobId) ?? 0) + 1);
     void send('', { resumeJobId: jobId });
-  }, 1200);
+  }, delay);
 }
 
 async function openConversation(id, { silent = false } = {}) {
@@ -976,6 +984,7 @@ async function send(rawText, { resumeJobId = null } = {}) {
       if (!root?.isConnected && pending.jobId && event !== 'done' && event !== 'error') { pending.viewing = null; pending.controller?.abort(); pending.controller = null; return; }
       switch (event) {
         case 'start':
+          if (resumeJobId) markResumed(resumeJobId);
           pending.jobId = data.jobId;
           pending.conversationId = data.conversationId;
           pending.modelLabel = data.model?.label ?? pending.modelLabel;
@@ -995,7 +1004,7 @@ async function send(rawText, { resumeJobId = null } = {}) {
         case 'files': pending.files = data.files ?? []; renderThread(); return;
         case 'confirm': pending.action = data.pending ?? null; renderThread(); if (pending.action) deps.haptic?.('warning'); return;
         case 'model': pending.modelLabel = data.label; renderHeader(); return;
-        case 'attach': pending.jobId = data.jobId; pending.conversationId = data.conversationId; detach(pending); return;
+        case 'attach': if (resumeJobId) markResumed(resumeJobId); pending.jobId = data.jobId; pending.conversationId = data.conversationId; detach(pending); return;
         case 'done':
           showFinished(pending, { conversationId: data.conversationId, message: data.message, userMessage: data.userMessage, error: data.error ?? null, balance: data.balance, resume: data.resume ?? null });
           return;
@@ -1013,7 +1022,12 @@ async function send(rawText, { resumeJobId = null } = {}) {
     if (pending.jobId) { detach(pending); return; }
     finishPending(pending);
     // Already continued elsewhere (another tab, a reopened app): just show what is there now.
-    if (resumeJobId && error.code === 'AI_RESUME_STALE') { if (state.currentId) await openConversation(state.currentId, { silent: true }); }
+    if (resumeJobId && error.code === 'AI_RESUME_STALE') { markResumed(resumeJobId); if (state.currentId) await openConversation(state.currentId, { silent: true }); }
+    else if (resumeJobId && (!error.status || error.status === 429 || error.status >= 500)) {
+      // Not continued yet: try again shortly (the server joins repeated asks into one continuation).
+      scheduleResume(conversationId, resumeJobId, 4000 * (resumeTries.get(resumeJobId) ?? 1));
+      if (!error.status) setTimeout(syncAfterInterruption, 1200);
+    }
     else if (error.status) handleRefusal(error, text);
     else { state.error = { message: 'Зʼєднання перервалося. Перевіряємо, що збереглося…' }; setTimeout(syncAfterInterruption, 1200); }
     renderAll();

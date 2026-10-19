@@ -1,5 +1,5 @@
 import type {
-  AiAccessRule, AiAttachment, AiBalance, AiConversation, AiGeneratedFile, AiJob, AiErrorRecord, AiLedgerEntry, AiMessage, AiModelRecord, AiPluginRecord,
+  AiAccessRule, AiAttachment, AiBalance, AiConversation, AiGeneratedFile, AiJob, AiJobSpec, AiErrorRecord, AiLedgerEntry, AiMessage, AiModelRecord, AiPluginRecord,
   AiProviderRecord, AiResourcePackage, AiSettings, AiSkill, AiUsageRecord
 } from './types.js';
 
@@ -126,13 +126,32 @@ export interface AiStore {
   getJob(jobId: string): Promise<AiJob | null>;
   getJobs(jobIds: string[]): Promise<Map<string, AiJob>>;
   getJobText(jobId: string): Promise<string>;
-  /** Appends generated text, records a heartbeat and reports whether a stop was requested. */
-  flushJob(jobId: string, chunk: string, now: number): Promise<{ stopRequested: boolean }>;
+  /**
+   * Appends generated text, records a heartbeat and reports whether a stop was requested. With an
+   * owner, only the worker holding the lease may write; anyone else is told it lost the job.
+   */
+  flushJob(jobId: string, chunk: string, now: number, owner?: string): Promise<{ stopRequested: boolean; lost?: boolean }>;
   /** What the student's app sees: the job, the text after fromByte, and the full byte length. Marks the viewer as present. */
   viewJob(jobId: string, fromByte: number, now: number): Promise<{ job: AiJob; text: string; length: number } | null>;
   requestJobStop(jobId: string): Promise<void>;
-  /** Exactly one finisher wins: the generating function, or recovery once the job went quiet. */
-  claimJobFinalization(jobId: string, now: number, staleBefore: number | null): Promise<boolean>;
+  /** Exactly one finisher wins: the generating function, or recovery once the job went quiet. A worker passes its lease. */
+  claimJobFinalization(jobId: string, now: number, staleBefore: number | null, owner?: string): Promise<boolean>;
+  /**
+   * A worker takes a running job: only when nobody holds a live lease and fewer than maxAttempts
+   * workers took it before. Records a heartbeat so recovery leaves it alone.
+   */
+  claimJobLease(jobId: string, owner: string, now: number, leaseUntil: number, maxAttempts: number): Promise<{ ok: true; attempts: number } | { ok: false; reason: 'missing' | 'finished' | 'held' | 'exhausted' }>;
+  /** Extends the lease while the same worker still owns a running job. False means: stop, the job is not yours. */
+  renewJobLease(jobId: string, owner: string, now: number, leaseUntil: number): Promise<boolean>;
+  releaseJobLease(jobId: string, owner: string): Promise<void>;
+  /**
+   * A place for one more Cloud Run job: counts jobs handed to workers and not yet released (or
+   * whose lease ran out). Atomic, so parallel requests never exceed the cap.
+   */
+  reserveWorkerSlot(jobId: string, until: number, now: number, cap: number): Promise<boolean>;
+  releaseWorkerSlot(jobId: string): Promise<void>;
+  /** Keeps a long run's token reservation from expiring; false when it was already settled or expired. */
+  extendReservation(studentId: string, requestId: string, expiresAt: number): Promise<boolean>;
   finishJob(jobId: string, fields: Partial<AiJob>): Promise<void>;
   /** A lease on sending the notice: one sender at a time, a failed send may be retried later. Returns the attempt number, or 0. */
   claimJobNotification(jobId: string, now: number, leaseBefore: number): Promise<number>;
@@ -161,7 +180,7 @@ export interface AiStore {
 
 const JOB_TTL_SECONDS = 7 * 86_400;
 const JOB_REQUEST_TTL_SECONDS = 86_400;
-const JSON_JOB_FIELDS = new Set(['message', 'userMessage', 'steps', 'files', 'pending', 'decision', 'resume']);
+const JSON_JOB_FIELDS = new Set(['message', 'userMessage', 'steps', 'files', 'pending', 'decision', 'resume', 'spec']);
 
 /** Job fields as Redis hash strings, and back. */
 export function jobToFields(job: Partial<AiJob>): Record<string, string> {
@@ -190,7 +209,10 @@ export function jobFromFields(hash: Record<string, string>): AiJob | null {
     notifyAttempts: num('notifyAttempts'), userMessage: json<AiMessage>('userMessage'), message: json<AiMessage>('message'),
     mode: hash.mode === 'agent' ? 'agent' : 'chat', steps: json<AiJob['steps']>('steps') ?? [], files: json<AiJob['files']>('files') ?? [],
     pending: json<AiJob['pending']>('pending'), decision: json<AiJob['decision']>('decision'), queuedUntil: nullableNum('queuedUntil'),
-    round: num('round'), resume: json<NonNullable<AiJob['resume']>>('resume')
+    round: num('round'), resume: json<NonNullable<AiJob['resume']>>('resume'),
+    runner: hash.runner === 'cloud-run' ? 'cloud-run' : 'vercel', spec: json<AiJobSpec>('spec'),
+    leaseOwner: text('leaseOwner'), leaseUntil: nullableNum('leaseUntil'), attempts: num('attempts'),
+    dispatchedAt: nullableNum('dispatchedAt'), dispatches: num('dispatches'), reserved: num('reserved')
   };
 }
 
@@ -258,6 +280,7 @@ export class MemoryAiStore implements AiStore {
   private generated = new Map<string, AiGeneratedFile>();
   private jobRequests = new Map<string, string>();
   private activeJobs = new Map<string, string>();
+  private workerSlots = new Map<string, number>();
 
   async listProviders() { return [...this.providers.values()].map(item => structuredClone(item)); }
   async putProvider(provider: AiProviderRecord) { this.providers.set(provider.id, structuredClone(provider)); }
@@ -495,9 +518,10 @@ export class MemoryAiStore implements AiStore {
   }
   async getJobText(jobId: string) { return this.jobs.get(jobId)?.text ?? ''; }
 
-  async flushJob(jobId: string, chunk: string, now: number) {
+  async flushJob(jobId: string, chunk: string, now: number, owner?: string) {
     const item = this.jobs.get(jobId);
     if (!item) return { stopRequested: false };
+    if (owner && item.fields.leaseOwner !== owner) return { stopRequested: item.fields.stopRequested === '1', lost: true };
     item.text += chunk;
     item.fields.heartbeatAt = String(now);
     return { stopRequested: item.fields.stopRequested === '1' };
@@ -513,9 +537,10 @@ export class MemoryAiStore implements AiStore {
 
   async requestJobStop(jobId: string) { const item = this.jobs.get(jobId); if (item) item.fields.stopRequested = '1'; }
 
-  async claimJobFinalization(jobId: string, now: number, staleBefore: number | null) {
+  async claimJobFinalization(jobId: string, now: number, staleBefore: number | null, owner?: string) {
     const item = this.jobs.get(jobId);
     if (!item) return false;
+    if (owner && item.fields.leaseOwner !== owner) return false;
     const { status } = item.fields;
     const quiet = staleBefore === null || Number(item.fields.heartbeatAt) < staleBefore;
     const stuck = staleBefore !== null && status === 'finalizing' && Number(item.fields.finalizingAt) < staleBefore;
@@ -539,6 +564,47 @@ export class MemoryAiStore implements AiStore {
 
   async updateJob(jobId: string, fields: Partial<AiJob> & { notifyClaimAt?: string }) { const item = this.jobs.get(jobId); if (item) Object.assign(item.fields, jobToFields(fields)); }
   async releaseJob(jobId: string) { this.activeJobs.delete(jobId); }
+  async claimJobLease(jobId: string, owner: string, now: number, leaseUntil: number, maxAttempts: number) {
+    const item = this.jobs.get(jobId);
+    if (!item) return { ok: false as const, reason: 'missing' as const };
+    const fields = item.fields;
+    if (fields.status !== 'running') return { ok: false as const, reason: 'finished' as const };
+    const current = fields.leaseOwner ?? '';
+    if (current && current !== owner && Number(fields.leaseUntil ?? 0) > now) return { ok: false as const, reason: 'held' as const };
+    let attempts = Number(fields.attempts ?? 0) || 0;
+    if (current !== owner) {
+      if (attempts >= maxAttempts) return { ok: false as const, reason: 'exhausted' as const };
+      attempts += 1;
+    }
+    Object.assign(fields, { leaseOwner: owner, leaseUntil: String(leaseUntil), attempts: String(attempts), heartbeatAt: String(now) });
+    this.workerSlots.set(jobId, leaseUntil);
+    return { ok: true as const, attempts };
+  }
+  async renewJobLease(jobId: string, owner: string, now: number, leaseUntil: number) {
+    const fields = this.jobs.get(jobId)?.fields;
+    if (!fields || fields.status !== 'running' || fields.leaseOwner !== owner) return false;
+    Object.assign(fields, { leaseUntil: String(leaseUntil), heartbeatAt: String(now) });
+    this.workerSlots.set(jobId, leaseUntil);
+    return true;
+  }
+  async releaseJobLease(jobId: string, owner: string) {
+    const fields = this.jobs.get(jobId)?.fields;
+    if (fields?.leaseOwner === owner) fields.leaseOwner = '';
+    this.workerSlots.delete(jobId);
+  }
+  async reserveWorkerSlot(jobId: string, until: number, now: number, cap: number) {
+    for (const [id, end] of [...this.workerSlots]) if (end <= now) this.workerSlots.delete(id);
+    if (!this.workerSlots.has(jobId) && this.workerSlots.size >= cap) return false;
+    this.workerSlots.set(jobId, until);
+    return true;
+  }
+  async releaseWorkerSlot(jobId: string) { this.workerSlots.delete(jobId); }
+  async extendReservation(studentId: string, requestId: string, expiresAt: number) {
+    const item = this.reservationsOf(studentId).get(requestId);
+    if (!item) return false;
+    item.expiresAt = Math.max(item.expiresAt, expiresAt);
+    return true;
+  }
   async acquireRateSlot(providerId: string, limitPerMinute: number, now: number) {
     const minute = Math.floor(now / 60_000);
     const current = this.rateWindows.get(`${providerId}:${minute}`) ?? 0;
@@ -774,6 +840,11 @@ return ''`;
 const FLUSH_JOB_SCRIPT = `
 local key = ARGV[1] .. ':job:' .. ARGV[2]
 if redis.call('EXISTS', key) == 0 then return '0' end
+local owner = ARGV[5] or ''
+if owner ~= '' and (redis.call('HGET', key, 'leaseOwner') or '') ~= owner then
+  if redis.call('HGET', key, 'stopRequested') == '1' then return '3' end
+  return '2'
+end
 if ARGV[3] ~= '' then redis.call('APPEND', key .. ':text', ARGV[3]) end
 redis.call('HSET', key, 'heartbeatAt', ARGV[4])
 if redis.call('HGET', key, 'stopRequested') == '1' then return '1' end
@@ -791,6 +862,8 @@ return { redis.call('HGETALL', key), text, length }`;
 
 const CLAIM_JOB_SCRIPT = `
 local key = ARGV[1] .. ':job:' .. ARGV[2]
+local owner = ARGV[5] or ''
+if owner ~= '' and (redis.call('HGET', key, 'leaseOwner') or '') ~= owner then return 0 end
 local status = redis.call('HGET', key, 'status')
 local staleBefore = ARGV[4]
 local quiet = staleBefore == '' or tonumber(redis.call('HGET', key, 'heartbeatAt') or '0') < tonumber(staleBefore)
@@ -800,6 +873,66 @@ if (status == 'running' and quiet) or stuck then
   return 1
 end
 return 0`;
+
+// Times are milliseconds passed as strings and only compared here, never multiplied, so they stay
+// exact in every Lua number representation.
+const CLAIM_LEASE_SCRIPT = `
+local p, jobId, owner, now, leaseUntil, maxAttempts = ARGV[1], ARGV[2], ARGV[3], tonumber(ARGV[4]), ARGV[5], tonumber(ARGV[6])
+local key = p .. ':job:' .. jobId
+if redis.call('EXISTS', key) == 0 then return { 0, 'missing' } end
+if redis.call('HGET', key, 'status') ~= 'running' then return { 0, 'finished' } end
+local current = redis.call('HGET', key, 'leaseOwner') or ''
+local heldUntil = tonumber(redis.call('HGET', key, 'leaseUntil') or '0') or 0
+if current ~= '' and current ~= owner and heldUntil > now then return { 0, 'held' } end
+local attempts = tonumber(redis.call('HGET', key, 'attempts') or '0') or 0
+if current ~= owner then
+  if attempts >= maxAttempts then return { 0, 'exhausted' } end
+  attempts = attempts + 1
+end
+redis.call('HSET', key, 'leaseOwner', owner, 'leaseUntil', leaseUntil, 'attempts', tostring(attempts), 'heartbeatAt', ARGV[4])
+redis.call('HSET', p .. ':runner:slots', jobId, leaseUntil)
+return { 1, tostring(attempts) }`;
+
+const RENEW_LEASE_SCRIPT = `
+local p, jobId, owner = ARGV[1], ARGV[2], ARGV[3]
+local key = p .. ':job:' .. jobId
+if redis.call('HGET', key, 'status') ~= 'running' then return 0 end
+if (redis.call('HGET', key, 'leaseOwner') or '') ~= owner then return 0 end
+redis.call('HSET', key, 'leaseUntil', ARGV[5], 'heartbeatAt', ARGV[4])
+redis.call('HSET', p .. ':runner:slots', jobId, ARGV[5])
+return 1`;
+
+const RELEASE_LEASE_SCRIPT = `
+local p, jobId, owner = ARGV[1], ARGV[2], ARGV[3]
+local key = p .. ':job:' .. jobId
+if (redis.call('HGET', key, 'leaseOwner') or '') == owner then redis.call('HSET', key, 'leaseOwner', '') end
+redis.call('HDEL', p .. ':runner:slots', jobId)
+return 1`;
+
+const WORKER_SLOT_SCRIPT = `
+local p, jobId, untilAt, now, cap = ARGV[1], ARGV[2], ARGV[3], tonumber(ARGV[4]), tonumber(ARGV[5])
+local slots = p .. ':runner:slots'
+local held = redis.call('HGETALL', slots)
+local live = 0
+local mine = false
+for i = 1, #held, 2 do
+  if (tonumber(held[i + 1]) or 0) <= now then redis.call('HDEL', slots, held[i])
+  elseif held[i] == jobId then mine = true
+  else live = live + 1 end
+end
+if not mine and live >= cap then return 0 end
+redis.call('HSET', slots, jobId, untilAt)
+return 1`;
+
+// Reservations keep their times in seconds, like RESERVE_SCRIPT.
+const EXTEND_RESERVATION_SCRIPT = `
+local res = ARGV[1] .. ':res:' .. ARGV[2]
+local raw = redis.call('HGET', res, ARGV[3])
+if not raw then return 0 end
+local amt, est, exp = string.match(raw, '^(%d+):(%d+):(%d+)$')
+if not exp then return 0 end
+if tonumber(ARGV[4]) > tonumber(exp) then redis.call('HSET', res, ARGV[3], amt .. ':' .. est .. ':' .. ARGV[4]) end
+return 1`;
 
 const RATE_SLOT_SCRIPT = `
 local p, id, limit, now = ARGV[1], ARGV[2], tonumber(ARGV[3]), tonumber(ARGV[4])
@@ -1059,8 +1192,9 @@ export class RedisAiStore implements AiStore {
   }
   async getJobText(jobId: string) { return (await this.client.command<string | null>(['GET', this.key('job', jobId, 'text')])) ?? ''; }
 
-  async flushJob(jobId: string, chunk: string, now: number) {
-    return { stopRequested: (await this.client.command<string>(['EVAL', FLUSH_JOB_SCRIPT, 0, this.prefix, jobId, chunk, now])) === '1' };
+  async flushJob(jobId: string, chunk: string, now: number, owner?: string) {
+    const reply = await this.client.command<string>(['EVAL', FLUSH_JOB_SCRIPT, 0, this.prefix, jobId, chunk, now, owner ?? '']);
+    return { stopRequested: reply === '1' || reply === '3', ...(reply === '2' || reply === '3' ? { lost: true } : {}) };
   }
 
   async viewJob(jobId: string, fromByte: number, now: number) {
@@ -1072,8 +1206,34 @@ export class RedisAiStore implements AiStore {
 
   async requestJobStop(jobId: string) { await this.client.command(['HSET', this.key('job', jobId), 'stopRequested', '1']); }
 
-  async claimJobFinalization(jobId: string, now: number, staleBefore: number | null) {
-    return (await this.client.command<number>(['EVAL', CLAIM_JOB_SCRIPT, 0, this.prefix, jobId, now, staleBefore === null ? '' : staleBefore])) === 1;
+  async claimJobFinalization(jobId: string, now: number, staleBefore: number | null, owner?: string) {
+    return (await this.client.command<number>(['EVAL', CLAIM_JOB_SCRIPT, 0, this.prefix, jobId, now, staleBefore === null ? '' : staleBefore, owner ?? ''])) === 1;
+  }
+
+  async claimJobLease(jobId: string, owner: string, now: number, leaseUntil: number, maxAttempts: number) {
+    const reply = await this.client.command<[number, string]>(['EVAL', CLAIM_LEASE_SCRIPT, 0, this.prefix, jobId, owner, String(now), String(leaseUntil), maxAttempts]);
+    if (Number(reply?.[0]) === 1) return { ok: true as const, attempts: Number(reply[1]) || 1 };
+    const reason = reply?.[1];
+    const known: 'missing' | 'finished' | 'held' | 'exhausted' = reason === 'missing' || reason === 'finished' || reason === 'held' ? reason : 'exhausted';
+    return { ok: false as const, reason: known };
+  }
+
+  async renewJobLease(jobId: string, owner: string, now: number, leaseUntil: number) {
+    return Number(await this.client.command<number>(['EVAL', RENEW_LEASE_SCRIPT, 0, this.prefix, jobId, owner, String(now), String(leaseUntil)])) === 1;
+  }
+
+  async releaseJobLease(jobId: string, owner: string) {
+    await this.client.command(['EVAL', RELEASE_LEASE_SCRIPT, 0, this.prefix, jobId, owner]);
+  }
+
+  async reserveWorkerSlot(jobId: string, until: number, now: number, cap: number) {
+    return Number(await this.client.command<number>(['EVAL', WORKER_SLOT_SCRIPT, 0, this.prefix, jobId, String(until), String(now), Math.max(0, Math.floor(cap))])) === 1;
+  }
+
+  async releaseWorkerSlot(jobId: string) { await this.client.command(['HDEL', this.key('runner', 'slots'), jobId]); }
+
+  async extendReservation(studentId: string, requestId: string, expiresAt: number) {
+    return Number(await this.client.command<number>(['EVAL', EXTEND_RESERVATION_SCRIPT, 0, this.prefix, studentId, requestId, Math.floor(expiresAt / 1000)])) === 1;
   }
 
   async finishJob(jobId: string, fields: Partial<AiJob>) {

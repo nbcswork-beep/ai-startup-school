@@ -1,0 +1,11 @@
+# Only package.json, the lockfile, tsconfig.server.json, server/, api/ and bot/ (shared bot commands) go into the AI worker image.
+*
+!package.json
+!package-lock.json
+!tsconfig.server.json
+!server/
+!api/
+!bot/
+server/**/*.test.ts
+server/**/testing/
+.env*

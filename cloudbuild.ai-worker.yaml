@@ -1,0 +1,18 @@
+# Cloud Build: builds the AI worker image from this repository and pushes it to Artifact Registry.
+# Used by a Cloud Build trigger (see docs/CLOUD-RUN-WORKER.md). It only builds and pushes; it does
+# not deploy and does not touch the running Cloud Run job.
+substitutions:
+  _REGION: europe-west1
+  _REPOSITORY: student-os
+  _IMAGE: ai-worker
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file=Dockerfile.ai-worker
+      - --tag=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:$SHORT_SHA
+      - .
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:$SHORT_SHA
+options:
+  logging: CLOUD_LOGGING_ONLY

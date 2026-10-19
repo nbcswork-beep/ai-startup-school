@@ -37,6 +37,20 @@ export interface AiServiceDeps {
   fetcher?: typeof fetch;
   /** Time one run may generate before it stops and saves (the function lives 300 s); tests shorten it. */
   generationBudgetMs?: number;
+  /** Hands agent jobs to Cloud Run workers. Without it everything runs on Vercel, as before. */
+  dispatcher?: AiWorkerDispatcher | null;
+  /** In a worker: asks Vercel to send the «answer ready» notice (the worker has no bot token). */
+  noticeRelay?: ((jobId: string) => Promise<void>) | null;
+  /** Longest single model request, and longest silence inside one; a worker allows long requests. */
+  requestTimeoutMs?: number;
+  idleTimeoutMs?: number;
+}
+
+/** Starts a worker for a stored job. Only the job id is passed; the worker reads the rest from storage. */
+export interface AiWorkerDispatcher {
+  /** How many jobs may be with workers at once (Cloud Run executions cost money). */
+  readonly maxConcurrent: number;
+  dispatch(jobId: string): Promise<void>;
 }
 
 export const DEFAULT_SYSTEM_PROMPT = [
@@ -62,7 +76,9 @@ export const DEFAULT_SETTINGS: AiSettings = {
   agentStyle: 'friendly',
   agentEnabled: true,
   agentMaxSteps: 8,
-  agentModelId: null
+  agentModelId: null,
+  runnerMode: 'vercel',
+  runnerStudentIds: []
 };
 
 const FORBIDDEN_HEADERS = new Set(['host', 'content-length', 'connection', 'transfer-encoding', 'cookie', 'te', 'upgrade', 'keep-alive', 'proxy-authorization', 'content-type', 'accept']);
@@ -160,7 +176,12 @@ export class AiService {
       await this.waitForSlot(provider, request.signal, onQueue);
       let produced = false;
       try {
-        for await (const event of this.adapter(this.connection(provider, keyId)).stream(request)) { produced = true; yield event; }
+        const timed: ChatStreamRequest = {
+          ...request,
+          ...(request.timeoutMs === undefined && this.deps.requestTimeoutMs ? { timeoutMs: this.deps.requestTimeoutMs } : {}),
+          ...(request.idleTimeoutMs === undefined && this.deps.idleTimeoutMs ? { idleTimeoutMs: this.deps.idleTimeoutMs } : {})
+        };
+        for await (const event of this.adapter(this.connection(provider, keyId)).stream(timed)) { produced = true; yield event; }
         return;
       } catch (error) {
         if (!(error instanceof AiProviderError) || error.code !== 'rate_limit' || produced || retry >= RATE_LIMIT_RETRIES) throw error;

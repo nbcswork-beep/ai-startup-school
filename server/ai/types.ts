@@ -107,6 +107,12 @@ export interface AiSettings {
   agentMaxSteps: number;
   /** Default model in agent mode (a stronger one, with tools); null uses the default model. */
   agentModelId: string | null;
+  /**
+   * Where agent-mode answers are generated: on Vercel (as before), on Cloud Run for the listed
+   * students, or on Cloud Run for everyone. Plain chat always streams from Vercel.
+   */
+  runnerMode: 'vercel' | 'cloud-run-selected' | 'cloud-run-all';
+  runnerStudentIds: string[];
 }
 
 /** A skill: what it is for, when it applies, how to do it, and which tools it may use. Stored and exchanged as SKILL.md. */
@@ -393,6 +399,37 @@ export interface AiJob {
   round?: number;
   /** The run hit the time limit: the app continues it automatically as `round`. */
   resume?: { round: number; max: number } | null;
+  /** Where the answer is generated. Missing means on Vercel, in the function that took the request. */
+  runner?: AiRunner;
+  /** What a worker needs to rebuild the request from storage. References and resolved choices only, never secrets. */
+  spec?: AiJobSpec | null;
+  /** The worker that owns the job, and until when; another worker may take over only after that. */
+  leaseOwner?: string | null;
+  leaseUntil?: number | null;
+  /** Workers that took this job (a crashed worker's job is taken again a bounded number of times). */
+  attempts?: number;
+  /** Tokens reserved for the run when it was accepted; a worker spends within them. */
+  reserved?: number;
+  /** When the job was last handed to Cloud Run, and how many times. */
+  dispatchedAt?: number | null;
+  dispatches?: number;
+}
+
+export type AiRunner = 'vercel' | 'cloud-run';
+
+/** A request as stored for a worker: enough to build the same prompt again, nothing that grants access. */
+export interface AiJobSpec {
+  version: 1;
+  /** The student's text as the model gets it (an automatic continuation's instruction for continuations). */
+  text: string;
+  attachmentIds: string[];
+  skillId: string | null;
+  /** Editing or regenerating the last exchange: the pair it replaces. */
+  revision: { userId: string; assistantId: string } | null;
+  /** Lesson or homework material resolved with the student's access rules when the request arrived. */
+  learning: { prompt: string } | null;
+  /** The job this one continues after a time limit. */
+  resumeOf: string | null;
 }
 
 export interface AiMessageUsage {

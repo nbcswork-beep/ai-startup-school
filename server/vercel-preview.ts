@@ -9,6 +9,8 @@ import { RedisRestPilotRuntimeStore, type PilotRuntimeStore } from './data/pilot
 import { RedisRestLoginAttemptLimiter, RedisRestSessionStore, type LoginAttemptLimiter, type SessionStore } from './auth/session-store.js';
 import type { TelegramWebhookHandler } from './routes/telegram-webhook.js';
 import type { NotificationSender } from './services/telegram-notification-service.js';
+import { vercelWorkerDispatcher } from './ai/cloud-run.js';
+import { vercelOidcToken } from './vercel-runtime-env.js';
 
 const ROUTE_PARAMETER = '__aiss_path';
 let vercelApp: Promise<FastifyInstance> | undefined;
@@ -116,8 +118,15 @@ export async function createVercelApp(input: NodeJS.ProcessEnv = process.env, ov
     env.runtimeRedisPrefix,
     { bootstrapPolicy: env.deployEnvironment === 'production' && !env.ALLOW_RUNTIME_STATE_BOOTSTRAP ? 'require' : 'seed' }
   );
+  // Cloud Run workers for long agent answers: off unless every AI_WORKER_* setting is present, and even
+  // then only for the students the admin turns it on for. Problems are logged by name, never by value.
+  const worker = vercelWorkerDispatcher(input, vercelOidcToken);
+  if (worker.problem) console.warn(worker.problem);
+  const callbackSecret = input.AI_WORKER_CALLBACK_SECRET?.trim() ?? '';
+  if (callbackSecret && callbackSecret.length < 32) console.warn('AI_WORKER_CALLBACK_SECRET must be at least 32 characters; worker notices are off');
   const app = await buildApp({
     env,
+    aiWorker: { dispatcher: worker.dispatcher, problem: worker.problem, callbackSecret: callbackSecret.length >= 32 ? callbackSecret : null },
     repository: new MemoryRepository(env.WORKSPACE_URL, {
       telegramBindingsJson: env.TELEGRAM_STUDENT_BINDINGS_JSON,
       webAuthAccountsJson: env.WEB_AUTH_ACCOUNTS_JSON,

@@ -159,6 +159,26 @@ export function createAiAdmin(ctx) {
     return `${money(inputPer1M, currency)} / ${money(outputPer1M, currency)}<small>вхід / вихід за 1M</small>`;
   }
 
+  /** Where agent answers are generated. «Vercel» is the old way and the way back. */
+  function runnerPanel(data, settings) {
+    const worker = data.worker ?? { configured: false, problem: null, students: [] };
+    const mode = settings.runnerMode ?? 'vercel';
+    const chosen = new Set(settings.runnerStudentIds ?? []);
+    const options = [['vercel', 'Vercel — як зараз (до 5 хвилин на один запуск)'], ['cloud-run-selected', 'Google Cloud Run — лише для вибраних учнів'], ['cloud-run-all', 'Google Cloud Run — для всіх учнів']];
+    const status = worker.configured
+      ? '<p class="muted-copy">Сервер генерації підключено. Звичайний чат завжди лишається на Vercel; на Cloud Run йде лише режим агента. Якщо Google недоступний, відповідь генерується на Vercel.</p>'
+      : `<p class="muted-copy">Сервер генерації Google Cloud ще не підключено${worker.problem ? ` (${esc(worker.problem)})` : ''}. Усі відповіді генеруються на Vercel.</p>`;
+    return `<section class="panel ai-section">
+      <div class="panel-head"><div><span class="kicker">Генерація</span><h2>Де працює режим агента</h2></div></div>
+      ${status}
+      <form id="ai-runner" class="ai-settings">
+        <label class="field ai-wide"><span>Режим</span><select name="runnerMode" ${worker.configured ? '' : 'disabled'}>${options.map(([value, label]) => `<option value="${value}" ${value === mode ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>
+        ${worker.configured && worker.students.length ? `<fieldset class="field ai-wide"><legend>Учні для перевірки на Cloud Run</legend>${worker.students.map(student => `<label class="check"><input type="checkbox" name="runnerStudentIds" value="${esc(student.id)}" ${chosen.has(student.id) ? 'checked' : ''}><span>${esc(student.name)}${student.groupName ? ` · ${esc(student.groupName)}` : ''}</span></label>`).join('')}</fieldset>` : ''}
+        <div class="ai-wide ai-form-actions"><button class="primary" type="submit" ${worker.configured ? '' : 'disabled'}>Зберегти</button></div>
+      </form>
+    </section>`;
+  }
+
   function providersView(data) {
     const { providers, models, settings } = data;
     const providerName = id => providers.find(item => item.id === id)?.name ?? '—';
@@ -197,7 +217,8 @@ export function createAiAdmin(ctx) {
           ${field('Попереджати про ресурс API нижче, %', 'resourceWarningPercent', settings.resourceWarningPercent, 'number', 'min="1" max="90" required')}
           <div class="ai-wide ai-form-actions"><button class="primary" type="submit">Зберегти налаштування</button></div>
         </form>
-      </section>`;
+      </section>
+      ${runnerPanel(data, settings)}`;
   }
 
   const providerRate = form => numberOrNull(form.get('rateLimitPerMinute'));
@@ -916,6 +937,13 @@ export function createAiAdmin(ctx) {
               agentLanguage: form.get('agentLanguage'), agentStyle: form.get('agentStyle'), agentEnabled: form.get('agentEnabled') === 'on',
               agentMaxSteps: Number(form.get('agentMaxSteps')), agentModelId: form.get('agentModelId') || null, systemPrompt: String(form.get('systemPrompt')).trim()
             }), 'Профіль агента збережено');
+            return;
+          }
+          if (event.target.id === 'ai-runner') {
+            event.preventDefault();
+            const form = new FormData(event.target);
+            const submit = event.target.querySelector('[type="submit"]');
+            await run(submit, () => api.aiSettings({ runnerMode: form.get('runnerMode'), runnerStudentIds: form.getAll('runnerStudentIds').map(String) }), 'Збережено');
             return;
           }
           if (event.target.id !== 'ai-settings') return;
