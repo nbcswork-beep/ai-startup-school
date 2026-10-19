@@ -15,6 +15,7 @@ on:
       - 'server/**'
       - 'api/**'
       - 'bot/**'
+      - scripts/ai-worker-runtime-check.mjs
       - .github/workflows/ai-worker-image.yml
   workflow_dispatch:
 
@@ -44,6 +45,10 @@ jobs:
             ! ls server-dist/server | grep -q "\.test\."
             ! test -e node_modules/typescript
           '
+
+      - name: Runtime dependencies work (documents, tokenizer, probe image)
+        # Loaded only when a job needs them, so starting the worker does not prove they are in the image.
+        run: docker run --rm -v "$PWD/scripts:/check:ro" --entrypoint node ai-worker:ci /check/ai-worker-runtime-check.mjs
 
       - name: Refuses to start without configuration (exit 2, names only)
         run: |
