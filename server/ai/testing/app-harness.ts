@@ -66,8 +66,8 @@ export function aiSchool(options: { fetcher?: typeof fetch; generationBudgetMs?:
   return { redis, aiStore, as, close: () => Promise.all(apps.splice(0).map(app => app.close())) };
 }
 
-export async function configureMock(admin: Awaited<ReturnType<ReturnType<typeof aiSchool>['as']>>, mock: MockProviderServer, key: string, models: string[]) {
-  const created = await admin.call('POST', '/api/v1/admin/ai/providers', { name: 'Mock reseller', protocol: 'openai', baseUrl: mock.baseUrl, apiKey: key, headers: [] });
+export async function configureMock(admin: Awaited<ReturnType<ReturnType<typeof aiSchool>['as']>>, mock: MockProviderServer, key: string, models: string[], protocol: 'openai' | 'anthropic' = 'openai') {
+  const created = await admin.call('POST', '/api/v1/admin/ai/providers', { name: 'Mock reseller', protocol, baseUrl: protocol === 'anthropic' ? mock.anthropicBaseUrl : mock.baseUrl, apiKey: key, headers: [] });
   expect(created.statusCode).toBe(201);
   const ids: Record<string, string> = {};
   for (const apiModelId of models) {

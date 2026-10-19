@@ -21,7 +21,7 @@ export function safeProjectPath(path: unknown): path is string {
     && TEXT_EXTENSION.test(path) && !/(?:^|\/)(?:secrets?|credentials?|id_rsa)(?:[./]|$)/i.test(path);
 }
 
-export function parseProject(raw: unknown): ProjectSource {
+export function parseProject(raw: unknown, allowMissingIndex = false): ProjectSource {
   if (!raw || typeof raw !== 'object') throw new Error('Проєкт має містити kind та files.');
   const input = raw as Record<string, unknown>;
   if (input.kind !== 'website' && input.kind !== 'code') throw new Error('kind: website або code.');
@@ -39,11 +39,12 @@ export function parseProject(raw: unknown): ProjectSource {
     if (input.kind === 'website' && !SITE_EXTENSION.test(item.path)) throw new Error('Опублікований сайт підтримує HTML, CSS, JS та статичні ресурси. Для React/Node/Python обери kind=code і додай README з командами запуску.');
     return { path: item.path, content: item.content };
   });
-  if (input.kind === 'website' && !paths.has('index.html')) throw new Error('Сайту потрібен index.html у корені.');
+  if (!allowMissingIndex && input.kind === 'website' && !paths.has('index.html')) throw new Error('Сайту потрібен index.html у корені.');
   return { kind: input.kind, files };
 }
 
-export function projectFromContent(content: string): ProjectSource { return parseProject(JSON.parse(content)); }
+// Stored private drafts may be received in any file order. Publication still requires index.html.
+export function projectFromContent(content: string): ProjectSource { return parseProject(JSON.parse(content), true); }
 export function projectZip(content: string): Buffer { return createZip(projectFromContent(content).files, new Date('2026-01-01T00:00:00Z')); }
 
 interface ProjectProblem { text: string; missing: boolean }
@@ -116,8 +117,12 @@ export class StudentProjects {
       if (current && (current.studentId !== job.studentId || (state.lastContent !== undefined && current.content !== state.lastContent))) return null;
       if (!job.files.some(file => file.id === state.id) && job.files.length >= 6) return null;
       const base = state.base ? projectFromContent(state.base.content) : null;
-      const kind = fragment.kind ?? base?.kind;
-      if (!kind) return null;
+      const knownKind = tool === 'create_project' || state.base?.projectKindPending
+        ? fragment.kind ?? (state.base?.projectKindPending ? undefined : base?.kind)
+        : base?.kind;
+      // Preserve received text even if metadata is later in the tool JSON. "code" is only
+      // a ZIP container here; read_project exposes kind=null until the model chooses it.
+      const kind = knownKind ?? 'code';
       const merged = new Map((base?.files ?? []).map(file => [file.path.toLowerCase(), file]));
       for (const file of fragment.files) {
         let content = file.content;
@@ -129,17 +134,19 @@ export class StudentProjects {
         merged.set(file.path.toLowerCase(), { path: file.path, content });
       }
       let source: ProjectSource;
-      try { source = parseProject({ kind, files: [...merged.values()] }); }
+      try { source = parseProject({ kind, files: [...merged.values()] }, true); }
       catch { return null; } // Invalid or not yet complete metadata is not a tool call.
       const content = JSON.stringify(source);
-      if (content === state.lastContent) return null;
+      if (content === state.lastContent && Boolean(current?.projectKindPending) === !knownKind) return null;
       const title = String(fragment.title || state.base?.title || 'Мій проєкт').slice(0, 100);
       const record: AiGeneratedFile = {
         ...(state.base ?? {}), id: state.id, studentId: job.studentId, conversationId: job.conversationId,
         name: `${title.replace(/[^\p{L}\p{N}_ -]/gu, '').trim() || 'project'}.zip`, title, format: 'project',
         content, size: projectZip(content).length,
         preview: { ...projectPreview(source), incomplete: true } as AiGeneratedFile['preview'],
-        incompleteFiles: [...new Set([...(state.base?.incompleteFiles ?? []), ...fragment.files.map(file => file.path)])],
+        incompleteFiles: [...new Set([...(state.base?.incompleteFiles ?? []), ...fragment.files.map(file => file.path),
+          ...(kind === 'website' && !source.files.some(file => file.path.toLowerCase() === 'index.html') ? ['index.html'] : [])])],
+        projectKindPending: knownKind ? undefined : true,
         createdAt: this.now().toISOString()
       };
       await this.store.putGeneratedFile(record);
@@ -175,6 +182,8 @@ export class StudentProjects {
       if (!incoming.length && !remove.length) throw new Error('Передай files (1–3 файли за виклик) або remove.');
       if (incoming.length > 5) throw new Error('За один виклик додавай до 5 файлів; решту — наступним write_project_files.');
       const current = projectFromContent(previous.content);
+      if (previous.projectKindPending && args.kind !== 'website' && args.kind !== 'code') throw new Error('Тип проєкту ще не надійшов. Повтори write_project_files з kind=website або kind=code та наступними файлами.');
+      const kind = previous.projectKindPending ? args.kind as ProjectSource['kind'] : current.kind;
       const merged = new Map(current.files.map(file => [file.path.toLowerCase(), file]));
       for (const path of remove) merged.delete(path.toLowerCase());
       for (const file of incoming as Array<Partial<ProjectFile> | null>) merged.set(String(file?.path ?? '').toLowerCase(), file as ProjectFile);
@@ -182,13 +191,14 @@ export class StudentProjects {
       const label = written.length ? `Дописано ${written.slice(0, 3).join(', ')}${written.length > 3 ? ` та ще ${written.length - 3}` : ''}` : `Оновлено «${previous.title}»`;
       const completed = new Set([...written, ...remove].map(path => path.toLowerCase()));
       const incomplete = (previous.incompleteFiles ?? []).filter(path => !completed.has(path.toLowerCase()));
-      return await this.save(job, previous, parseProject({ kind: current.kind, files: [...merged.values()] }), previous.title ?? 'Мій проєкт', 'write_project_files', label, incomplete);
+      return await this.save(job, previous, parseProject({ kind, files: [...merged.values()] }, true), previous.title ?? 'Мій проєкт', 'write_project_files', label, incomplete);
     } catch (error) { return { status: 'error', content: error instanceof Error ? error.message : 'Не вдалося дописати проєкт' }; }
   }
 
   async append(job: AiJob, args: Record<string, unknown>, streamed?: ProjectStreamState): Promise<ToolOutcome> {
     try {
       const previous = await this.owned(job.studentId, String(args.projectId ?? ''));
+      if (previous.projectKindPending) throw new Error('Спочатку write_project_files з kind=website або kind=code: тип перерваного проєкту ще не визначено.');
       if (!safeProjectPath(args.path) || typeof args.content !== 'string' || args.content.length > 16000 || typeof args.complete !== 'boolean') throw new Error('Потрібні коректні path, content (до 16000 символів) та complete (true/false).');
       if (streamed?.lastContent !== undefined && previous.content !== streamed.lastContent) throw new Error('Проєкт змінився під час запису. Прочитай актуальний файл і продовжуй з його offset.');
       if (!job.files.some(file => file.id === previous.id) && job.files.length >= 6) throw new Error('Ліміт проєктів на завдання.');
@@ -200,11 +210,12 @@ export class StudentProjects {
       else source.files.push({ path: args.path, content: args.content });
       const pending = new Set((previous.incompleteFiles ?? []).filter(path => path.toLowerCase() !== (args.path as string).toLowerCase()));
       if (!args.complete) pending.add(existing?.path ?? args.path);
-      return await this.save(job, previous, parseProject(source), previous.title, 'append_project_file', `Дописано ${args.path}`, [...pending]);
+      return await this.save(job, previous, parseProject(source, true), previous.title, 'append_project_file', `Дописано ${args.path}`, [...pending]);
     } catch (error) { return { status: 'error', content: error instanceof Error ? error.message : 'Не вдалося дописати файл' }; }
   }
 
   private async save(job: AiJob, previous: AiGeneratedFile | null, source: ProjectSource, title: string, tool: string, label = `Збережено «${title}»`, incomplete: string[] = []): Promise<ToolOutcome> {
+    if (source.kind === 'website' && !source.files.some(file => file.path.toLowerCase() === 'index.html')) incomplete = [...new Set([...incomplete, 'index.html'])];
     const { blocking, missing } = inspectProject({ ...source, files: source.files.filter(file => !incomplete.includes(file.path)) });
     if (blocking.length) return { status: 'error', content: `Проєкт не збережено. Виправ і повтори ${tool}:\n${[...blocking, ...missing].join('\n')}`, check: { ok: false, detail: blocking.join('; ').slice(0, 250) } };
     const content = JSON.stringify(source);
@@ -234,7 +245,7 @@ export class StudentProjects {
     const record = await this.owned(studentId, String(args.projectId ?? ''));
     const source = projectFromContent(record.content);
     const file = source.files.find(item => item.path === args.path);
-    if (!args.path) return { content: JSON.stringify({ projectId: record.id, title: record.title, kind: source.kind, files: source.files.map(f => ({ path: f.path, chars: f.content.length, incomplete: record.incompleteFiles?.includes(f.path) ?? false })), published: Boolean(record.publishedContent), instruction: record.incompleteFiles?.length ? 'Незавершені файли: прочитай кінець через from=max(0,chars-2000), допиши append_project_file з offset=chars, не повторюй збережений початок. complete=true лише в останній частині.' : '' }) };
+    if (!args.path) return { content: JSON.stringify({ projectId: record.id, title: record.title, kind: record.projectKindPending ? null : source.kind, files: source.files.map(f => ({ path: f.path, chars: f.content.length, incomplete: record.incompleteFiles?.includes(f.path) ?? false })), missingFiles: (record.incompleteFiles ?? []).filter(path => !source.files.some(file => file.path.toLowerCase() === path.toLowerCase())), published: Boolean(record.publishedContent), instruction: record.projectKindPending ? 'Код збережено до отримання kind. Визнач тип за початковим завданням: write_project_files з kind=website або kind=code та наступними файлами. Для сайту додай index.html. Не створюй новий проєкт.' : record.incompleteFiles?.length ? 'Незавершені файли: прочитай кінець через from=max(0,chars-2000), допиши append_project_file з offset=chars, не повторюй збережений початок. complete=true лише в останній частині. Відсутні файли додай write_project_files.' : '' }) };
     if (!file) return { status: 'error', content: 'Файл не знайдено.' };
     const from = Math.max(0, Math.floor(Number(args.from) || 0));
     return { content: `${file.path}, ${from}–${Math.min(file.content.length, from + 20000)} / ${file.content.length} символів:\n${file.content.slice(from, from + 20000)}` };
@@ -242,9 +253,10 @@ export class StudentProjects {
 
   async publish(studentId: string, id: string): Promise<{ url: string }> {
     const record = await this.owned(studentId, id);
-    if (record.incompleteFiles?.length) throw new AppError('AI_PROJECT_INCOMPLETE', 400, `Сайт ще дописується: ${record.incompleteFiles.join(', ')}. Спочатку завершіть файли.`);
+    if (record.projectKindPending || record.incompleteFiles?.length) throw new AppError('AI_PROJECT_INCOMPLETE', 400, `Сайт ще дописується: ${record.incompleteFiles?.join(', ') ?? 'тип проєкту'}. Спочатку завершіть файли.`);
     const source = projectFromContent(record.content);
     if (source.kind !== 'website') throw new AppError('AI_PROJECT_NOT_STATIC', 400, 'Можна опублікувати статичний HTML/CSS/JS сайт. Серверні проєкти доступні як ZIP.');
+    if (!source.files.some(file => file.path.toLowerCase() === 'index.html')) throw new AppError('AI_PROJECT_INCOMPLETE', 400, 'Сайту потрібен index.html у корені.');
     const problems = checkProject(source);
     if (problems.length) throw new AppError('AI_PROJECT_INVALID', 400, problems.join('; '));
     await this.store.putGeneratedFile({ ...record, publishedContent: record.content, publishedAt: this.now().toISOString() });

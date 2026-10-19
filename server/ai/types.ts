@@ -189,6 +189,8 @@ export interface AiGeneratedFile {
   publishedAt?: string | undefined;
   /** Streamed source is a draft until an explicit complete file write validates it. */
   incompleteFiles?: string[] | undefined;
+  /** Code arrived before create_project.kind; require the model to choose it on resume. */
+  projectKindPending?: boolean | undefined;
 }
 
 export interface AiFileRef {
