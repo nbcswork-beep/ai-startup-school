@@ -16,6 +16,7 @@ const TOKEN_MARGIN_MS = 60_000;
 
 export interface GoogleTokenSource {
   token(): Promise<string>;
+  invalidate?(): void;
 }
 
 export class CloudRunDispatchError extends Error {
@@ -25,21 +26,44 @@ export class CloudRunDispatchError extends Error {
   }
 }
 
-/** Google's error text without anything that looks like a credential, bounded. */
-async function googleError(response: Response): Promise<string> {
-  const raw = await response.text().catch(() => '');
-  let message = raw;
+/** Never forward upstream bodies, SDK errors, headers or causes: credentials can have any shape. */
+async function googleRequest(fetcher: typeof fetch, stage: string, url: string, init: RequestInit): Promise<Response> {
+  let response: Response;
   try {
-    const parsed = JSON.parse(raw) as { error?: { message?: unknown; status?: unknown } | string; error_description?: unknown };
-    message = typeof parsed.error === 'string'
-      ? `${parsed.error}${typeof parsed.error_description === 'string' ? `: ${parsed.error_description}` : ''}`
-      : `${String(parsed.error?.status ?? '')} ${String(parsed.error?.message ?? '')}`.trim();
-  } catch { /* plain text */ }
-  return `HTTP ${response.status} ${message}`
-    .replace(/(ya29\.|eyJ)[A-Za-z0-9._-]{10,}/g, '[token]')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 300);
+    response = await fetcher(url, { ...init, redirect: 'error' });
+  } catch {
+    throw new CloudRunDispatchError(null, `${stage}: request failed or timed out; outcome may be unknown`);
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    const hint = ({
+      400: 'INVALID_ARGUMENT: check configuration and provider audience/subject condition',
+      401: 'UNAUTHENTICATED: check OIDC availability and token expiry',
+      403: 'PERMISSION_DENIED: check provider condition, service-account binding and job IAM',
+      404: 'NOT_FOUND: check project, region, job and service account',
+      429: 'RESOURCE_EXHAUSTED: quota or rate limit'
+    } as Record<number, string>)[response.status] ?? 'Google request rejected';
+    throw new CloudRunDispatchError(response.status, `${stage}: HTTP ${response.status} ${hint}`);
+  }
+  return response;
+}
+
+async function googleJson(response: Response, stage: string): Promise<Record<string, unknown>> {
+  try {
+    const body: unknown = await response.json();
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error();
+    return body as Record<string, unknown>;
+  } catch {
+    throw new CloudRunDispatchError(null, `${stage}: invalid JSON response`);
+  }
+}
+
+function safeDetail(error: unknown): string {
+  return error instanceof CloudRunDispatchError ? error.message : 'Google authentication or request failed';
+}
+
+function validToken(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 32_768 && !/\s/.test(value);
 }
 
 export class CloudRunJobDispatcher implements AiWorkerDispatcher {
@@ -51,50 +75,55 @@ export class CloudRunJobDispatcher implements AiWorkerDispatcher {
 
   get maxConcurrent(): number { return this.config.maxConcurrent; }
 
-  /**
-   * Proves the real path to Google without starting anything: a token from Vercel OIDC through
-   * STS and IAM, then a read of the job. Each step says pass or fail with Google's error text
-   * (tokens removed). Claims of the OIDC token are shown (they name the team, project and
-   * environment; they are not secret), the token itself never.
-   */
+  /** Fresh auth plus jobs.run validation, including overrides, without creating an execution. */
   async diagnose(): Promise<Array<{ step: string; ok: boolean; detail: string }>> {
     const steps: Array<{ step: string; ok: boolean; detail: string }> = [];
     const tokens = this.config.tokens;
-    if (tokens instanceof WorkloadIdentityTokenSource) {
-      const claims = await tokens.subjectClaims();
-      steps.push(claims ? { step: 'vercel-oidc', ok: true, detail: JSON.stringify(claims) } : { step: 'vercel-oidc', ok: false, detail: 'No OIDC token in this function: turn on OIDC Federation for the project (Team issuer) and redeploy' });
-      if (!claims) return steps;
-    }
+    // Do not report success using a previously cached credential after an IAM/OIDC change.
+    tokens.invalidate?.();
     let token: string;
-    try { token = await tokens.token(); steps.push({ step: 'google-token', ok: true, detail: 'STS exchange and service-account impersonation succeeded' }); }
-    catch (error) { steps.push({ step: 'google-token', ok: false, detail: error instanceof Error ? error.message : 'failed' }); return steps; }
-    const { project, region, job } = this.config;
-    const response = await this.fetcher(`https://run.googleapis.com/v2/projects/${encodeURIComponent(project)}/locations/${encodeURIComponent(region)}/jobs/${encodeURIComponent(job)}`, {
-      headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000), redirect: 'error'
-    }).catch(error => error as Error);
-    if (response instanceof Error) steps.push({ step: 'cloud-run-job', ok: false, detail: response.message });
-    else if (response.ok) {
-      const body = await response.json().catch(() => ({})) as { name?: unknown; template?: { template?: { containers?: Array<{ image?: unknown }> } } };
-      steps.push({ step: 'cloud-run-job', ok: true, detail: `${String(body.name ?? job)} · image ${String(body.template?.template?.containers?.[0]?.image ?? '?')}` });
-    } else steps.push({ step: 'cloud-run-job', ok: false, detail: await googleError(response) });
+    try {
+      token = await tokens.token();
+      steps.push({ step: 'google-token', ok: true, detail: tokens instanceof WorkloadIdentityTokenSource
+        ? 'Vercel OIDC → STS → service-account impersonation succeeded'
+        : 'Google access token obtained' });
+    } catch (error) { steps.push({ step: 'google-token', ok: false, detail: safeDetail(error) }); return steps; }
+    try {
+      await this.run('00000000-0000-4000-8000-000000000000', token, true);
+      steps.push({ step: 'cloud-run-job', ok: true, detail: 'jobs.run with overrides validated (validateOnly=true); no execution started' });
+    } catch (error) { steps.push({ step: 'cloud-run-job', ok: false, detail: safeDetail(error) }); }
     return steps;
   }
 
   async dispatch(jobId: string): Promise<void> {
     // The id is the only thing a worker is told; anything else is refused before Google sees it.
     if (!UUID.test(jobId)) throw new CloudRunDispatchError(null, 'Invalid job id');
-    const token = await this.config.tokens.token();
+    let token: string;
+    try { token = await this.config.tokens.token(); }
+    catch (error) { throw new CloudRunDispatchError(error instanceof CloudRunDispatchError ? error.status : null, safeDetail(error)); }
+    await this.run(jobId, token, false);
+  }
+
+  private async run(jobId: string, token: string, validateOnly: boolean): Promise<void> {
     const { project, region, job } = this.config;
     const url = `https://run.googleapis.com/v2/projects/${encodeURIComponent(project)}/locations/${encodeURIComponent(region)}/jobs/${encodeURIComponent(job)}:run`;
-    const response = await this.fetcher(url, {
+    // No automatic retries: a timeout/5xx can mean Google already started the execution.
+    // The existing Redis lease/fallback/recovery path owns ambiguous outcomes.
+    let response: Response;
+    try { response = await googleRequest(this.fetcher, 'Cloud Run', url, {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ overrides: { containerOverrides: [{ env: [{ name: 'AI_JOB_ID', value: jobId }] }], taskCount: 1 } }),
+      body: JSON.stringify({ ...(validateOnly ? { validateOnly: true } : {}), overrides: { containerOverrides: [{ env: [{ name: 'AI_JOB_ID', value: jobId }] }], taskCount: 1 } }),
       signal: AbortSignal.timeout(this.config.timeoutMs ?? 15_000),
       redirect: 'error'
-    });
-    if (!response.ok) throw new CloudRunDispatchError(response.status, await googleError(response));
-    await response.body?.cancel().catch(() => undefined);
+    }); } catch (error) {
+      if (error instanceof CloudRunDispatchError && error.status === 401) this.config.tokens.invalidate?.();
+      throw error;
+    }
+    const body = await googleJson(response, 'Cloud Run');
+    if (body.error || (!validateOnly && (typeof body.name !== 'string' || !body.name))) {
+      throw new CloudRunDispatchError(null, 'Cloud Run: invalid or failed operation; outcome may be unknown');
+    }
   }
 }
 
@@ -104,6 +133,7 @@ export class CloudRunJobDispatcher implements AiWorkerDispatcher {
  */
 export class WorkloadIdentityTokenSource implements GoogleTokenSource {
   private cached: { token: string; expiresAt: number } | null = null;
+  private pending: Promise<string> | null = null;
   private readonly fetcher: typeof fetch;
 
   constructor(private readonly config: {
@@ -116,21 +146,23 @@ export class WorkloadIdentityTokenSource implements GoogleTokenSource {
     this.fetcher = config.fetch ?? fetch;
   }
 
-  /** The claims of Vercel's OIDC token (iss, aud, sub, exp), for diagnostics. Null when there is none. */
-  async subjectClaims(): Promise<Record<string, unknown> | null> {
-    const subject = await this.config.subjectToken();
-    if (!subject) return null;
-    try {
-      const payload = JSON.parse(Buffer.from(subject.split('.')[1] ?? '', 'base64url').toString('utf8')) as Record<string, unknown>;
-      return { iss: payload.iss, aud: payload.aud, sub: payload.sub, exp: typeof payload.exp === 'number' ? new Date(payload.exp * 1000).toISOString() : null };
-    } catch { return { error: 'not a JWT' }; }
-  }
+  invalidate(): void { this.cached = null; }
 
   async token(): Promise<string> {
     if (this.cached && this.cached.expiresAt - TOKEN_MARGIN_MS > Date.now()) return this.cached.token;
-    const subject = await this.config.subjectToken();
-    if (!subject) throw new CloudRunDispatchError(null, 'Vercel OIDC token is not available in this function');
-    const exchange = await this.fetcher('https://sts.googleapis.com/v1/token', {
+    if (this.pending) return this.pending;
+    this.pending = this.exchange();
+    try { return await this.pending; }
+    finally { this.pending = null; }
+  }
+
+  private async exchange(): Promise<string> {
+    this.cached = null;
+    let subject: string | null;
+    try { subject = await this.config.subjectToken(); }
+    catch { throw new CloudRunDispatchError(null, 'Vercel OIDC token retrieval failed'); }
+    if (!validToken(subject)) throw new CloudRunDispatchError(null, 'Vercel OIDC token is not available in this function; enable team OIDC and redeploy');
+    const exchange = await googleRequest(this.fetcher, 'STS', 'https://sts.googleapis.com/v1/token', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -144,20 +176,22 @@ export class WorkloadIdentityTokenSource implements GoogleTokenSource {
       signal: AbortSignal.timeout(10_000),
       redirect: 'error'
     });
-    if (!exchange.ok) throw new CloudRunDispatchError(exchange.status, `STS: ${await googleError(exchange)}`);
-    const federated = (await exchange.json() as { access_token?: unknown }).access_token;
-    if (typeof federated !== 'string' || !federated) throw new CloudRunDispatchError(null, 'STS returned no token');
-    const impersonate = await this.fetcher(`https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(this.config.serviceAccount)}:generateAccessToken`, {
+    const federated = (await googleJson(exchange, 'STS')).access_token;
+    if (!validToken(federated)) throw new CloudRunDispatchError(null, 'STS returned no valid token');
+    const requestedAt = Date.now();
+    const impersonate = await googleRequest(this.fetcher, 'IAM', `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(this.config.serviceAccount)}:generateAccessToken`, {
       method: 'POST',
       headers: { authorization: `Bearer ${federated}`, 'content-type': 'application/json' },
       body: JSON.stringify({ scope: [CLOUD_PLATFORM_SCOPE], lifetime: '600s' }),
       signal: AbortSignal.timeout(10_000),
       redirect: 'error'
     });
-    if (!impersonate.ok) throw new CloudRunDispatchError(impersonate.status, `IAM: ${await googleError(impersonate)}`);
-    const body = await impersonate.json() as { accessToken?: unknown; expireTime?: unknown };
-    if (typeof body.accessToken !== 'string' || !body.accessToken) throw new CloudRunDispatchError(null, 'IAM returned no token');
-    const expiresAt = typeof body.expireTime === 'string' && Number.isFinite(Date.parse(body.expireTime)) ? Date.parse(body.expireTime) : Date.now() + 600_000;
+    const body = await googleJson(impersonate, 'IAM');
+    if (!validToken(body.accessToken)) throw new CloudRunDispatchError(null, 'IAM returned no valid token');
+    const expiresAt = typeof body.expireTime === 'string' ? Math.min(Date.parse(body.expireTime), requestedAt + 600_000) : NaN;
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now() + TOKEN_MARGIN_MS) {
+      throw new CloudRunDispatchError(null, 'IAM returned an invalid or expired token lifetime');
+    }
     this.cached = { token: body.accessToken, expiresAt };
     return body.accessToken;
   }
@@ -169,15 +203,19 @@ export class MetadataTokenSource implements GoogleTokenSource {
 
   constructor(private readonly fetcher: typeof fetch = fetch) {}
 
+  invalidate(): void { this.cached = null; }
+
   async token(): Promise<string> {
     if (this.cached && this.cached.expiresAt - TOKEN_MARGIN_MS > Date.now()) return this.cached.token;
-    const response = await this.fetcher('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token', {
+    const response = await googleRequest(this.fetcher, 'metadata', 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token', {
       headers: { 'metadata-flavor': 'Google' }, signal: AbortSignal.timeout(5_000), redirect: 'error'
     });
-    if (!response.ok) throw new CloudRunDispatchError(response.status, `metadata: HTTP ${response.status}`);
-    const body = await response.json() as { access_token?: unknown; expires_in?: unknown };
-    if (typeof body.access_token !== 'string' || !body.access_token) throw new CloudRunDispatchError(null, 'metadata returned no token');
-    this.cached = { token: body.access_token, expiresAt: Date.now() + (Number(body.expires_in) || 300) * 1000 };
+    const body = await googleJson(response, 'metadata');
+    if (!validToken(body.access_token)) throw new CloudRunDispatchError(null, 'metadata returned no valid token');
+    if (typeof body.expires_in !== 'number' || !Number.isFinite(body.expires_in) || body.expires_in <= TOKEN_MARGIN_MS / 1000) {
+      throw new CloudRunDispatchError(null, 'metadata returned an invalid token lifetime');
+    }
+    this.cached = { token: body.access_token, expiresAt: Date.now() + Math.min(body.expires_in, 3600) * 1000 };
     return body.access_token;
   }
 }
@@ -195,6 +233,17 @@ export function vercelWorkerDispatcher(env: NodeJS.ProcessEnv, subjectToken: () 
   if (missing.length) return { dispatcher: null, problem: `Cloud Run worker is not configured: missing ${missing.join(', ')}` };
   if (!/^\/\/iam\.googleapis\.com\/projects\/\d+\/locations\/global\/workloadIdentityPools\/[a-z0-9-]+\/providers\/[a-z0-9-]+$/.test(values.AI_WORKER_WIF_AUDIENCE)) {
     return { dispatcher: null, problem: 'Cloud Run worker is not configured: AI_WORKER_WIF_AUDIENCE has the wrong form' };
+  }
+  const formats = {
+    AI_WORKER_GCP_PROJECT: /^(?:[a-z][a-z0-9-]{4,28}[a-z0-9]|\d+)$/,
+    AI_WORKER_GCP_REGION: /^[a-z]+-[a-z]+\d+$/,
+    AI_WORKER_JOB_NAME: /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/,
+    AI_WORKER_DISPATCH_SERVICE_ACCOUNT: /^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$/
+  };
+  for (const [key, pattern] of Object.entries(formats)) {
+    if (!pattern.test(values[key as keyof typeof formats])) {
+      return { dispatcher: null, problem: `Cloud Run worker is not configured: ${key} has the wrong form` };
+    }
   }
   const tokens = new WorkloadIdentityTokenSource({ audience: values.AI_WORKER_WIF_AUDIENCE, serviceAccount: values.AI_WORKER_DISPATCH_SERVICE_ACCOUNT, subjectToken, ...(fetcher ? { fetch: fetcher } : {}) });
   return {

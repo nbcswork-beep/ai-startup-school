@@ -1,3 +1,5 @@
+import { getVercelOidcToken } from '@vercel/oidc';
+
 // Explicit references so Vercel's function bundler includes the server-only runtime variables.
 // Values are never serialized to the client. Shared by every Vercel function entry in /api.
 export function vercelRuntimeEnvironment(): NodeJS.ProcessEnv {
@@ -44,13 +46,17 @@ export function vercelRuntimeEnvironment(): NodeJS.ProcessEnv {
 }
 
 /**
- * Vercel's OIDC token for the current request (the same place @vercel/oidc reads it): proof of
- * "this is the assl project" that Google trades for a short-lived token. Null outside Vercel.
+ * Read at exchange time, inside the active Vercel request. The SDK owns token retrieval.
+ * Keep the default team audience: it matches the Google provider's allowed audience.
+ * Never accept a token from the application's incoming headers or persist it.
  */
 export async function vercelOidcToken(): Promise<string | null> {
-  const context = (globalThis as Record<symbol, { get?: () => { headers?: Record<string, string | undefined> } | undefined } | undefined>)[Symbol.for('@vercel/request-context')];
-  const header = context?.get?.()?.headers?.['x-vercel-oidc-token'];
-  return (typeof header === 'string' && header.trim()) || process.env.VERCEL_OIDC_TOKEN?.trim() || null;
+  try {
+    return (await getVercelOidcToken()).trim() || null;
+  } catch {
+    // SDK errors may include request context. Return only availability to the dispatcher.
+    return null;
+  }
 }
 
 /**

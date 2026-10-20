@@ -2,6 +2,82 @@
 
 Статус: **только подготовка**. Код в ветке `prep/cloud-run-worker` (основа — `fix/agent-empty-continuation`). Пока в Vercel не заданы переменные `AI_WORKER_*` и в Admin OS не выбран режим Cloud Run, Student OS работает ровно как раньше: всё генерируется на Vercel.
 
+## Текущая конфигурация и следующий деплой (20 октября 2026)
+
+Инфраструктура ниже указана владельцем проекта; локальные тесты **не подтверждают** её текущее состояние в Google/Vercel. При проверке 20 октября подключённый Vercel connector не предоставил доступ к `assl` (404); состояние этого проекта и его автоматических деплоев не проверено. В рамках изменения OIDC инфраструктура, Production и режим генерации не переключаются, реальные Jobs не запускаются. Рабочая ветка — `prep/cloud-run-worker`, merge в `main` не требуется для подготовки.
+
+| Ресурс | Текущее значение |
+|---|---|
+| Vercel team / project | `anokhinmaxim2009-5438s-projects` / `assl` |
+| Google project ID / number | `student-os-ai` / `752806759634` |
+| Регион / Job | `europe-west3` / `ai-worker` |
+| Образ, уже созданный владельцем | `europe-west3-docker.pkg.dev/student-os-ai/student-os/ai-worker:ef45a25` |
+| Workload Identity Pool / provider | `vercel` / `vercel-oidc` |
+| Issuer | `https://oidc.vercel.com/anokhinmaxim2009-5438s-projects` |
+| Allowed audience (JWT `aud`) | `https://vercel.com/anokhinmaxim2009-5438s-projects` |
+| Attribute mapping | `google.subject=assertion.sub` |
+| Attribute condition | `assertion.sub == 'owner:anokhinmaxim2009-5438s-projects:project:assl:environment:production'` |
+
+Principal с ролью **Workload Identity User** на `ai-dispatch@student-os-ai.iam.gserviceaccount.com`:
+
+```text
+principal://iam.googleapis.com/projects/752806759634/locations/global/workloadIdentityPools/vercel/subject/owner:anokhinmaxim2009-5438s-projects:project:assl:environment:production
+```
+
+На **конкретном Job `ai-worker`**, а не на всём проекте, у `ai-dispatch` и `ai-worker` должна быть роль **Cloud Run Jobs Executor With Overrides** (`roles/run.jobsExecutorWithOverrides`). Она включает `run.jobs.run` и `run.jobs.runWithOverrides`, но **не** `run.jobs.get`. Диагностика поэтому использует `jobs.run` с `validateOnly: true`, а не чтение Job. Не добавляйте широкие роли ради диагностики.
+
+### Что задавать в Vercel — только после одобрения Production-деплоя
+
+Все переменные серверные, без `NEXT_PUBLIC_`. Для существующего provider область — **только Production**, не All Environments.
+
+| Переменная | Значение |
+|---|---|
+| `AI_WORKER_GCP_PROJECT` | `student-os-ai` |
+| `AI_WORKER_GCP_REGION` | `europe-west3` |
+| `AI_WORKER_JOB_NAME` | `ai-worker` |
+| `AI_WORKER_WIF_AUDIENCE` | `//iam.googleapis.com/projects/752806759634/locations/global/workloadIdentityPools/vercel/providers/vercel-oidc` |
+| `AI_WORKER_DISPATCH_SERVICE_ACCOUNT` | `ai-dispatch@student-os-ai.iam.gserviceaccount.com` |
+| `AI_WORKER_MAX_CONCURRENT` | `1` для первого тестового ученика |
+| `AI_WORKER_CALLBACK_SECRET` | Secret, тот же секрет, что у Job; минимум 32 символа |
+| `AI_SECRETS_KEY_NEXT` | Secret, тот же новый ключ, что `AI_SECRETS_KEY` у Job; см. раздел «Ключи» |
+
+**Два разных audience:** JWT `aud` — URL команды Vercel, а `AI_WORKER_WIF_AUDIENCE` — полный ресурс Google provider с **номером** проекта. Они намеренно различаются. `getVercelOidcToken()` вызывается без custom audience, внутри запроса, когда требуется обмен. SDK получает текущий токен Vercel; Google STS проверяет подпись, issuer, audience, срок и условие subject. Приложение не считает декодирование JWT проверкой подписи.
+
+Не создавать, не скачивать и не добавлять service-account JSON key. Не задавать вручную `VERCEL_OIDC_TOKEN`, не копировать его в `.env.example`, Git, чат или логи. `GOOGLE_APPLICATION_CREDENTIALS` и статические Google access tokens dispatcher не использует. В Vercel включить OIDC Federation с Team issuer и после изменения настройки передеплоить.
+
+**Preview не пройдёт текущий provider:** его subject оканчивается на `environment:preview`, а разрешён только `production`. Для предварительной живой проверки нужен отдельно согласованный Preview provider/principal, тестовый Job, отдельный Redis namespace и Preview callback. Не ослабляйте Production condition и не подключайте Preview к Production Redis. Локально выполняются только тесты с заглушками.
+
+### Порядок финального деплоя и smoke-test
+
+1. Проверить diff и результаты локальных тестов. Перед push проверить автоматические триггеры: `.github/workflows/ai-worker-image.yml` собирает Docker; по прежней инструкции также мог быть настроен внешний Cloud Build trigger на эту ветку. Push сам по себе не должен считаться разрешением на Production или платную сборку.
+2. Сверить в Google без выполнения Job: включены STS, IAM Credentials и Cloud Run API; issuer/allowed audience/condition и service-account binding совпадают с таблицей; роли выданы на `ai-worker`. В Job проверить образ, runtime service account, Secret Manager bindings, `AI_WORKER_ENVIRONMENT=production`, Redis namespace и callback URL.
+3. Согласовать точный коммит и **отдельно Production-деплой**. Деплой выбранного коммита ветки технически не требует merge в `main`. До него убедиться, что сохранённый `runnerMode` — `vercel`: наличие переменных само по себе не выключает ранее сохранённый режим Cloud Run. Задать переменные из таблицы, сохранить режим Vercel. Текущий образ `ef45a25` не содержит новых исправлений dispatcher для передачи продолжений; перед полным smoke-test согласовать сборку и обновление образа до проверенного коммита.
+4. В согласованном деплое Admin OS → «Перевірити підключення до Google». Выполняются свежие OIDC → STS → IAM и `jobs.run` **только с `validateOnly=true`**, `taskCount=1`, фиктивным UUID в `AI_JOB_ID`. Контейнер не запускается, модель не вызывается. Проверить оба шага. Этот результат ещё не доказывает работу Redis, Secret Manager или callback.
+5. В Admin OS → «Підготувати ключі для Cloud Run»: должно быть готово N из N. Старые копии и `SESSION_TOKEN_PEPPER` остаются на Vercel; worker получает только новый `AI_SECRETS_KEY`. Сверить одинаковые callback secrets, HTTPS callback и Redis namespace. Не заменять `AI_SECRETS_KEY_NEXT` на `AI_SECRETS_KEY` в Vercel.
+6. **После отдельного разрешения на реальное выполнение**: один запуск `ai-worker` с execution override `AI_WORKER_SELF_CHECK=1`, task count 1. Это настоящий Cloud Run Job, который может стоить денег; бесплатность не гарантируется. Не сохранять `AI_WORKER_SELF_CHECK=1` в постоянной конфигурации Job. Проверить `selfcheck.done`, Redis, ключи и callback; убедиться, что execution завершился.
+7. После успешной самопроверки и одобрения генерации выбрать **одного** тестового ученика в Admin OS, concurrency 1. Короткое агентное задание: получить `start`/`attach`, закрыть и открыть Mini App, проверить результат, единственное списание, callback и отсутствие секретов в логах. Проверить «Стоп» и передачу продолжения. Обычный чат должен оставаться на Vercel. Google и ИИ-провайдер могут выставить расход.
+8. При ошибке вернуть режим **Vercel**. Уже работающие executions сами от этого не останавливаются; решение об их отмене принимается отдельно. Дальнейшее расширение числа учеников — отдельное решение.
+
+### Ошибки и локальная проверка
+
+- `Vercel OIDC`: SDK не вернул токен; проверить OIDC Federation/Team issuer и новый деплой.
+- `STS: HTTP 400/403`: проверить оба audience, issuer, condition и окружение. Preview здесь должен быть отклонён.
+- `IAM: HTTP 403`: проверить Workload Identity User для точного subject на `ai-dispatch`, API IAM Credentials.
+- `Cloud Run: HTTP 403`: проверить роль на Job с `run.jobs.runWithOverrides`; `404` — project/region/job; `429` — квоты.
+- Таймаут, 5xx или повреждённый ответ `jobs.run`: исход запуска может быть неизвестен. Dispatcher **не повторяет** запрос автоматически; существующая аренда Redis, fallback на Vercel и восстановление предотвращают двойную генерацию. Это не гарантия отсутствия платы за уже созданный execution.
+- В ошибки и диагностику попадают только фиксированные сообщения, этап и HTTP-статус. Тела ответов Google, ошибки SDK/сети, JWT claims и токены не выводятся. Токен impersonation живёт до 600 секунд, хранится только в памяти, обновляется за 60 секунд до истечения; одновременные запросы разделяют один обмен. После 401 кеш очищается для следующего запроса.
+
+```sh
+npm ci --ignore-scripts --no-audit --no-fund
+npm run typecheck
+npm run test:unit -- server/cloud-run-auth.unit.test.ts server/ai-cloud-worker.unit.test.ts
+npm run build:all
+```
+
+Тесты проверяют SDK, запросы STS/IAM/Jobs, запрет повторов, expiry/cache, безопасные ошибки и диагностический `validateOnly`, затем существующую цепочку worker с HTTP-заглушкой ИИ и эмулятором Redis. Реальный Google не вызывается. Для HTTP-заглушки нужен доступ к localhost.
+
+Официальные контракты: [Vercel OIDC для Google](https://vercel.com/docs/oidc/gcp), [Google STS](https://docs.cloud.google.com/iam/docs/reference/sts/rest/v1/TopLevel/token), [service-account impersonation](https://docs.cloud.google.com/iam/docs/reference/credentials/rest/v1/projects.serviceAccounts/generateAccessToken), [jobs.run и overrides](https://docs.cloud.google.com/run/docs/reference/rest/v2/projects.locations.jobs/run), [права роли Cloud Run](https://docs.cloud.google.com/iam/docs/roles-permissions/run).
+
 ---
 
 ## A. Архитектурный отчёт
@@ -113,14 +189,14 @@ Cloud Run Job ai-worker (одно выполнение = одно задание
 
 ### Переменные окружения
 
-**Vercel** (на шаге 1 — только для окружения *Preview*; *Production* — после вашего решения):
+**Vercel** (конкретные значения и Production-only restriction — в начале документа; Preview требует отдельной инфраструктуры):
 
 | Переменная | Значение |
 |---|---|
 | `AI_WORKER_GCP_PROJECT` | ID проекта Google Cloud |
 | `AI_WORKER_GCP_REGION` | регион задания, например `europe-west3` |
 | `AI_WORKER_JOB_NAME` | имя Cloud Run Job, например `ai-worker-preview` / `ai-worker` |
-| `AI_WORKER_WIF_AUDIENCE` | `//iam.googleapis.com/projects/<НОМЕР>/locations/global/workloadIdentityPools/vercel/providers/vercel` |
+| `AI_WORKER_WIF_AUDIENCE` | `//iam.googleapis.com/projects/<НОМЕР>/locations/global/workloadIdentityPools/vercel/providers/vercel-oidc` |
 | `AI_WORKER_DISPATCH_SERVICE_ACCOUNT` | `ai-dispatch@<ID-проекта>.iam.gserviceaccount.com` |
 | `AI_WORKER_MAX_CONCURRENT` | сколько заданий одновременно у воркеров (по умолчанию 3) |
 | `AI_WORKER_CALLBACK_SECRET` | случайная строка ≥ 32 символов (такая же — в Secret Manager для воркера) |
@@ -176,9 +252,9 @@ Cloud Run Job ai-worker (одно выполнение = одно задание
 
 ---
 
-## C. Инструкция Google Cloud (без кода)
+## C. Справочник для новой изолированной Preview-инфраструктуры
 
-> Ничего из этого я не делал. Все шаги выполняете вы в браузере. Значения секретов никому не отправляйте и в чат не вставляйте.
+> Ниже прежний план для создания отдельного тестового окружения. Существующие Production-ресурсы из начала документа не нужно создавать заново или перенастраивать под Preview. Любые сборки, деплои и выполнения — после согласования. Значения секретов в чат не вставляйте.
 
 **0. Регион.** Выберите регион поближе к базе Upstash: в Upstash откройте базу и посмотрите поле *Region*. Если там Frankfurt (eu-central-1), берите `europe-west3`. Дальше везде один и тот же регион.
 
@@ -264,14 +340,14 @@ Cloud Run Job ai-worker (одно выполнение = одно задание
 1. В Vercel: **Project `assl` → Settings → Security → Secure Backend Access with OIDC Federation** → включить, *Issuer mode*: **Team**.
 2. В Google: **IAM & Admin → Workload Identity Federation → Create pool**.
    - *Name*: `vercel`.
-   - *Provider*: **OpenID Connect (OIDC)**, *Provider name*: `vercel`.
+   - *Provider*: **OpenID Connect (OIDC)**, отдельный Preview provider (не изменять существующий `vercel-oidc`).
    - *Issuer (URL)*: `https://oidc.vercel.com/anokhinmaxim2009-5438s-projects`.
    - *Audiences → Allowed audiences*: `https://vercel.com/anokhinmaxim2009-5438s-projects`.
    - *Attribute mapping*: `google.subject` = `assertion.sub`.
-   - *Attribute conditions*: `assertion.project == 'assl'`.
+   - *Attribute conditions* для отдельного тестового provider: `assertion.sub == 'owner:anokhinmaxim2009-5438s-projects:project:assl:environment:preview'`.
 3. **Service Accounts → `ai-dispatch` → Permissions → Grant access**.
    - *Principal*: `principal://iam.googleapis.com/projects/<НОМЕР>/locations/global/workloadIdentityPools/vercel/subject/owner:anokhinmaxim2009-5438s-projects:project:assl:environment:preview`
-   - Для Production — такой же, но с окончанием `environment:production`; добавить позже.
+   - Существующий Production principal не менять; он описан в начале документа.
    - Роль: **Workload Identity User**.
 4. В Vercel: **Settings → Environment Variables**, только для **Preview**. Добавьте переменные из таблицы раздела B.
 
@@ -302,11 +378,11 @@ Cloud Run Job ai-worker (одно выполнение = одно задание
    - Логи: **Cloud Run → Jobs → ai-worker-preview → Logs**.
    - Расход: **Billing → Reports**.
 3. **Production, всё ещё выключено.** Только после вашего разрешения:
-   - ветка сливается в `main`;
+   - деплой проверенного коммита ветки; merge в `main` не обязателен;
    - без переменных `AI_WORKER_*` в Production всё работает как раньше.
 4. **Production, один ученик.**
-   - Создайте `ai-worker` для Production: `AI_WORKER_ENVIRONMENT=production`, `SESSION_REDIS_PREFIX` как в Production.
-   - Добавьте principal `environment:production` (C9.3).
+   - Проверьте существующий `ai-worker`: `AI_WORKER_ENVIRONMENT=production`, `SESSION_REDIS_PREFIX` как в Production.
+   - Проверьте существующий principal `environment:production` (таблица в начале).
    - Задайте `AI_SECRETS_KEY_NEXT` и переменные `AI_WORKER_*` для Production → Redeploy → «Підготувати ключі» → «Перевірити підключення до Google» → самопроверка воркера.
    - В Admin OS выберите одного ученика. Наблюдайте 1–3 дня.
 5. **Постепенно:** группа → половина учеников → «для всіх». Каждый шаг — переключатель в Admin OS, без передеплоя.
@@ -325,7 +401,7 @@ Cloud Run Job ai-worker (одно выполнение = одно задание
    - Начатые на воркере заканчиваются там. Если воркер недоступен, их закроет восстановление: прерванные — с сохранённым, неначатые — без списания.
 2. **Выключить воркер.** Удалите переменные `AI_WORKER_*` в Vercel → Redeploy.
 3. **Вернуть код.**
-   - Vercel → Deployments → предыдущий Production → **Instant Rollback**. Сейчас Production — `dpl_GVgSwoPpVZk3oGZDQSKQy9c9Ktn8`.
+   - Vercel → Deployments → проверенный предыдущий Production → **Instant Rollback**. Перед деплоем записать актуальный deployment ID для отката; старые ID из истории не считать текущими.
    - Или **Redeploy** нужного старого деплоя.
    - Ключи читаются в обоих случаях. `AI_SECRETS_KEY_NEXT` можно оставить: старый код его игнорирует.
 4. **Остановить расходы Google.** Cloud Run → Jobs → задание → **Delete** (или убрать роль у `ai-dispatch`).
@@ -340,9 +416,9 @@ Cloud Run Job ai-worker (одно выполнение = одно задание
 
 ## G. Реальная проверка (не фиктивные ответы)
 
-Тесты с фиктивными ответами Google — это не подтверждение. Для настоящей проверки подготовлено три шага, **ни один ничего не запускает за деньги**:
+Тесты с фиктивными ответами Google не подтверждают живую конфигурацию. Docker-сборка может расходовать CI-квоту, самопроверка воркера — настоящее потенциально платное выполнение. Без запуска контейнера работает только диагностика из пункта 2.
 
-1. **Docker-сборка.** `.github/workflows/ai-worker-image.yml` собирает образ настоящим Docker на GitHub Actions (бесплатно для публичного репозитория) при каждом push в ветку и проверяет:
+1. **Docker-сборка.** `.github/workflows/ai-worker-image.yml` собирает образ настоящим Docker на GitHub Actions при push подходящих изменений в ветку и проверяет:
    - запуск не от root;
    - в образе нет исходников, тестов и `.env`;
    - без настроек воркер выходит с кодом 2 и в логах нет значений;
@@ -350,20 +426,20 @@ Cloud Run Job ai-worker (одно выполнение = одно задание
    - самопроверка без Redis завершается кодом 1.
 
    Результат: GitHub → Actions → «AI worker image».
-2. **Vercel → Google (OIDC/STS/IAM).** Admin OS → **«Перевірити підключення до Google»** (на Preview, после шагов C1–C9). Проверяется по-настоящему:
-   - есть ли у функции OIDC-токен Vercel (показываются его `iss`, `aud`, `sub` — не секрет);
+2. **Vercel → Google (OIDC/STS/IAM).** Admin OS → **«Перевірити підключення до Google»** в одобренном деплое с разрешённым subject. Существующий provider разрешает только Production. Проверяется:
+   - доступность OIDC-токена Vercel через `@vercel/oidc` (токен и claims не выводятся);
    - обмен в Google STS;
    - «надевание» `ai-dispatch` через IAM;
-   - чтение задания Cloud Run.
+   - `jobs.run` с теми же overrides и `validateOnly=true`, без создания execution.
 
-   **Ничего не запускает.** По каждому шагу — «✓» или ошибка Google без токенов.
+   **Ничего не запускает.** По шагам — «✓» или безопасное сообщение с этапом и HTTP-статусом.
 3. **Воркер в Google.** Cloud Run → Jobs → `ai-worker-preview` → **Execute with overrides** → добавить переменную `AI_WORKER_SELF_CHECK` = `1`. Проверяется:
    - Redis в правильном пространстве;
    - что все ключи провайдеров открываются новым ключом;
    - токен Google из metadata;
    - ответ Vercel на секрет воркера.
 
-   Результат — в логах выполнения: `selfcheck.done`, только «да/нет» и счётчики. Одно короткое выполнение укладывается в бесплатный объём Cloud Run, но включение Cloud Run требует привязанной оплаты (C2).
+   Результат — в логах выполнения: `selfcheck.done`, только «да/нет» и счётчики. Это реальное выполнение с возможной оплатой; запускать только после явного одобрения. Для текущего Production Job следовать порядку в начале документа.
 
 ## H. Неуспешный или неоднозначный ответ Google
 
