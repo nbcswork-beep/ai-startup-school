@@ -95,6 +95,6 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv): WorkerConfig {
     maxAttempts: clampInt(env.AI_WORKER_MAX_ATTEMPTS, 2, 1, 5),
     requestTimeoutMs: clampInt(env.AI_WORKER_REQUEST_TIMEOUT_MS, 15 * MINUTE, MINUTE, 45 * MINUTE),
     idleTimeoutMs: clampInt(env.AI_WORKER_IDLE_TIMEOUT_MS, 3 * MINUTE, 30_000, 15 * MINUTE),
-    handoff: project && region && job ? { project, region, job, maxConcurrent: clampInt(env.AI_WORKER_MAX_CONCURRENT, 3, 1, 50) } : null
+    handoff: project && region && job ? { project, region, job, maxConcurrent: clampInt(env.AI_WORKER_MAX_CONCURRENT, 15, 1, 15) } : null
   };
 }

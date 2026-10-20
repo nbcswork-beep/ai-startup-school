@@ -207,8 +207,11 @@ export class AiService {
         for await (const event of this.adapter(connection).stream(timed)) { produced = true; yield event; }
         return;
       } catch (error) {
-        if (!(error instanceof AiProviderError) || error.code !== 'rate_limit' || produced || retry >= RATE_LIMIT_RETRIES) throw error;
+        if (!(error instanceof AiProviderError) || error.code !== 'rate_limit') throw error;
         const wait = error.retryAfterMs ?? 2_000 * 2 ** retry;
+        // Every execution/key for this provider observes the same upstream cooldown.
+        await this.store.deferProvider(provider.id, this.now().getTime() + wait);
+        if (produced || retry >= RATE_LIMIT_RETRIES) throw error;
         // Never retry sooner than the provider requested. Let a long cooldown surface to the user.
         if (wait > MAX_RETRY_WAIT_MS) throw error;
         onQueue?.(wait);
@@ -220,15 +223,17 @@ export class AiService {
 
   /** Waits until the provider's per-minute limit has room for one more request. */
   private async waitForSlot(provider: AiProviderRecord, signal: AbortSignal, onQueue?: (waitMs: number | null) => void): Promise<void> {
-    const limit = providerRateLimit(provider);
-    if (!limit || limit <= 0) return;
+    const limit = providerRateLimit(provider) ?? 0;
     const giveUpAt = Date.now() + MAX_QUEUE_WAIT_MS;
     let waited = false;
     while (true) {
       if (signal.aborted) throw unsent(new AiProviderError('aborted', 'Генерацію зупинено'));
       let wait: number;
       try { wait = await this.store.acquireRateSlot(provider.id, limit, this.now().getTime()); }
-      catch (error) { this.log(error, 'AI rate slot check failed'); wait = 0; } // storage trouble must not stop answers
+      catch (error) {
+        this.log(error, 'AI rate slot check failed');
+        throw unsent(new AiProviderError('rate_limit', 'Не вдалося перевірити ліміт ШІ-сервісу. Спробуйте пізніше.', 429));
+      }
       if (wait <= 0) { if (waited) onQueue?.(null); return; }
       if (Date.now() + wait > giveUpAt) throw unsent(new AiProviderError('rate_limit', 'Забагато запитів до ШІ одночасно. Спробуйте за хвилину.', 429));
       waited = true;

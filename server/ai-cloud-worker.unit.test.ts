@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { AiChatService, WorkerOptions } from './ai/chat.js';
-import { CloudRunJobDispatcher, vercelWorkerDispatcher, WorkloadIdentityTokenSource } from './ai/cloud-run.js';
+import { CloudRunDispatchError, CloudRunJobDispatcher, vercelWorkerDispatcher, WorkloadIdentityTokenSource } from './ai/cloud-run.js';
 import { projectFromContent } from './ai/projects.js';
 import type { AiWorkerDispatcher } from './ai/service.js';
 import { MemoryAiStore, RedisAiStore } from './ai/store.js';
@@ -385,12 +385,14 @@ describe('Cloud Run worker: failures and recovery', () => {
     const sent = await t.ask('[parts-fixture] Зроби сайт');
     const job = (await t.school.aiStore.getJob(sent.jobId))!;
     const before = await t.balance();
-    // Ten minutes and more without a worker: recovery dispatches again (dispatches 1 → 2)…
+    // Ten minutes and more without a worker (its slot ran out with it): recovery dispatches again…
     await t.school.aiStore.updateJob(job.id, { dispatchedAt: Date.now() - 11 * 60_000 });
+    await t.school.aiStore.releaseWorkerSlot(job.id);
     await t.student.call('GET', `/api/v1/ai/jobs/${job.id}?from=0`);
     expect(t.dispatcher.jobs).toEqual([job.id, job.id]);
     // …and after the second silence it ends, free of charge, with a clear message.
     await t.school.aiStore.updateJob(job.id, { dispatchedAt: Date.now() - 11 * 60_000 });
+    await t.school.aiStore.releaseWorkerSlot(job.id);
     const view = (await t.student.call('GET', `/api/v1/ai/jobs/${job.id}?from=0`)).json();
     expect(view.status).toBe('error');
     expect(view.error.code).toBe('AI_WORKER_UNAVAILABLE');
@@ -398,14 +400,15 @@ describe('Cloud Run worker: failures and recovery', () => {
     expect((await t.balance()).available).toBe(before.available + job.reserved!);
   }, 30_000);
 
-  it('when Cloud Run cannot take a job, Vercel answers it as before and holds the lease', async () => {
+  it('when Google refuses a job, it ends with a clear message and no charge; it never falls back to Vercel', async () => {
     const t = await ready();
-    t.dispatcher.fail = true;
+    const before = await t.balance();
+    t.dispatcher.dispatch = async () => { throw new CloudRunDispatchError(403, 'HTTP 403 PERMISSION_DENIED'); };
     const sent = await t.student.send('Привіт', { mode: 'agent' });
-    expect(sent.done).toBeTruthy();
-    expect(sent.events.some(item => item.event === 'attach')).toBe(false);
+    expect(sent.done).toBeUndefined();
     const job = await t.school.aiStore.getJob(sent.events.find(item => item.event === 'start')!.data.jobId);
-    expect(job).toMatchObject({ runner: 'vercel', attempts: 1 });
+    expect(job).toMatchObject({ runner: 'cloud-run', status: 'error', errorCode: 'AI_WORKER_UNAVAILABLE' });
+    expect((await t.balance()).available).toBe(before.available);
   }, 30_000);
 
   it('a missing photo in private storage ends the job with a clear message and no charge', async () => {
@@ -436,23 +439,21 @@ describe('Cloud Run worker: failures and recovery', () => {
 });
 
 describe('Cloud Run worker: an unclear answer from Google', () => {
-  it('Google started the job but the answer was lost: Vercel answers, the late worker leaves; one charge, one set of provider calls', async () => {
+  it('Google started the job but the answer was lost: the job stays with the worker, Vercel generates nothing; one charge', async () => {
     const t = await ready({ budgetMs: 1_500 });
     // The run request reached Google (an execution will start), then the connection broke.
     t.dispatcher.dispatch = async (jobId: string) => { t.dispatcher.jobs.push(jobId); throw new Error('socket hang up'); };
     const before = mock.chatRequests().length;
     const sent = await t.student.send('[parts-fixture] Зроби сайт-візитку', { mode: 'agent' });
-    expect(sent.done).toBeTruthy();
+    expect(sent.events.some(item => item.event === 'attach')).toBe(true);
+    expect(mock.chatRequests().length).toBe(before);
     const jobId = sent.events.find(item => item.event === 'start')!.data.jobId as string;
-    const vercelCalls = mock.chatRequests().length - before;
-    // The execution Google did start finds the job answered and leaves without a model call.
-    const late = await t.run(t.worker(), jobId);
-    expect(late.stages[0]).toMatchObject({ status: 'skipped', reason: 'finished' });
-    expect(mock.chatRequests().length - before).toBe(vercelCalls);
+    // The execution Google did start does the work.
+    const report = await t.run(t.worker(), jobId);
+    expect(report.stages[0]!.status).toBe('finished');
     const job = await t.school.aiStore.getJob(jobId);
-    expect(job!.runner).toBe('vercel');
+    expect(job!.runner).toBe('cloud-run');
     expect((await t.ledger()).filter(entry => entry.type === 'charge' && (entry as any).requestId === job!.requestId)).toHaveLength(1);
-    expect(job!.files.filter(file => file.preview.kind === 'project')).toHaveLength(1);
   }, 30_000);
 
   it('the worker took the job before Vercel gave up on Google: Vercel hands over and generates nothing', async () => {
@@ -624,16 +625,16 @@ describe('Cloud Run worker: boundaries', () => {
     expect(new CloudRunJobDispatcher({ project: 'p', region: 'r', job: 'j', maxConcurrent: 2, tokens: { token: async () => 't' } }).maxConcurrent).toBe(2);
   });
 
-  it('caps jobs with workers; a full cap answers on Vercel instead', async () => {
+  it('caps jobs with workers; past the cap a request ends with a clear message and no charge, never on Vercel', async () => {
     const t = await ready();
     t.dispatcher.maxConcurrent = 1;
     await t.admin.call('PUT', '/api/v1/admin/ai/settings', { maxConcurrentPerStudent: 3 });
     const first = await t.ask('[parts-fixture] Зроби сайт');
     expect(first.attached).toBe(true);
     const other = await t.student.send('Привіт', { mode: 'agent' });
-    expect(other.done).toBeTruthy();
+    expect(other.done).toBeUndefined();
     const otherJob = await t.school.aiStore.getJob(other.events.find(item => item.event === 'start')!.data.jobId);
-    expect(otherJob!.runner).toBe('vercel');
+    expect(otherJob).toMatchObject({ runner: 'cloud-run', status: 'error', errorCode: 'AI_WORKER_UNAVAILABLE' });
     expect(t.dispatcher.jobs).toEqual([first.jobId]);
   }, 30_000);
 });

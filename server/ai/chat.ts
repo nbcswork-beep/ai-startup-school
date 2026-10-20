@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { AppError } from '../errors/app-error.js';
 import { AiProviderError, type ChatTurn, type ProviderUsage, type StreamEvent } from './adapters.js';
 import { costMicros, type AiService } from './service.js';
+import { CloudRunDispatchError } from './cloud-run.js';
 import { dayKey, hourKey, monthKey } from './time.js';
 import { countChatTokens, countTokens, withSafetyMargin } from './tokenizer.js';
 import { BUDGET_LIMIT_NOTICE, hitOutputLimit, outputLimitNotice } from './output-limit.js';
@@ -54,8 +55,6 @@ const WORKER_START_TIMEOUT_MS = 10 * 60_000;
 const MAX_DISPATCHES = 2;
 /** Workers that may take one job (a crashed worker's job is taken once more). */
 export const WORKER_MAX_ATTEMPTS = 2;
-/** A Vercel function that answers a job a worker could have taken holds it this long (its own limit is 300 s). */
-const VERCEL_LEASE_MS = 330_000;
 /** A worker starts a stage only with this much time left, and keeps this much to save and charge. */
 const MIN_WORKER_STAGE_MS = 120_000;
 const WORKER_FINALIZE_MARGIN_MS = 60_000;
@@ -640,15 +639,16 @@ export class AiChatService {
     const { run } = prepared;
     if (run.job.runner === 'cloud-run') {
       if (await this.dispatch(run.job)) return this.workerSession(run.job);
-      // No Cloud Run worker can take it: this function generates the answer, exactly as before. It
-      // takes the job's lease first, so a worker started by a dispatch that did go through stays out.
-      const now = this.ai.now().getTime();
-      const owner = `vercel:${randomUUID()}`;
-      const claim = await this.ai.store.claimJobLease(run.job.id, owner, now, now + VERCEL_LEASE_MS, WORKER_MAX_ATTEMPTS + 1);
-      if (!claim.ok) return this.workerSession(run.job);
-      run.job.runner = 'vercel';
-      await this.ai.store.updateJob(run.job.id, { runner: 'vercel' });
-      return this.streamSession(run, startedAt, clientSignal, owner);
+      // Explicit backpressure. Keep the request and return its unused reservation; never bypass
+      // the shared worker cap or Google's quota by silently generating on Vercel.
+      // Read the job again: reserving the worker slot moved its heartbeat in storage.
+      const current = (await this.ai.store.getJob(run.job.id)) ?? run.job;
+      const finished = await this.finalize(run.job, this.unsentOutcome(run.job, run.model, 'error', {
+        code: 'AI_WORKER_UNAVAILABLE',
+        message: 'Сервер генерації зайнятий або недоступний. Запит збережено, токени не списано. Спробуйте пізніше.'
+      }), { watching: () => true, staleBefore: current.heartbeatAt + 1 });
+      if (finished) await this.ai.store.releaseWorkerSlot(run.job.id);
+      return this.workerSession((await this.ai.store.getJob(run.job.id)) ?? run.job);
     }
     return this.streamSession(run, startedAt, clientSignal);
   }
@@ -943,17 +943,25 @@ export class AiChatService {
     const now = this.ai.now().getTime();
     const slot = await this.ai.store.reserveWorkerSlot(job.id, now + WORKER_START_TIMEOUT_MS, now, dispatcher.maxConcurrent)
       .catch(error => { this.ai.log(error, 'AI worker slot check failed'); return false; });
-    if (!slot) { this.ai.log(new Error('AI_WORKER_CAPACITY'), 'AI worker cap reached; answering on Vercel'); return false; }
+    if (!slot) {
+      // Another dispatcher/worker may already own this job. Do not finalize it.
+      const current = await this.ai.store.getJob(job.id);
+      if (current && ((current.dispatchedAt ?? 0) > now - WORKER_START_TIMEOUT_MS || (current.leaseUntil ?? 0) > now)) return true;
+      this.ai.log(new Error('AI_WORKER_CAPACITY'), 'AI worker cap reached');
+      return false;
+    }
     try {
+      // Cover cold starts too: the normal six-minute reservation is shorter than the start timeout.
+      await this.ai.store.extendReservation(job.studentId, job.requestId, now + WORKER_START_TIMEOUT_MS + RESERVATION_TTL_MS);
       await dispatcher.dispatch(job.id);
     } catch (error) {
       this.ai.log(error, 'AI worker dispatch failed');
+      // Network errors, 5xx and malformed responses may follow an accepted launch. Keep its slot
+      // and durable dispatch claim; recovery owns the bounded retry, never an immediate fallback.
+      if (!(error instanceof CloudRunDispatchError) || error.status === null || error.status >= 500 || error.status === 408) return true;
       await this.ai.store.releaseWorkerSlot(job.id).catch(() => undefined);
       return false;
     }
-    job.dispatches = (job.dispatches ?? 0) + 1;
-    job.dispatchedAt = now;
-    await this.ai.store.updateJob(job.id, { dispatchedAt: now, dispatches: job.dispatches });
     return true;
   }
 

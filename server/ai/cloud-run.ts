@@ -249,7 +249,7 @@ export function vercelWorkerDispatcher(env: NodeJS.ProcessEnv, subjectToken: () 
   return {
     dispatcher: new CloudRunJobDispatcher({
       project: values.AI_WORKER_GCP_PROJECT, region: values.AI_WORKER_GCP_REGION, job: values.AI_WORKER_JOB_NAME,
-      maxConcurrent: clampInt(env.AI_WORKER_MAX_CONCURRENT, 3, 1, 50), tokens, ...(fetcher ? { fetch: fetcher } : {})
+      maxConcurrent: clampInt(env.AI_WORKER_MAX_CONCURRENT, 15, 1, 15), tokens, ...(fetcher ? { fetch: fetcher } : {})
     }),
     problem: null
   };

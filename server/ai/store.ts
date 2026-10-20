@@ -151,7 +151,8 @@ export interface AiStore {
   releaseJobLease(jobId: string, owner: string): Promise<void>;
   /**
    * A place for one more Cloud Run job: counts jobs handed to workers and not yet released (or
-   * whose lease ran out). Atomic, so parallel requests never exceed the cap.
+   * whose lease ran out). Atomically records a dispatch attempt before contacting Google.
+   * A live slot for the same id is refused too, preventing concurrent recovery dispatches.
    */
   reserveWorkerSlot(jobId: string, until: number, now: number, cap: number): Promise<boolean>;
   releaseWorkerSlot(jobId: string): Promise<void>;
@@ -170,6 +171,8 @@ export interface AiStore {
    * function. Returns 0 when the request may go now, otherwise how many milliseconds to wait.
    */
   acquireRateSlot(providerId: string, limitPerMinute: number, now: number): Promise<number>;
+  /** Shared Retry-After barrier across all instances and keys of a provider. Never shortens it. */
+  deferProvider(providerId: string, until: number): Promise<void>;
   // agent configuration: skills and installed plugins
   listSkills(): Promise<AiSkill[]>;
   putSkill(skill: AiSkill): Promise<void>;
@@ -281,6 +284,7 @@ export class MemoryAiStore implements AiStore {
   private jobs = new Map<string, { fields: Record<string, string>; text: string }>();
   private skills = new Map<string, AiSkill>();
   private rateWindows = new Map<string, number>();
+  private providerCooldowns = new Map<string, number>();
   private plugins = new Map<string, AiPluginRecord>();
   private generated = new Map<string, AiGeneratedFile>();
   private jobRequests = new Map<string, string>();
@@ -552,6 +556,7 @@ export class MemoryAiStore implements AiStore {
     const item = this.jobs.get(jobId);
     if (!item) return false;
     if (owner && item.fields.leaseOwner !== owner) return false;
+    if (!owner && item.fields.leaseOwner && Number(item.fields.leaseUntil ?? 0) > now) return false;
     const { status } = item.fields;
     const quiet = staleBefore === null || Number(item.fields.heartbeatAt) < staleBefore;
     const stuck = staleBefore !== null && status === 'finalizing' && Number(item.fields.finalizingAt) < staleBefore;
@@ -600,12 +605,19 @@ export class MemoryAiStore implements AiStore {
   }
   async releaseJobLease(jobId: string, owner: string) {
     const fields = this.jobs.get(jobId)?.fields;
-    if (fields?.leaseOwner === owner) fields.leaseOwner = '';
-    this.workerSlots.delete(jobId);
+    if (fields?.leaseOwner === owner) {
+      fields.leaseOwner = '';
+      this.workerSlots.delete(jobId);
+    }
   }
   async reserveWorkerSlot(jobId: string, until: number, now: number, cap: number) {
     for (const [id, end] of [...this.workerSlots]) if (end <= now) this.workerSlots.delete(id);
-    if (!this.workerSlots.has(jobId) && this.workerSlots.size >= cap) return false;
+    if (this.workerSlots.has(jobId) || this.workerSlots.size >= cap) return false;
+    const fields = this.jobs.get(jobId)?.fields;
+    if (fields) {
+      if (fields.status !== 'running') return false;
+      Object.assign(fields, { dispatchedAt: String(now), dispatches: String(Number(fields.dispatches ?? 0) + 1), heartbeatAt: String(now) });
+    }
     this.workerSlots.set(jobId, until);
     return true;
   }
@@ -617,6 +629,9 @@ export class MemoryAiStore implements AiStore {
     return true;
   }
   async acquireRateSlot(providerId: string, limitPerMinute: number, now: number) {
+    const cooldown = (this.providerCooldowns.get(providerId) ?? 0) - now;
+    if (cooldown > 0) return cooldown;
+    if (limitPerMinute <= 0) return 0;
     const minute = Math.floor(now / 60_000);
     const current = this.rateWindows.get(`${providerId}:${minute}`) ?? 0;
     const previous = this.rateWindows.get(`${providerId}:${minute - 1}`) ?? 0;
@@ -624,6 +639,9 @@ export class MemoryAiStore implements AiStore {
     if (estimate + 1 > limitPerMinute) return previous > 0 ? Math.max(250, Math.ceil(((estimate + 1 - limitPerMinute) / previous) * 60_000)) : Math.max(250, 60_000 - (now % 60_000));
     this.rateWindows.set(`${providerId}:${minute}`, current + 1);
     return 0;
+  }
+  async deferProvider(providerId: string, until: number) {
+    this.providerCooldowns.set(providerId, Math.max(this.providerCooldowns.get(providerId) ?? 0, until));
   }
   async listSkills() { return [...this.skills.values()].map(item => structuredClone(item)); }
   async putSkill(skill: AiSkill) { this.skills.set(skill.id, structuredClone(skill)); }
@@ -875,6 +893,7 @@ const CLAIM_JOB_SCRIPT = `
 local key = ARGV[1] .. ':job:' .. ARGV[2]
 local owner = ARGV[5] or ''
 if owner ~= '' and (redis.call('HGET', key, 'leaseOwner') or '') ~= owner then return 0 end
+if owner == '' and (redis.call('HGET', key, 'leaseOwner') or '') ~= '' and tonumber(redis.call('HGET', key, 'leaseUntil') or '0') > tonumber(ARGV[3]) then return 0 end
 local status = redis.call('HGET', key, 'status')
 local staleBefore = ARGV[4]
 local quiet = staleBefore == '' or tonumber(redis.call('HGET', key, 'heartbeatAt') or '0') < tonumber(staleBefore)
@@ -916,8 +935,10 @@ return 1`;
 const RELEASE_LEASE_SCRIPT = `
 local p, jobId, owner = ARGV[1], ARGV[2], ARGV[3]
 local key = p .. ':job:' .. jobId
-if (redis.call('HGET', key, 'leaseOwner') or '') == owner then redis.call('HSET', key, 'leaseOwner', '') end
-redis.call('HDEL', p .. ':runner:slots', jobId)
+if (redis.call('HGET', key, 'leaseOwner') or '') == owner then
+  redis.call('HSET', key, 'leaseOwner', '')
+  redis.call('HDEL', p .. ':runner:slots', jobId)
+end
 return 1`;
 
 const WORKER_SLOT_SCRIPT = `
@@ -931,7 +952,13 @@ for i = 1, #held, 2 do
   elseif held[i] == jobId then mine = true
   else live = live + 1 end
 end
-if not mine and live >= cap then return 0 end
+if mine or live >= cap then return 0 end
+local key = p .. ':job:' .. jobId
+if redis.call('EXISTS', key) == 1 then
+  if redis.call('HGET', key, 'status') ~= 'running' then return 0 end
+  local dispatches = tonumber(redis.call('HGET', key, 'dispatches') or '0') or 0
+  redis.call('HSET', key, 'dispatchedAt', ARGV[4], 'dispatches', tostring(dispatches + 1), 'heartbeatAt', ARGV[4])
+end
 redis.call('HSET', slots, jobId, untilAt)
 return 1`;
 
@@ -952,6 +979,9 @@ return 1`;
 
 const RATE_SLOT_SCRIPT = `
 local p, id, limit, now = ARGV[1], ARGV[2], tonumber(ARGV[3]), tonumber(ARGV[4])
+local cooldown = tonumber(redis.call('GET', p .. ':cooldown:' .. id) or '0')
+if cooldown > now then return cooldown - now end
+if limit <= 0 then return 0 end
 local minute = math.floor(now / 60000)
 local current = p .. ':rl:' .. id .. ':' .. minute
 local previous = p .. ':rl:' .. id .. ':' .. (minute - 1)
@@ -968,6 +998,14 @@ end
 redis.call('INCR', current)
 redis.call('EXPIRE', current, 130)
 return 0`;
+
+const DEFER_PROVIDER_SCRIPT = `
+local key, untilAt = ARGV[1], tonumber(ARGV[2])
+local current = tonumber(redis.call('GET', key) or '0')
+if untilAt > current then
+  redis.call('SET', key, ARGV[2])
+end
+return 1`;
 
 const CLAIM_NOTICE_SCRIPT = `
 local key = ARGV[1] .. ':job:' .. ARGV[2]
@@ -1270,7 +1308,11 @@ export class RedisAiStore implements AiStore {
   async releaseJob(jobId: string) { await this.client.command(['HDEL', this.key('jobs', 'active'), jobId]); }
 
   async acquireRateSlot(providerId: string, limitPerMinute: number, now: number) {
-    return Number(await this.client.command<number>(['EVAL', RATE_SLOT_SCRIPT, 0, this.prefix, providerId, Math.max(1, Math.floor(limitPerMinute)), now])) || 0;
+    return Number(await this.client.command<number>(['EVAL', RATE_SLOT_SCRIPT, 0, this.prefix, providerId, Math.max(0, Math.floor(limitPerMinute)), now])) || 0;
+  }
+
+  async deferProvider(providerId: string, until: number) {
+    await this.client.command(['EVAL', DEFER_PROVIDER_SCRIPT, 0, this.key('cooldown', providerId), String(until)]);
   }
 
   listSkills() { return this.hashValues<AiSkill>(this.key('skills')); }

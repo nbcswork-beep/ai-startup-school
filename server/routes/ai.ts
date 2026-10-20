@@ -121,7 +121,11 @@ export function registerAiRoutes(app: FastifyInstance, deps: { repository: AppRe
     if (!request.access.roles.includes('student')) throw new AppError('STUDENT_REQUIRED', 403, 'ШІ-асистент доступний учням');
   };
   const admin = (max = 60): Secured & { config: { rateLimit: { max: number; timeWindow: string } } } => ({ preHandler: [authenticate, requireAdmin], config: { rateLimit: { max, timeWindow: '1 minute' } } });
-  const student = (max = 60): Secured & { config: { rateLimit: { max: number; timeWindow: string } } } => ({ preHandler: [authenticate, requireStudent], config: { rateLimit: { max, timeWindow: '1 minute' } } });
+  // Authenticate before choosing the bucket: a whole classroom may share one public IP.
+  const student = (max = 60) => ({
+    preHandler: [authenticate, requireStudent],
+    config: { rateLimit: { max, timeWindow: '1 minute', hook: 'preHandler' as const, keyGenerator: (request: FastifyRequest) => request.auth.userId } }
+  });
   const A = '/api/v1/admin/ai';
 
   // ---- Admin: providers, keys, models

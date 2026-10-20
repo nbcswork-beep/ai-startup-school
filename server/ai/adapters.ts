@@ -139,7 +139,7 @@ async function errorFromResponse(response: Response): Promise<AiProviderError> {
   if (retryAfter) {
     const seconds = Number(retryAfter);
     const at = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retryAfter) - Date.now();
-    if (Number.isFinite(at) && at > 0) error.retryAfterMs = Math.min(at, 120_000);
+    if (Number.isFinite(at) && at > 0) error.retryAfterMs = at;
   }
   return error;
 }
