@@ -42,6 +42,8 @@ const VIEWER_FRESH_MS = 10_000;
 const NOTICE_LEASE_MS = 60_000;
 const NOTICE_RETRY_WINDOW_MS = 30 * 60_000;
 const MAX_NOTICE_ATTEMPTS = 3;
+/** A cut-off worker run waits this long for its continuation to decide its notice before the sweep sends it. */
+const CHAIN_NOTICE_GRACE_MS = 2 * 60_000;
 const ACTIVE_JOB = new Set<AiJobStatus>(['running', 'finalizing']);
 /** An action that sends data out waits this long for the student's answer, then is skipped. */
 const CONFIRM_TIMEOUT_MS = 120_000;
@@ -1505,6 +1507,8 @@ export class AiChatService {
       else if (jobStatus === 'stopped') opts.event('done', { ...base, userMessage: null, message: null });
       else opts.event('error', { ...base, ...(problem ?? studentMessage(new AiProviderError('network', ''))) });
     }
+    // A worker run cut off with rounds left goes on by itself: one notice for the whole chain, settled in nextStage.
+    if (job.runner === 'cloud-run' && resume && jobStatus === 'interrupted') return true;
     // A worker has no bot token: Vercel sends the notice. Without the relay the scheduled sweep does it.
     const relay = this.ai.deps.noticeRelay;
     await (relay ? relay(job.id) : this.deliverNotice(job.id, watching)).catch(error => this.ai.log(error, 'AI answer notice failed'));
@@ -1531,12 +1535,17 @@ export class AiChatService {
    * The Telegram notice: once per finished job, never while the student is looking at the chat,
    * never after the student stopped it, and with a fixed text that says nothing about the chat.
    */
-  private async deliverNotice(jobId: string, watching: boolean): Promise<void> {
+  private async deliverNotice(jobId: string, watching: boolean, chainEnded = false): Promise<void> {
     const now = this.ai.now().getTime();
     const attempt = await this.ai.store.claimJobNotification(jobId, now, now - NOTICE_LEASE_MS);
     if (!attempt) return;
     const job = await this.ai.store.getJob(jobId);
     if (!job || ACTIVE_JOB.has(job.status)) { await this.ai.store.updateJob(jobId, { notifyClaimAt: '' }); return; }
+    // A cut-off worker run: its continuation decides the notice. The sweep sends it only if that never happened.
+    if (!chainEnded && job.runner === 'cloud-run' && job.resume && job.status === 'interrupted' && now - (job.finishedAt ?? 0) < CHAIN_NOTICE_GRACE_MS) {
+      await this.ai.store.updateJob(jobId, { notifyClaimAt: '' });
+      return;
+    }
     const settle = async (notify: NonNullable<AiJob['notify']>, release: boolean) => {
       await this.ai.store.updateJob(jobId, { notify, ...(notify === 'failed' ? { notifyClaimAt: '' } : {}) });
       if (release) await this.ai.store.releaseJob(jobId);
@@ -1738,16 +1747,28 @@ export class AiChatService {
   private async nextStage(previousId: string, log: WorkerOptions['log'] = () => undefined): Promise<string | null> {
     const previous = await this.ai.store.getJob(previousId);
     if (!previous?.resume || previous.status !== 'interrupted' || previous.runner !== 'cloud-run') return null;
+    let next: AiJob | null = null;
     try {
       const prepared = await this.prepare(previous.studentId, previous.conversationId, { content: '', clientRequestId: `auto:${previous.id}`, continueJobId: previous.id, mode: 'agent' }, { groupId: previous.groupId, runner: 'cloud-run' });
-      const next = prepared.kind === 'attach' ? prepared.job : prepared.run.job;
+      next = prepared.kind === 'attach' ? prepared.job : prepared.run.job;
       log('stage.continue', { from: previousId, jobId: next.id, round: next.round ?? 0, joined: prepared.kind === 'attach' });
-      return ACTIVE_JOB.has(next.status) ? next.id : null;
     } catch (error) {
       // Out of tokens, a newer message, a stale continuation: the chat shows the saved part as it is.
       log('stage.continue_refused', { from: previousId, code: error instanceof AppError ? error.code : errorLabel(error) });
-      return null;
     }
+    await this.settleChainNotice(previous.id, next !== null).catch(error => this.ai.log(error, 'AI answer notice failed'));
+    return next && ACTIVE_JOB.has(next.status) ? next.id : null;
+  }
+
+  /** A cut-off worker run's notice: the run that continues it notifies for the chain; with none, this one does. */
+  private async settleChainNotice(jobId: string, continued: boolean): Promise<void> {
+    if (continued) {
+      await this.ai.store.updateJob(jobId, { notify: 'skipped' });
+      await this.ai.store.releaseJob(jobId);
+      return;
+    }
+    const relay = this.ai.deps.noticeRelay;
+    await (relay ? relay(jobId) : this.deliverNotice(jobId, false, true));
   }
 
   /** On Vercel: a continuation for a worker job whose worker died, handed to a new worker. */
@@ -1818,7 +1839,8 @@ export class AiChatService {
   async deliverRelayedNotice(jobId: string): Promise<void> {
     const job = await this.ai.store.getJob(jobId);
     if (!job || ACTIVE_JOB.has(job.status)) return;
-    await this.deliverNotice(jobId, false);
+    // A worker relays a cut-off run's notice only once nothing continues it.
+    await this.deliverNotice(jobId, false, true);
   }
 
   private jobView(job: AiJob, text: string, offset: number): AiJobView {
