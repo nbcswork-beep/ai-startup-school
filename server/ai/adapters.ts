@@ -471,7 +471,7 @@ class AnthropicAdapter implements ProviderAdapter {
 function openAiMessage(turn: ChatTurn): Record<string, unknown> {
   if (turn.role === 'tool') return { role: 'tool', tool_call_id: turn.toolCallId ?? '', content: turn.content };
   if (turn.role === 'assistant' && turn.toolCalls?.length) {
-    return { role: 'assistant', content: turn.content || null, tool_calls: turn.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } })) };
+    return { role: 'assistant', content: turn.content || null, tool_calls: turn.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: jsonArguments(call.arguments) } })) };
   }
   if (turn.role === 'user' && (turn.documents?.length || turn.images?.length)) {
     // Images go before the text: NVIDIA's vision models expect that order, and the others accept it.
@@ -485,6 +485,19 @@ function openAiMessage(turn: ChatTurn): Record<string, unknown> {
     };
   }
   return { role: turn.role, content: turn.content };
+}
+
+/**
+ * A call cut off mid-stream (output limit, timeout) keeps broken JSON, and providers refuse the
+ * whole history over it. Its tool result already says it failed; the call goes out as `{}`.
+ */
+function jsonArguments(raw: string): string {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? raw : '{}';
+  } catch {
+    return '{}';
+  }
 }
 
 type AnthropicBlock = Record<string, unknown>;
