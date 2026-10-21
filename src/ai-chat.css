@@ -661,6 +661,8 @@ html[data-screen='ai'] .bottom-nav { visibility: hidden; }
 .ai-file-info small { color: var(--muted); font-size: 12px; }
 .ai-file-download svg { width: 18px; height: 18px; }
 .ai-file-outline, .ai-file-text, .ai-file-table { grid-column: 1 / -1; margin: 4px 0 0; }
+/* Below the outline, on its own row: in the badge's 44px column its label broke letter by letter. */
+.ai-file-card [data-ai='project-preview'] { grid-column: 1 / -1; justify-self: start; margin-top: 4px; }
 .ai-file-outline { padding: 8px 10px 8px 30px; border-radius: 10px; color: var(--muted); background: rgba(var(--lavender-rgb), 0.04); font-size: 13px; line-height: 1.5; }
 .ai-file-outline li { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .ai-file-outline .is-more { list-style: none; margin-left: -18px; color: var(--faint); }
