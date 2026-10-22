@@ -16,6 +16,7 @@ import type { AgentTool, ToolContext, ToolOutcome } from './plugins.js';
 
 const MIN_ROUND_OUTPUT = 256;
 const MAX_TOOL_RESULT_CHARS = 60_000;
+const TOOLS_UNSUPPORTED = /(tool|function)[^.]{0,60}(not supported|unsupported|not available|not enabled)|(does not|doesn't|do not) support[^.]{0,40}(tool|function)|no endpoints? found[^.]{0,60}tool/i;
 
 export interface AgentTools { tool: AgentTool; context: ToolContext }
 
@@ -197,7 +198,9 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
       if (failure.code === 'aborted' && reason) return { text, status: reason, failure, usage, approximate, notice: reason === 'interrupted' ? { code: 'AI_TIME_LIMIT', message: 'Завдання не вмістилося в час одного запуску.' } : null };
       await input.recordError(failure);
       if (checkpointed.size && failure.retryable) return { text: '', status: 'interrupted', failure, usage, approximate, notice: { code: 'AI_PROJECT_CONTINUE', message: 'Збережений код буде дописано в наступному запуску.' } };
-      if (/tool|function/i.test(failure.message) && ['bad_request', 'not_found'].includes(failure.code)) {
+      // Only a refusal of tools as such: any 400 that merely mentions a tool call (a bad argument, a
+      // broken history) is the provider's own message, not «this model cannot do agent mode».
+      if (TOOLS_UNSUPPORTED.test(failure.message) && ['bad_request', 'not_found'].includes(failure.code)) {
         return { text: '', status: 'error', failure, usage, approximate, notice: { code: 'AI_AGENT_UNSUPPORTED', message: 'Ця модель не підтримує режим агента (виклик інструментів). Оберіть іншу модель або вимкніть режим агента.' } };
       }
       return { text, status: text || toolCalls ? 'interrupted' : 'error', failure, usage, approximate, notice: null };

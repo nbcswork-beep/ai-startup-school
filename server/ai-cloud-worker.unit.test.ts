@@ -9,6 +9,8 @@ import { ADMIN_ID, aiSchool, configureMock } from './ai/testing/app-harness.js';
 import { MockProviderServer, STREAMED_PAGE } from './ai/testing/mock-provider.js';
 import { RedisEmulator } from './ai/testing/redis-emulator.js';
 import { readZipEntries, readZipEntry } from './ai/zip.js';
+import { AiProviderError } from './ai/adapters.js';
+import { runAgent } from './ai/agent/run.js';
 import { DEV_IDS } from './data/seed.js';
 import { createWorkerChat, runWorker, type WorkerDeps } from './worker/ai-worker.js';
 import { loadWorkerConfig, WorkerConfigError, type WorkerConfig } from './worker/config.js';
@@ -637,4 +639,52 @@ describe('Cloud Run worker: boundaries', () => {
     expect(otherJob).toMatchObject({ runner: 'cloud-run', status: 'error', errorCode: 'AI_WORKER_UNAVAILABLE' });
     expect(t.dispatcher.jobs).toEqual([first.jobId]);
   }, 30_000);
+});
+
+describe('Cloud Run worker: how sites are written', () => {
+  const systemOf = (request: { body: any }) => String(request.body.messages?.[0]?.content ?? '');
+  const toolDescription = (request: { body: any }, name: string) => String(request.body.tools?.find((tool: any) => tool.function?.name === name)?.function?.description ?? '');
+
+  it('a worker job asks for whole files; a Vercel job keeps the short saved pieces', async () => {
+    const t = await ready();
+    const before = mock.chatRequests().length;
+    const sent = await t.ask('[parts-fixture] Зроби сайт-візитку');
+    await t.run(t.worker(), sent.jobId);
+    const onWorker = mock.chatRequests()[before]!;
+    expect(systemOf(onWorker)).toContain('Пиши кожен файл повністю одним викликом');
+    expect(systemOf(onWorker)).not.toContain('збережи перші 4000 символів');
+    expect(toolDescription(onWorker, 'create_project')).toContain('Кожен файл пиши повністю');
+    expect(toolDescription(onWorker, 'create_project')).not.toContain('Сайт будуй частинами');
+
+    const v = await ready({ runner: 'vercel', budgetMs: 1_500 });
+    const start = mock.chatRequests().length;
+    await v.student.send('[parts-fixture] Зроби сайт-візитку', { mode: 'agent' });
+    const onVercel = mock.chatRequests()[start]!;
+    expect(systemOf(onVercel)).toContain('збережи перші 4000 символів');
+    expect(toolDescription(onVercel, 'create_project')).toContain('Сайт будуй частинами');
+  }, 30_000);
+
+  it('waits ten minutes of silence by default: Claude sends a whole file parameter only once it is written', () => {
+    const env = {
+      AI_JOB_ID: randomUUID(), AI_WORKER_ENVIRONMENT: 'production', UPSTASH_REDIS_REST_URL: 'https://r.test', UPSTASH_REDIS_REST_TOKEN: 'token',
+      AI_SECRETS_KEY: NEXT_KEY, SESSION_REDIS_PREFIX: 'aiss:production:sessions:v1'
+    };
+    expect(loadWorkerConfig(env).idleTimeoutMs).toBe(10 * 60_000);
+    expect(loadWorkerConfig({ ...env, AI_WORKER_IDLE_TIMEOUT_MS: '120000' }).idleTimeoutMs).toBe(120_000);
+  });
+
+  it('a 400 that only mentions a tool call is the provider\'s own error, not «this model cannot do agent mode»', async () => {
+    const failing = (message: string) => runAgent({
+      turns: [{ role: 'user', content: 'Зроби сайт' }], tools: [], maxSteps: 4, budget: 100_000, maxOutputTokens: 1000, maxInputTokens: 100_000,
+      signal: new AbortController().signal, emit: () => undefined, steps: [], saveSteps: async () => undefined, addFile: async () => undefined,
+      confirm: async () => false, abortReason: () => null, recordError: async () => undefined,
+      call: async function* () { throw new AiProviderError('bad_request', message, 400); }
+    });
+    const broken = await failing('Validation: `messages[16].tool_calls[0].function.arguments` must be a valid JSON object string: EOF while parsing a value at line 1 column 63');
+    expect(broken.status).toBe('error');
+    expect(broken.notice).toBeNull();
+    for (const refusal of ['This model does not support tools', 'Tool use is not supported for this model', 'No endpoints found that support tool use']) {
+      expect((await failing(refusal)).notice?.code).toBe('AI_AGENT_UNSUPPORTED');
+    }
+  });
 });

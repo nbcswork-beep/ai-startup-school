@@ -94,7 +94,10 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv): WorkerConfig {
     leaseMs: clampInt(env.AI_WORKER_LEASE_MS, 90_000, 30_000, 10 * MINUTE),
     maxAttempts: clampInt(env.AI_WORKER_MAX_ATTEMPTS, 2, 1, 5),
     requestTimeoutMs: clampInt(env.AI_WORKER_REQUEST_TIMEOUT_MS, 15 * MINUTE, MINUTE, 45 * MINUTE),
-    idleTimeoutMs: clampInt(env.AI_WORKER_IDLE_TIMEOUT_MS, 3 * MINUTE, 30_000, 15 * MINUTE),
+    // Claude sends a long tool parameter (a whole file) only when it is complete, so the stream is
+    // silent while the file is written. 3 minutes cut those calls off; a dead connection still ends
+    // at the request timeout.
+    idleTimeoutMs: clampInt(env.AI_WORKER_IDLE_TIMEOUT_MS, 10 * MINUTE, 30_000, 15 * MINUTE),
     handoff: project && region && job ? { project, region, job, maxConcurrent: clampInt(env.AI_WORKER_MAX_CONCURRENT, 15, 1, 15) } : null
   };
 }

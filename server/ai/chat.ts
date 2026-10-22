@@ -68,11 +68,12 @@ const WORKER_FILE_LINK_TTL_MS = 5 * 60_000;
 const WORKER_AGENT_STEPS = 24;
 
 /**
- * The longest file a worker asks for in one call: about 2.5 characters of code per output token, so
- * the call ends inside the model's output limit; at most append_project_file's 16 000.
+ * The longest file a worker asks for in one call. HTML with Ukrainian text, escaped inside JSON, is
+ * about 1.5 characters per output token, so the call ends inside the model's output limit. At most
+ * 12 000: a call that long is a couple of minutes of a silent stream (see the worker's idle timeout).
  */
 function workerFileChars(model: AiModelRecord): number {
-  return Math.max(4000, Math.min(16_000, Math.floor(model.maxOutputTokens * 2.5 / 1000) * 1000));
+  return Math.max(4000, Math.min(12_000, Math.floor(model.maxOutputTokens * 1.5 / 1000) * 1000));
 }
 const WORKER_UNAVAILABLE = { code: 'AI_WORKER_UNAVAILABLE', message: 'Сервер генерації не запустився. Спробуйте ще раз трохи пізніше.' };
 
@@ -1514,7 +1515,8 @@ export class AiChatService {
     else if (status === 'complete') { jobStatus = 'error'; problem = { code: 'AI_EMPTY_ANSWER', message: 'Модель повернула порожню відповідь. Спробуйте переформулювати.' }; }
     else if (outcome.deadline) { jobStatus = text ? 'interrupted' : 'error'; problem = { code: 'AI_TIME_LIMIT', message: text ? 'Відповідь задовга і її обрізано за лімітом часу. Попросіть ШІ продовжити.' : 'ШІ не встиг відповісти за відведений час. Спробуйте ще раз або коротше питання.' }; }
     else if (outcome.lost) { jobStatus = text ? 'interrupted' : 'error'; problem = { code: 'AI_INTERRUPTED', message: text ? 'Генерацію перервано на сервері. Збережену частину показано.' : 'Не вдалося отримати відповідь. Спробуйте ще раз.' }; }
-    else { jobStatus = text ? 'interrupted' : 'error'; problem = studentMessage(failure ?? new AiProviderError('network', '')); }
+    // Files the run already saved stay the answer: the provider failing afterwards does not undo them.
+    else { jobStatus = text || files.length ? 'interrupted' : 'error'; problem = studentMessage(failure ?? new AiProviderError('network', '')); }
     const watching = opts.watching();
     await this.ai.store.finishJob(job.id, {
       status: jobStatus, finishedAt: now.getTime(), message: assistantMessage, modelId: usedModel.id, modelLabel: usedModel.label, steps, pending: null,
