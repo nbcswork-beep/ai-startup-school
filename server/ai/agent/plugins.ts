@@ -220,6 +220,18 @@ function projectPaths(args: Record<string, unknown>): string {
 
 export const BUILTIN_PLUGINS: Record<string, BuiltinPlugin> = { documents, skills, projects, calculator, wikipedia };
 
+/**
+ * The project tools as a Cloud Run worker describes them: a stage has minutes, so files go whole,
+ * up to `chars` per call (sized to the model's output limit). Vercel keeps the manifest's short pieces.
+ */
+export function workerProjectToolDescriptions(chars: number): Record<string, string> {
+  return {
+    create_project: `Створити проєкт: website — статичний сайт з index.html; code — вихідний код (ZIP, без запуску). Кожен файл пиши повністю, до ${chars} символів за виклик (title і kind перед files). Великий сайт: спершу index.html і спільні style.css та script.js, решту сторінок і статей додавай через write_project_files. З projectId повністю замінює файли існуючого проєкту (спочатку read_project); для часткових змін використовуй write_project_files. Всі посилання відносні. Зовнішні JS CDN, fetch, серверні API, форми та localStorage у перегляді недоступні. Статті SEO створюй як blog/slug.html з навігацією. Чернетка не публікується автоматично.`,
+    write_project_files: `Додати або замінити 1–3 повні файли в збереженій чернетці проєкту projectId (разом до ${chars} символів); решта файлів лишається. remove — шляхи файлів, які треба видалити. Кожен виклик одразу зберігається. До публікації мають існувати всі файли, на які посилається сайт.`,
+    append_project_file: 'Дописати файл, що обірвався (read_project показує incomplete=true), не переписуючи збережений початок. Перед цим прочитай кінець файлу через read_project(path, from=max(0,chars-2000)). offset має точно дорівнювати chars. content — лише НОВИЙ текст, бажано весь залишок файлу одним викликом; complete=true, коли файл завершено, — тоді він перевіряється.'
+  };
+}
+
 function toolBase(manifest: AiPluginManifest, name: string): Pick<AgentTool, 'name' | 'description' | 'parameters' | 'pluginId' | 'pluginName'> {
   const tool = manifest.tools.find(item => item.name === name)!;
   return { name: tool.name, description: tool.description, parameters: tool.parameters, pluginId: manifest.id, pluginName: manifest.name };

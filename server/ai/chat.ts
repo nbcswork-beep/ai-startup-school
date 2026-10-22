@@ -16,8 +16,8 @@ import { DOCUMENT_KINDS, matchesKind, hasCyrillic, isOutputFormat, kindFromName,
 import { DocumentReadError, extractDocument, type ExtractedDocument } from './documents/read.js';
 import { DocumentWriteError, renderFile } from './documents/write.js';
 import { loadPlugins, loadSkills } from './agent/config.js';
-import { enabledTools, type AgentTool, type ToolContext, type ToolOutcome } from './agent/plugins.js';
-import { AGENT_RULES, profilePrompt, runAgent, skillPrompt, skillsIndex, type AgentTools } from './agent/run.js';
+import { enabledTools, workerProjectToolDescriptions, type AgentTool, type ToolContext, type ToolOutcome } from './agent/plugins.js';
+import { AGENT_RULES, profilePrompt, runAgent, skillPrompt, skillsIndex, workerAgentRules, type AgentTools } from './agent/run.js';
 
 const MESSAGE_CAP = 400;
 const HISTORY_LOAD = 80;
@@ -61,6 +61,19 @@ export const WORKER_MAX_ATTEMPTS = 2;
 const MIN_WORKER_STAGE_MS = 120_000;
 const WORKER_FINALIZE_MARGIN_MS = 60_000;
 const WORKER_FILE_LINK_TTL_MS = 5 * 60_000;
+/**
+ * A worker stage has minutes, not Vercel's four: a site needs about this many tool calls when each
+ * file goes whole. The school's setting still counts where it is higher.
+ */
+const WORKER_AGENT_STEPS = 24;
+
+/**
+ * The longest file a worker asks for in one call: about 2.5 characters of code per output token, so
+ * the call ends inside the model's output limit; at most append_project_file's 16 000.
+ */
+function workerFileChars(model: AiModelRecord): number {
+  return Math.max(4000, Math.min(16_000, Math.floor(model.maxOutputTokens * 2.5 / 1000) * 1000));
+}
 const WORKER_UNAVAILABLE = { code: 'AI_WORKER_UNAVAILABLE', message: 'Сервер генерації не запустився. Спробуйте ще раз трохи пізніше.' };
 
 // Interface rules appended to the admin's system prompt: how files arrive and how files go back.
@@ -95,6 +108,9 @@ export interface ChatInput {
 const MAX_AUTO_RESUMES = 3;
 const EMPTY_RESUME_PROMPT = 'Автоматичне продовження: попередній запуск завершився за лімітом часу без збереження нових файлів. Виконай початкове завдання учня з історії та врахуй його вкладення. Не стверджуй, що чернетку вже створено. Якщо в історії є projectId, спершу прочитай той проєкт і продовжуй його. Інакше для сайту спершу створи невеликий робочий index.html через create_project, потім додавай оформлення, сторінки та інтерактивність окремими короткими викликами до 4000 символів. Не зменшуй обсяг початкового завдання: розділи виконання на частини. Не повторюй уже підтверджені зовнішні дії; за потреби нового дозволу знову запитай його.';
 const RESUME_PROMPT = 'Автоматичне продовження: попередній запуск обірвався, отриманий код збережений у чернетці. Продовжуй те саме завдання з місця зупинки. Спочатку read_project без path: chars — точна довжина, incomplete=true — файл ще недописаний. Для такого файлу прочитай кінець через read_project(path,from=max(0,chars-2000)), потім append_project_file(projectId,path,offset=chars,content=лише НОВИЙ текст,complete=true лише в останній частині). Пиши короткими частинами до 4000 символів. Готові файли не переписуй; нові додавай через write_project_files. Не починай заново. Коли всі файли завершені та перевірені, коротко підсумуй зроблене.';
+// On a worker the stage that broke off had minutes; the next one finishes files whole, not in short pieces.
+const WORKER_EMPTY_RESUME_PROMPT = 'Автоматичне продовження: попередній запуск обірвався без збереження нових файлів. Виконай початкове завдання учня з історії та врахуй його вкладення. Не стверджуй, що чернетку вже створено. Якщо в історії є projectId, спершу прочитай той проєкт і продовжуй його. Інакше створи сайт через create_project, кожен файл повністю. Не зменшуй обсяг початкового завдання. Не повторюй уже підтверджені зовнішні дії; за потреби нового дозволу знову запитай його.';
+const WORKER_RESUME_PROMPT = 'Автоматичне продовження: попередній запуск обірвався, отриманий код збережений у чернетці. Продовжуй те саме завдання з місця зупинки. Спочатку read_project без path: chars — точна довжина, incomplete=true — файл ще недописаний. Для такого файлу прочитай кінець через read_project(path,from=max(0,chars-2000)), потім допиши решту одним викликом append_project_file(projectId,path,offset=chars,content=лише НОВИЙ текст,complete=true). Готові файли не переписуй; відсутні додавай повністю через write_project_files. Не починай заново. Коли всі файли завершені та перевірені, коротко підсумуй зроблене.';
 
 export interface ChatSession {
   stream: ReadableStream<Uint8Array>;
@@ -663,7 +679,10 @@ export class AiChatService {
   private async prepare(studentId: string, conversationId: string | 'new', input: ChatInput, known?: { groupId: string | null; runner: AiRunner }): Promise<{ kind: 'attach'; job: AiJob } | { kind: 'run'; run: RunPlan }> {
     // An automatic continuation: the server writes the request and keeps the cut-off run's model and skill.
     const resumeOf = input.continueJobId ? await this.resumable(studentId, conversationId, input.continueJobId) : null;
-    const content = resumeOf ? (resumeOf.files.length ? RESUME_PROMPT : EMPTY_RESUME_PROMPT) : input.content.replace(/\r\n/g, '\n').trim();
+    const onWorker = resumeOf?.runner === 'cloud-run';
+    const content = resumeOf
+      ? (resumeOf.files.length ? (onWorker ? WORKER_RESUME_PROMPT : RESUME_PROMPT) : (onWorker ? WORKER_EMPTY_RESUME_PROMPT : EMPTY_RESUME_PROMPT))
+      : input.content.replace(/\r\n/g, '\n').trim();
     const groupId = known ? known.groupId : await this.studentGroup(studentId);
     const access = await this.ai.accessFor(studentId, groupId);
     const { settings } = access;
@@ -726,12 +745,17 @@ export class AiChatService {
       version: 1, text: content || 'Переглянь прикріплені файли.', attachmentIds, skillId: skill?.id ?? null, revision: revision ?? null,
       learning: resumeOf?.spec?.learning ?? (lessonContext ? { prompt: lessonContext.prompt } : null), resumeOf: resumeOf?.id ?? null
     };
-    const built = await this.buildRun({ studentId, mode, model, provider, settings, existing, spec, skills, skill });
+    // Only agent work is long enough to need a worker; plain chat keeps streaming from Vercel.
+    const runner: AiRunner = known?.runner ?? (mode === 'agent' ? await this.runnerFor(studentId, settings) : 'vercel');
+    const built = await this.buildRun({ studentId, mode, model, provider, settings, existing, spec, skills, skill, runner });
     const inputEstimate = withSafetyMargin(built.inputTokens);
     // An agent run makes several model calls; it reserves room for them, never more than the balance holds.
-    const amount = (settings.memoryEnabled && built.historyLength >= 12 ? 6000 : 0) + (mode === 'agent'
-      ? inputEstimate * 3 + model.maxOutputTokens * 3 + Math.min(model.maxInputTokens, 60_000)
-      : inputEstimate + model.maxOutputTokens);
+    // A worker run takes up to WORKER_AGENT_STEPS calls, each resending the history; what it does not use comes back.
+    const amount = (settings.memoryEnabled && built.historyLength >= 12 ? 6000 : 0) + (mode !== 'agent'
+      ? inputEstimate + model.maxOutputTokens
+      : runner === 'cloud-run'
+        ? inputEstimate * 8 + model.maxOutputTokens * 6 + Math.min(model.maxInputTokens, 120_000)
+        : inputEstimate * 3 + model.maxOutputTokens * 3 + Math.min(model.maxInputTokens, 60_000));
     const reservation = await this.ai.store.reserve({
       studentId, requestId, amount,
       minAmount: inputEstimate + Math.min(MIN_ANSWER_TOKENS, model.maxOutputTokens),
@@ -756,8 +780,6 @@ export class AiChatService {
     }
 
     const userMessage: AiMessage = { ...(revision ? { revision } : {}), id: randomUUID(), role: 'user', content: spec.text, createdAt: now.toISOString(), ...(built.messageAttachments.length ? { attachments: built.messageAttachments } : {}), ...(resumeOf ? { auto: true } : {}) };
-    // Only agent work is long enough to need a worker; plain chat keeps streaming from Vercel.
-    const runner: AiRunner = known?.runner ?? (mode === 'agent' ? await this.runnerFor(studentId, settings) : 'vercel');
     // viewerAt starts empty: the sending connection is watched directly, later the app's own requests count.
     const job: AiJob = {
       id: randomUUID(), studentId, conversationId: existing?.id ?? randomUUID(), requestId,
@@ -794,9 +816,9 @@ export class AiChatService {
    */
   private async buildRun(args: {
     studentId: string; mode: 'chat' | 'agent'; model: AiModelRecord; provider: AiProviderRecord; settings: AiSettings;
-    existing: AiConversation | null; spec: AiJobSpec; skills: AiSkill[]; skill: AiSkill | null;
+    existing: AiConversation | null; spec: AiJobSpec; skills: AiSkill[]; skill: AiSkill | null; runner: AiRunner;
   }) {
-    const { studentId, mode, model, provider, settings, existing, spec, skills, skill } = args;
+    const { studentId, mode, model, provider, settings, existing, spec, skills, skill, runner } = args;
     let history = existing ? activeMessages(await this.ai.store.getMessages(existing.id, HISTORY_LOAD)) : [];
     if (spec.revision) {
       const original = history.at(-2), answer = history.at(-1);
@@ -843,7 +865,8 @@ export class AiChatService {
         if (attachment?.status === 'ready' && attachment.usedIn === existing?.id) earlier.push(attachment);
       }
       readable = [...attachments, ...earlier];
-      const system = [profilePrompt(settings), contextualPrompt, AGENT_RULES, FILE_RULES, skill ? skillPrompt(skill) : skillsIndex(skills)].filter(Boolean).join('\n\n');
+      const rules = runner === 'cloud-run' ? workerAgentRules(workerFileChars(model)) : AGENT_RULES;
+      const system = [profilePrompt(settings), contextualPrompt, rules, FILE_RULES, skill ? skillPrompt(skill) : skillsIndex(skills)].filter(Boolean).join('\n\n');
       const historyTurns: ChatTurn[] = history
         .filter(message => message.content.trim() || message.attachments?.length || message.files?.length)
         .map(message => ({ role: message.role, content: annotate(message), images: historyImages.get(message.id) ?? [] }));
@@ -870,7 +893,7 @@ export class AiChatService {
   private async agentFor(run: RunPlan, upstream: AbortController, state: RunState) {
     return run.job.mode === 'agent' ? {
       tools: this.agentTools({ job: run.job, model: run.model, readable: run.readable, sentScans: new Set(run.documents.map(document => document.id)), skills: run.skill ? [] : run.skills, explicitSkill: run.skill, plugins: await loadPlugins(this.ai.store, this.ai.now().toISOString()), signal: upstream.signal, state }),
-      maxSteps: run.settings.agentMaxSteps
+      maxSteps: run.job.runner === 'cloud-run' ? Math.max(run.settings.agentMaxSteps, WORKER_AGENT_STEPS) : run.settings.agentMaxSteps
     } : null;
   }
 
@@ -996,11 +1019,13 @@ export class AiChatService {
       allowLocalUrls: Boolean(this.ai.deps.allowLocalProviderUrls),
       signal: run.signal
     };
+    // A worker writes files whole: its project tools say so, sized to this model's output limit.
+    const described = run.job.runner === 'cloud-run' ? workerProjectToolDescriptions(workerFileChars(run.model)) : {};
     return enabledTools(run.plugins)
       .filter(({ tool }) => tool.name !== 'use_skill' || run.skills.length > 0)
       .filter(({ tool }) => !allowed || allowed.has(tool.name))
       .map(({ tool, record }) => ({
-        tool,
+        tool: described[tool.name] ? { ...tool, description: described[tool.name]! } : tool,
         context: {
           ...base,
           settings: record.settings,
@@ -1699,7 +1724,11 @@ export class AiChatService {
       if (killed()) return { jobId, status: 'lost', round };
       const after = await this.ai.store.getJob(jobId);
       if (lost || after?.leaseOwner && after.leaseOwner !== owner) return { jobId, status: 'lost', round };
-      options.log('stage.finished', { jobId, status: after?.status ?? 'unknown', resume: Boolean(after?.resume), ms: Date.now() - startedAt });
+      // Codes and counts only: enough to see why stages end without reading the chat.
+      options.log('stage.finished', {
+        jobId, status: after?.status ?? 'unknown', resume: Boolean(after?.resume), code: after?.errorCode ?? null,
+        steps: after?.steps.length ?? 0, failedSteps: after?.steps.filter(step => step.status === 'error').length ?? 0, ms: Date.now() - startedAt
+      });
       return { jobId, status: after && !ACTIVE_JOB.has(after.status) ? 'finished' : 'lost', round, jobStatus: after?.status };
     } finally {
       clearInterval(keeper);
@@ -1733,7 +1762,7 @@ export class AiChatService {
     const skill = spec.skillId ? skills.find(item => item.id === spec.skillId) ?? null : null;
     const existing = await this.ai.store.getConversation(job.studentId, job.conversationId);
     if (!existing) throw new AppError('AI_CONVERSATION_NOT_FOUND', 404, 'Чат видалено.');
-    const built = await this.buildRun({ studentId: job.studentId, mode: job.mode, model, provider, settings, existing, spec, skills, skill });
+    const built = await this.buildRun({ studentId: job.studentId, mode: job.mode, model, provider, settings, existing, spec, skills, skill, runner: job.runner ?? 'vercel' });
     return {
       job, model, provider, access, settings, turns: built.turns, inputEstimate: withSafetyMargin(built.inputTokens), reserved: job.reserved,
       readable: built.readable, documents: built.documents, skill, skills
